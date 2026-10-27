@@ -7,8 +7,10 @@
 #                          HJV_CI_STRICT=1, the stages server, client, deploy, e2e, wol and leak one
 #                          after another, each with its own log (build/ci/prepush/<time>-<commit>/;
 #                          first the commits, the toolchain and the start, last the exit status),
-#                          stopping at the first that fails. With stages named, only those, in this
-#                          order: after a fix, the stages that read what it changed (docs/ci.md).
+#                          stopping at the first that fails; summary.txt there says what each took
+#                          and how it ended, times.tsv holds each stage's steps by time. With stages
+#                          named, only those, in this order: after a fix, the stages that read what
+#                          it changed (docs/ci.md).
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
 #                          release (the library's and binaries' unit tests, the signaling, relay,
 #                          protobuf, hbbs hjv-pk, lowest controller version and access ticket tests,
@@ -70,6 +72,8 @@
 # that pass, so that a test that skips itself is counted too. A run that skipped nothing fails
 # when an E2E has fewer PASS lines, or a client unit test filter fewer passed tests, than the last
 # full run (E2E_LEAST_*, WOL_LEAST, UNIT_LEAST below).
+# Under each step's title a line says when it began, how far into the run, the machine's load and
+# how long the step before took; before its last line a run prints its steps by time.
 # One run at a time on a CI directory (HJV_CI_DIR, default build/ci): a run holds the lock
 # <CI directory>/ci.lock, and a run started meanwhile stops at once.
 # Needs cargo, curl, openssl, Docker with compose v2 (used through sudo, as the runbook does), and
@@ -106,6 +110,9 @@ E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
 E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
 # the stages of prepush, in their order
 PREPUSH_STAGES="server client deploy e2e wol leak"
+# the side logs in the CI directory that prepush keeps with a stage's log, those the stage wrote:
+# the image build's and the server package's are in no stage log, and the next run writes over all
+declare -A SIDE_LOGS=([deploy]="build.log package.log container.log api-settings.log relay-package.log")
 # The fewest PASS lines of the E2E scripts and the fewest client unit tests that the last full run
 # passed with (2026-10-13). A run that skipped nothing and has fewer lost a scenario or a test (one
 # moved under a condition that does not hold, a test filter that picks nothing), and the stage
@@ -156,8 +163,31 @@ E2E_CLIENT_GIVEN=${E2E_CLIENT:-} E2E_CLIENT=""
 STACK=docker SYSTEMD_SINCE=""
 # what this run skipped (skip, count_skips)
 SKIPPED=()
+# the step under way and when it began, and the steps before it with their seconds (step_times)
+STEP="" STEP_SINCE=0 STEP_TIMES=()
 
-step() { printf '\n== %s\n' "$*"; }
+# A step's title, and under it the time, the seconds since the run began, the machine's load (a
+# slow step on a busy machine) and how long the step before took
+step() {
+  local took=""
+  if [ -n "$STEP" ]; then
+    took=$((SECONDS - STEP_SINCE))
+    STEP_TIMES+=("$took $STEP")
+  fi
+  STEP=$* STEP_SINCE=$SECONDS
+  printf '\n== %s\n' "$*"
+  echo "-- $(date +%T), $SECONDS s in, load $(cut -d' ' -f1 /proc/loadavg)${took:+; the step before: $took s}"
+}
+# The steps by their time, the last one's until now; finish prints it (a table of one says nothing)
+step_times() {
+  if [ -n "$STEP" ]; then
+    STEP_TIMES+=("$((SECONDS - STEP_SINCE)) $STEP")
+    STEP=""
+  fi
+  [ ${#STEP_TIMES[@]} -gt 1 ] || return 0
+  printf '\n-- time by step, %s s in all:\n' "$SECONDS"
+  printf '%s\n' "${STEP_TIMES[@]}" | sort -s -rn -k1,1 | while read -r took what; do printf '%6d s  %s\n' "$took" "$what"; done
+}
 # Every skip goes through skip, or through count_skips for the skipped lines another program prints
 skip() { # <what is skipped (why)>
   echo "skipped: $*"
@@ -872,7 +902,7 @@ check_package_container() { # <release dir> <package name>
   cat > "$CI/container-test.sh" << 'EOF'
 set -euo pipefail
 name=$1
-step() { printf '\n== container: %s\n' "$*"; }
+step() { printf '\n== container: %s\n-- %s, %s s in\n' "$*" "$(date +%T)" "$SECONDS"; }
 step "Ubuntu's nginx, systemd (systemd-analyze, systemd-socket-activate) and curl"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq > /dev/null
@@ -1069,7 +1099,13 @@ deploy_stage() {
     sed -i 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' .env &&
     printf 'COMPOSE_FILE=docker-compose.behind-proxy.yml\nHJV_TOTAL_BANDWIDTH=100\nHJV_BUILD_JOBS=%s\n' "$(nproc)" >> .env)
   [ "$(dc config --services | sort | paste -sd' ')" = "hbbr hbbs" ] || fail "COMPOSE_FILE in .env did not select the behind-proxy file"
+  local built=$SECONDS
   dc build > "$CI/build.log" 2>&1 || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
+  # what the image build took from Docker's cache (building the image again costs minutes) and the
+  # base images it resolved
+  echo "image build: $((SECONDS - built)) s, $(grep -E '^#[0-9]+ CACHED$' "$CI/build.log" | sort -u | wc -l) of" \
+    "$(grep -oE '^#[0-9]+ \[[^]]* [0-9]+/[0-9]+\]' "$CI/build.log" | sort -u | wc -l) steps from the cache"
+  sed -n -E 's/^#[0-9]+ \[[^]]*\] FROM (.*@sha256:[0-9a-f]+)$/image build: FROM \1/p' "$CI/build.log" | sort -u
   dc up -d
   wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
   sleep 2
@@ -1718,7 +1754,7 @@ log_head() { # <stage>
 # this run's lock, with HJV_CI_STRICT=1, each with its own log, stopping at the first that fails.
 # Named stages run alone, in this order: after a fix, those that read what it changed (docs/ci.md).
 prepush() { # [<stage>...]
-  local stages=() s log logs head start status passed list
+  local stages=() s log logs head start status passed list f
   for s in "$@"; do
     [[ " $PREPUSH_STAGES " == *" $s "* ]] || fail "prepush: no stage $s ($PREPUSH_STAGES)"
   done
@@ -1742,6 +1778,8 @@ prepush() { # [<stage>...]
   HJV_CI_RUN="$(date +%s)-$$"
   export HJV_CI_RUN
   step "prepush: ${stages[*]} on $head, logs in $logs"
+  # summary.txt: what prepush says of each stage; times.tsv: each stage's steps by time
+  echo "prepush: ${stages[*]} on $head in $ROOT, $(date '+%Y-%m-%d %H:%M:%S %z')" > "$logs/summary.txt"
   for s in "${stages[@]}"; do
     log="$logs/$s.log" start=$(date +%s) status=0
     (
@@ -1749,18 +1787,26 @@ prepush() { # [<stage>...]
       log_head "$s"
       HJV_CI_STRICT=1 "$SELF" "$s"
     ) > "$log" 2>&1 < /dev/null || status=$?
+    for f in ${SIDE_LOGS[$s]:-}; do
+      if [ "$(stat -c %Y "$CI/$f" 2> /dev/null || echo 0)" -ge "$start" ]; then cp -p "$CI/$f" "$logs/$s-$f"; fi
+    done
+    sed -n "/^-- time by step/,/^\$/s/^ *\([0-9][0-9]*\) s  /$s\t\1\t/p" "$log" >> "$logs/times.tsv"
     passed=$(grep -x "== CI passed: $s (0 skipped)" "$log" || true)
-    echo "prepush: $s: exit $status, $(($(date +%s) - start)) s, $(grep -c '^skipped:' "$log" || true) skipped line(s), log $log"
+    echo "prepush: $s: exit $status, $(($(date +%s) - start)) s, $(grep -c '^skipped:' "$log" || true) skipped line(s), log $log" |
+      tee -a "$logs/summary.txt"
     [ "$status" = 0 ] && [ -n "$passed" ] || fail "prepush: $s did not pass ($log)"
     if grep '^skipped:' "$log"; then fail "prepush: $s printed the skipped lines above ($log)"; fi
     [ "$(git -C "$ROOT" rev-parse HEAD)" = "$head" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
       fail "prepush: the tree changed during $s; its log is not of $head"
   done
+  echo "prepush: passed, $SECONDS s" >> "$logs/summary.txt"
 }
 
-# The last lines of a run: what it skipped, and with HJV_CI_STRICT=1 a failure if anything
+# The last lines of a run: its steps by time, what it skipped, and with HJV_CI_STRICT=1 a failure if
+# anything; the line "== CI passed: ..." comes last, with no time line under it
 finish() { # <target>
   local s
+  step_times
   if [ ${#SKIPPED[@]} -gt 0 ]; then
     printf '\n%s skipped in this run:\n' "${#SKIPPED[@]}"
     for s in "${SKIPPED[@]}"; do echo "  - $s"; done
@@ -1769,7 +1815,7 @@ finish() { # <target>
       exit 1
     fi
   fi
-  step "CI passed: $1 (${#SKIPPED[@]} skipped)"
+  printf '\n== %s\n' "CI passed: $1 (${#SKIPPED[@]} skipped)"
 }
 
 case "$TARGET" in
