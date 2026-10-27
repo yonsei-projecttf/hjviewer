@@ -19,7 +19,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --l
 
 명령은 저장소 맨 위에서 실행합니다. `--keys`를 주지 않으면 `client/update-keys.env`를 읽습니다. `hjv-release help`가 모든 명령과 옵션을 보여 줍니다.
 
-**서명하는 도구는 따로 빌드합니다.** 실제 정책에 서명할 때(`sign`, `void`, `archive adopt`)는 `scripts/build-signer.sh`가 push한 main(또는 준 커밋)을 꺼내 빌드한 주 체크아웃의 `build/signer/hjv-release`를 씁니다. 이 폴더를 바꾼 push 뒤마다 먼저 그 스크립트를 돌립니다. 그 빌드에는 커밋이 박혀(`HJV_BUILD_COMMIT`) `version`이 `hjv-release <판> (commit <커밋>)`을 찍고, `sign`은 아무것도 묻기 전에 그 줄을 보여 줍니다. 위의 cargo 빌드와 CI의 빌드(`build/ci/target-hjv-release`, 마지막으로 CI를 돌린 트리의 것)는 `(commit unknown: not built by scripts/build-signer.sh)`이고 시험용입니다([docs/ci.md](../../docs/ci.md)의 "서명하는 hjv-release").
+**서명하는 도구는 따로 빌드합니다.** 개발 PC에서 실제 정책에 하는 일(서명 키로 하는 `sign`, `void`, `archive adopt`)에는 `scripts/build-signer.sh`가 push한 main(또는 origin/main에 있는 준 커밋)을 꺼내 빌드한 주 체크아웃의 `build/signer/hjv-release`를 씁니다. 이 폴더를 바꾼 push 뒤마다 먼저 그 스크립트를 돌립니다. 그 빌드에는 커밋이 박혀(`HJV_BUILD_COMMIT`) `version`이 `hjv-release <판> (commit <커밋>)`을 찍고, `sign`은 아무것도 묻기 전에 그 줄을 보여 줍니다. 위의 cargo 빌드와 CI의 빌드(`build/ci/target-hjv-release`, 마지막으로 CI를 돌린 트리의 것)는 `(commit unknown: not built by scripts/build-signer.sh)`이고 시험용입니다([docs/ci.md](../../docs/ci.md)의 "서명하는 hjv-release"). **루트 키를 여는 서명은 예외입니다**: 개발 PC의 실행 파일(`build/signer/hjv-release` 포함)을 쓰지 않고, 깨끗한 컴퓨터가 공개 저장소의 릴리스 태그로 그 자리에서 빌드한 도구를 씁니다(3장 5-0의 1번). 그 빌드도 커밋을 박아 같은 줄을 보입니다.
 
 종료 코드: 0 성공, 1 거부나 오류, 2 모르는 명령, 3 `check`의 경고.
 
@@ -89,7 +89,15 @@ HJV_POLICY_FLOOR=1:0
    - **App Store 제출이 열려 있는 동안(제출부터 승인·거절까지) 패키지 정책은 `--hold ios`로 냅니다.** 심사 기기는 샌드박스 영수증이라 TestFlight 화면을 봅니다. 정책의 `ios`가 심사 중인 버전보다 앞서면 배너와 [TestFlight 열기]가 나와 심사지침 2.2에 걸릴 수 있습니다(설계 3-3 규칙 2). 초안 전에 `store.yml ios status`가 출력하는 심사 중인 버전과 대조합니다.
    - `android_play`는 그대로 둡니다. 그 항목이 없는 정책에서 `android`의 `min`을 올리면 Play 설치본이 앱 안 안내 없이 막히므로 도구가 거부합니다(T2, 아래 "스토어 관문"). 첫 `android_play`는 1.9.1이 Play에 게시된 뒤의 스토어 정책에서 넣습니다(설계 9절 1번). 그때까지 패키지 정책은 `android`의 `min`을 올리지 않습니다.
 
-4. **(사용자)** 터미널에서 `build/signer/hjv-release`로 서명합니다(맨 처음 보이는 커밋이 push한 main의 것인지 봄, 위 "빌드"). 도구가 바뀌는 내용을 보여 주고 키 비밀번호를 묻습니다. 요약의 "새 패키지" 줄에 나온 SHA-256을 GitHub의 빌드 실행 요약에 적힌 값과 눈으로 대조합니다. `sign`은 빌드도 네트워크도 보지 않으므로, 초안에 적힌 해시가 그 빌드의 것인지는 이 대조가 마지막 확인입니다.
+4. **(사용자)** 터미널에서 `build/signer/hjv-release`로 서명합니다. 그 전에 `build/signer/hjv-release version`이 찍는 커밋(`sign`이 맨 처음 `서명하는 도구: …`로 보이는 것과 같음)이 push한 main에 있고 그 뒤로 `tools/hjv-release`가 바뀌지 않았는지 봅니다(위 "빌드"). 둘 중 하나라도 찍히지 않으면 서명하지 않고 `scripts/build-signer.sh`부터 다시 돌립니다.
+
+   ```sh
+   git fetch -q origin +refs/heads/main:refs/remotes/origin/main
+   git merge-base --is-ancestor <커밋> refs/remotes/origin/main && echo "push한 main에 있음"
+   git diff --quiet <커밋> refs/remotes/origin/main -- tools/hjv-release && echo "그 뒤 tools/hjv-release는 그대로"
+   ```
+
+   도구가 바뀌는 내용을 보여 주고 키 비밀번호를 묻습니다. 요약의 "새 패키지" 줄에 나온 SHA-256을 GitHub의 빌드 실행 요약에 적힌 값과 눈으로 대조합니다. `sign`은 빌드도 네트워크도 보지 않으므로, 초안에 적힌 해시가 그 빌드의 것인지는 이 대조가 마지막 확인입니다.
 
    ```sh
    build/signer/hjv-release sign --key ~/hjviewer-secrets/hjviewer-update-1.key \
@@ -314,7 +322,14 @@ hjv-release sign --key FILE [--key FILE] [--live FILE] --out FILE DRAFT
 
 ### 5-0. 루트 키 의식 (5-7, 5-8, 5-10, 5-12, 5-13, 5-14에서 씀)
 
-1. 깨끗한 컴퓨터: 개발 PC의 시스템, 소프트웨어, 에이전트가 하나도 돌지 않는 컴퓨터입니다. 예를 들어 이 일에만 쓰는 라이브 리눅스 USB로, 내장 디스크를 붙이지 않고 부팅합니다. 도구는 거기서 공개 저장소의 최신 릴리스 태그로 빌드합니다(`tools/hjv-release`에서 `cargo build --release --locked`). 개발 PC에서 만든 실행 파일은 쓰지 않습니다.
+1. 깨끗한 컴퓨터: 개발 PC의 시스템, 소프트웨어, 에이전트가 하나도 돌지 않는 컴퓨터입니다. 예를 들어 이 일에만 쓰는 라이브 리눅스 USB로, 내장 디스크를 붙이지 않고 부팅합니다. 도구는 거기서 공개 저장소의 최신 릴리스 태그로 빌드합니다. 커밋을 박아 빌드하면 `version`과 `sign`의 첫 줄(`서명하는 도구: hjv-release <판> (commit <커밋>)`)이 그 태그의 커밋을 보여 줍니다:
+
+   ```sh
+   git clone https://github.com/yonsei-projecttf/hjviewer.git && cd hjviewer && git checkout <릴리스 태그>
+   cd tools/hjv-release && HJV_BUILD_COMMIT=$(git rev-parse 'HEAD^{commit}') cargo build --release --locked
+   ```
+
+   2b5d294보다 앞선 태그(예: `client-1.9.1`)의 도구에는 그 줄이 없습니다(`version`은 `hjv-release <판>`만 찍고 `sign`은 그 줄을 보이지 않음). 그때는 clone에서 `git rev-parse HEAD`로 커밋을 봅니다. 개발 PC에서 만든 실행 파일(`build/signer/hjv-release` 포함)은 쓰지 않습니다. `build/signer`의 규칙(위 "빌드", 2장 4번)은 개발 PC에서 서명 키로 하는 서명에만 해당합니다.
 2. 가져갈 것: 루트 키 매체(101이나 102), 정책을 서명할 서명 키가 있으면 그 오프라인 사본, 서명 키 오프라인 매체에 있는 보관소 사본, 초안(개발 PC에서 `policy`로 만든 것, 또는 그 자리에서 보관소 사본으로 만든 것).
 3. 그 컴퓨터에서 서버의 파일을 받고, `sign --archive <사본> --key <루트 키> [--key <서명 키>] --live <받은 파일> --out <파일> <초안>`을 실행합니다. `sign`은 보관소 사본과 서버의 파일로 다시 확인하고(X10, X11, X12), 기준 표와 완화 항목과 모든 패키지를 보여 주고, "깨끗한 컴퓨터"를 포함해 `yes`를 묻습니다. 시계도 확인합니다(발행 시각이 이 컴퓨터의 시계).
 4. 서명한 파일과 `sign`이 출력한 보관소 파일을 키 매체와 개발 PC의 보관소에 복사하고, 평소대로 게시합니다.
