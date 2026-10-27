@@ -676,7 +676,7 @@ pkgconfig() {
 }
 
 client_stage() {
-  local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=() lint
+  local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=() offline status=0
   local index=https://storage.googleapis.com/flutter_infra_release/releases
   # the server stage's release build of tools/hjv-release, against which the key files and the
   # release records are read too (its tests skip that part without it)
@@ -686,34 +686,11 @@ client_stage() {
     release_bin=""
     skip "the key files and release records against hjv-release (no $CI/target-hjv-release/release/hjv-release: scripts/ci.sh server builds it)"
   fi
-  # no network, no Google credentials (-B: no __pycache__ in scripts/)
-  step "client: Google Play upload script, offline tests"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_play_upload.py' ||
-    fail "client: Google Play upload script tests"
-  # the store run (store-release.yml, docs/store-release.md): no network, no store key
-  step "client: the store texts (scripts/check-store-text.py on store/, and its tests)"
-  python3 -I -B "$ROOT/scripts/check-store-text.py" || fail "client: the store texts"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_store_text.py' ||
-    fail "client: store text check tests"
-  step "client: the release record (scripts/store-record.py) and the workflows' store rules, offline tests"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_record.py' || fail "client: release record tests"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_workflows.py' ||
-    fail "client: the workflows' store rules"
-  step "client: the App Store Connect script (scripts/asc-store.mjs), offline tests with a fake App Store Connect"
-  if command -v node > /dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]; then
-    node --test "$ROOT/scripts/asc-store.test.mjs" || fail "client: App Store Connect script tests"
-  else
-    skip "the App Store Connect script's tests (Node 20 or later is not installed)"
-  fi
-  step "client: the pinned public keys' check (scripts/check-build-keys.py, client-build.yml), offline tests"
-  HJV_RELEASE_BIN="$release_bin" python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
-    fail "client: build-key check tests"
-  step "client: actionlint on .github/workflows"
-  if lint=$(command -v actionlint || ls "$HOME/.local/bin/actionlint" 2> /dev/null); then
-    "$lint" "$ROOT"/.github/workflows/*.yml || fail "client: actionlint"
-  else
-    skip "actionlint is not installed (github.com/rhysd/actionlint)"
-  fi
+  # The offline tests beside the rest, with their output in build/ci/client-offline.log, shown at
+  # the end. A stage that fails before then waits for them, so that nothing of it runs on.
+  client_offline "$release_bin" > "$CI/client-offline.log" 2>&1 < /dev/null &
+  offline=$!
+  trap 'wait "$offline"' EXIT
   if [ ! -x "$fl/bin/flutter" ]; then
     step "client: Flutter $FLUTTER_VERSION, checked against releases_linux.json"
     curl -fsSL "$index/releases_linux.json" -o "$CI/releases_linux.json"
@@ -791,6 +768,46 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   (cd "$app" && export PUB_CACHE="$CI/pub-cache" FLUTTER_SUPPRESS_ANALYTICS=true &&
     { "$fl/bin/flutter" pub get > "$CI/pub-get.log" 2>&1 || { tail -n 20 "$CI/pub-get.log"; fail "client: flutter pub get"; }; } &&
     "$fl/bin/flutter" test --no-pub "${tests[@]}") || fail "client: Dart tests"
+  step "client: the offline tests, run beside the steps above (output also in build/ci/client-offline.log)"
+  wait "$offline" || status=$?
+  trap - EXIT
+  cat "$CI/client-offline.log"
+  count_skips "$CI/client-offline.log"
+  [ "$status" = 0 ] || fail "client: the offline tests (above)"
+}
+
+# The client stage's offline tests, which read this tree and the hjv-release build, not the upstream
+# checkout, so client_stage runs them beside its checkout, cargo and Dart steps.
+client_offline() { # <hjv-release's release build, or nothing>
+  local lint
+  # no network, no Google credentials (-B: no __pycache__ in scripts/)
+  step "client: Google Play upload script, offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_play_upload.py' ||
+    fail "client: Google Play upload script tests"
+  # the store run (store-release.yml, docs/store-release.md): no network, no store key
+  step "client: the store texts (scripts/check-store-text.py on store/, and its tests)"
+  python3 -I -B "$ROOT/scripts/check-store-text.py" || fail "client: the store texts"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_store_text.py' ||
+    fail "client: store text check tests"
+  step "client: the release record (scripts/store-record.py) and the workflows' store rules, offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_record.py' || fail "client: release record tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_workflows.py' ||
+    fail "client: the workflows' store rules"
+  step "client: the App Store Connect script (scripts/asc-store.mjs), offline tests with a fake App Store Connect"
+  if command -v node > /dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]; then
+    node --test "$ROOT/scripts/asc-store.test.mjs" || fail "client: App Store Connect script tests"
+  else
+    skip "the App Store Connect script's tests (Node 20 or later is not installed)"
+  fi
+  step "client: the pinned public keys' check (scripts/check-build-keys.py, client-build.yml), offline tests"
+  HJV_RELEASE_BIN="$1" python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
+    fail "client: build-key check tests"
+  step "client: actionlint on .github/workflows"
+  if lint=$(command -v actionlint || ls "$HOME/.local/bin/actionlint" 2> /dev/null); then
+    "$lint" "$ROOT"/.github/workflows/*.yml || fail "client: actionlint"
+  else
+    skip "actionlint is not installed (github.com/rhysd/actionlint)"
+  fi
 }
 
 # The runbook's checks against one web server: WebSocket upgrades to hbbs and hbbr, the /api/
