@@ -694,7 +694,7 @@ for r in json.load(open(sys.argv[1]))["releases"]:
 # answer, the source notice, hjv-probe, three PCs registering (hbbs must see their ports), a relay
 # session with the server key, and the same key in hbbs, hbbr and data/id_ed25519.pub.
 check_site() { # <port> <CA file> <status of />, or "site" when / belongs to another site <name>
-  local port=$1 ca=$2 root_status=$3 name=$4 code p before
+  local port=$1 ca=$2 root_status=$3 name=$4 code p before out
   local url="https://localhost:$port" curl_tls=(--cacert "$ca" --resolve "localhost:$port:127.0.0.1")
   step "deploy: checks through $name on 127.0.0.1:$port"
   for p in /ws/id /ws/relay; do
@@ -716,13 +716,24 @@ check_site() { # <port> <CA file> <status of />, or "site" when / belongs to ano
   fi
   "$PROBE" localhost --port "$port" --ca "$ca" || fail "$name: hjv-probe"
   before=$(hbbs_logs 2>/dev/null | grep -c 'update_pk ' || true)
-  "$LOAD" peers localhost --port "$port" --ca "$ca" -n 3 --secs 12 || fail "$name: hjv-load peers"
+  out=$("$LOAD" peers localhost --port "$port" --ca "$ca" -n 3 --secs 12 2>&1) || { echo "$out"; fail "$name: hjv-load peers"; }
+  echo "$out"
   { hbbs_logs | grep -oE 'update_pk [0-9]+ [^ ]+' || true; } | tail -n "+$((before + 1))" > "$CI/pk.txt"
   cat "$CI/pk.txt"
   [ "$(wc -l < "$CI/pk.txt")" = 3 ] || fail "$name: hbbs did not register 3 PCs"
   if grep -q ':0$' "$CI/pk.txt"; then fail "$name: X-Real-Port did not reach hbbs (port 0)"; fi
-  "$LOAD" relay localhost --port "$port" --ca "$ca" -n 1 --mbps 2 --secs 5 --key "$(sudo cat "$(key_file)")" ||
-    fail "$name: hjv-load relay"
+  # Each PC echoed a heartbeat in its 12 s: the patched hbbs sends an empty frame every 10 s
+  # (TCP_HEARTBEAT_MS, server/patches/0002) and drops a PC after 30 s without a frame
+  # (TCP_IDLE_TIMEOUT_MS), and the web server's 120-s timeouts count on those frames
+  # (deploy/nginx-hjviewer-locations.conf): one that drops or mangles them knocks PCs offline
+  [[ $out =~ at\ least\ ([0-9]+)\ by\ each\ PC ]] && [ "${BASH_REMATCH[1]}" -ge 1 ] ||
+    fail "$name: a PC echoed no heartbeat of hbbs's in 12 s"
+  out=$("$LOAD" relay localhost --port "$port" --ca "$ca" -n 1 --mbps 2 --secs 5 --key "$(sudo cat "$(key_file)")" 2>&1) ||
+    { echo "$out"; fail "$name: hjv-load relay"; }
+  echo "$out"
+  # what one half of the session sent, the other half received, every byte
+  [[ $out =~ ([0-9]+)\ bytes\ received\ of\ ([0-9]+)\ sent ]] && [ "${BASH_REMATCH[2]}" -gt 0 ] &&
+    [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ] || fail "$name: the relay did not carry every byte sent"
 }
 
 # The signed version policy at /api/hjv/version (deploy/nginx-hjviewer-locations.conf, runbook 8),

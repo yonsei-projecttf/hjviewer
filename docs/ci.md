@@ -42,7 +42,7 @@ e2e·wol 단계가 시험 스크립트에 넘기는 값은 `HJV_E2E_WORK`, `CADD
 
 - hbbs/hbbr이 127.0.0.1에서만 listen하는지
 - 런북 7단계의 WebSocket 확인(`/ws/id`, `/ws/relay`가 101), `/api/`가 404인지, 첫 화면에 소스 안내가 있는지
-- `hjv-probe` 전 단계, 그리고 `hjv-load`로 PC 3대 등록과 중계 1세션
+- `hjv-probe` 전 단계, 그리고 `hjv-load`로 PC 3대 등록과 중계 1세션. 등록한 PC는 12초 동안 저마다 hbbs의 heartbeat(10초마다 보내는 빈 프레임)를 하나 이상 되돌려 보내야 하고(`at least <n> by each PC`), 중계는 한쪽이 보낸 바이트를 다른 쪽이 모두 받아야 합니다(`<n> bytes received of <n> sent`). hbbs는 30초 동안 프레임이 없는 PC를 끊으므로, 빈 프레임을 버리는 웹 서버 뒤에서는 운영의 PC가 30초마다 끊깁니다. `hjv-load relay`는 한 바이트도 오지 않은 세션을 실패로 셉니다
 - hbbs가 PC마다 실제 포트를 받는지(`X-Real-Port` 전달), 세 키 값(`.pub`, hbbs, hbbr)이 같은지
 - 개인키 권한(700/600, root), 컨테이너 권한 제거(`cap_drop: ALL`), `.env`의 `COMPOSE_FILE`과 대역폭 상한이 적용되는지
 - Apache 오류 로그에 fail2ban이 인증 실패로 세는 `AH01630`이 없는지
