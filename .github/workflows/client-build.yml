@@ -566,7 +566,7 @@ jobs:
 
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
       # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
-      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # and from nowhere else: after the same check as in the Checks job, the file's
       # values go to the steps below, where cargo reads them (minimum version design 6-4).
       - name: Pin the update keys
         shell: bash
@@ -1168,7 +1168,7 @@ jobs:
 
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
       # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
-      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # and from nowhere else: after the same check as in the Checks job, the file's
       # values go to the steps below, where cargo reads them (minimum version design 6-4).
       - name: Pin the update keys
         shell: bash
@@ -1811,7 +1811,7 @@ jobs:
 
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
       # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
-      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # and from nowhere else: after the same check as in the Checks job, the file's
       # values go to the steps below, where cargo reads them (minimum version design 6-4).
       - name: Pin the update keys
         shell: bash
