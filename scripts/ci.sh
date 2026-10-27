@@ -762,7 +762,7 @@ server_hbbs_build() {
 server_hbbs() {
   local t built
   server_hbbs_build
-  built=$(cd "$CI/target/release" && sha256sum hbbs hbbr)
+  built=$(cd "$CI/target/release" && sha256sum hbbs hbbr) || fail "server: the build left no hbbs or hbbr in $CI/target/release"
   # hbbs's signed hjv-pk answer for hjv-api (server/patches/0004, design v3 5-7): required, so that
   # a dropped patch fails
   [ -f "$CI/upstream/rustdesk-server/tests/hjv_pk.rs" ] ||
