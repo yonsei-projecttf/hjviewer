@@ -25,7 +25,8 @@ for dir in "$@"; do
   [ -d "$dir" ] || { echo "ci-times: $dir is no folder" >&2; exit 1; }
   folders=$((folders + 1))
   [ ! -f "$dir/times.tsv" ] || tsv+=("$dir/times.tsv")
-  secs=$(sed -n 's/^prepush: passed, \([0-9]*\) s.*/\1/p' "$dir/summary.txt" 2> /dev/null | tail -n 1)
+  # (the folder of a run before 2026-10-27 has no summary.txt)
+  secs=$(sed -n 's/^prepush: passed, \([0-9]*\) s.*/\1/p' "$dir/summary.txt" 2> /dev/null | tail -n 1 || true)
   if [ -n "$secs" ]; then passed=$((passed + 1)) wall=$((wall + secs)); fi
   for log in "$dir"/*.log; do
     # a stage's log starts with its head; the deploy stage's side logs (deploy-build.log ...) do not
