@@ -691,10 +691,11 @@ client_stage() {
     skip "the key files and release records against hjv-release (no $CI/target-hjv-release/release/hjv-release: scripts/ci.sh server builds it)"
   fi
   # The offline tests beside the rest, with their output in build/ci/client-offline.log, shown at
-  # the end. A stage that fails before then waits for them, so that nothing of it runs on.
+  # the end. A stage that fails before then waits for them, so that nothing of it runs on, and
+  # shows them too, as it did when they ran first.
   client_offline "$release_bin" > "$CI/client-offline.log" 2>&1 < /dev/null &
   offline=$!
-  trap 'wait "$offline"' EXIT
+  trap 'client_offline_end "$offline" || true' EXIT
   if [ ! -x "$fl/bin/flutter" ]; then
     step "client: Flutter $FLUTTER_VERSION, checked against releases_linux.json"
     curl -fsSL "$index/releases_linux.json" -o "$CI/releases_linux.json"
@@ -772,10 +773,8 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   (cd "$app" && export PUB_CACHE="$CI/pub-cache" FLUTTER_SUPPRESS_ANALYTICS=true &&
     { "$fl/bin/flutter" pub get > "$CI/pub-get.log" 2>&1 || { tail -n 20 "$CI/pub-get.log"; fail "client: flutter pub get"; }; } &&
     "$fl/bin/flutter" test --no-pub "${tests[@]}") || fail "client: Dart tests"
-  step "client: the offline tests, run beside the steps above (output also in build/ci/client-offline.log)"
-  wait "$offline" || status=$?
   trap - EXIT
-  cat "$CI/client-offline.log"
+  client_offline_end "$offline" || status=$?
   count_skips "$CI/client-offline.log"
   [ "$status" = 0 ] || fail "client: the offline tests (above)"
 }
@@ -812,6 +811,15 @@ client_offline() { # <hjv-release's release build, or nothing>
   else
     skip "actionlint is not installed (github.com/rhysd/actionlint)"
   fi
+}
+
+# Waits for client_offline's job and shows its output; its status is the job's
+client_offline_end() { # <job>
+  local status=0
+  step "client: the offline tests, run beside the steps above (output also in build/ci/client-offline.log)"
+  wait "$1" || status=$?
+  cat "$CI/client-offline.log"
+  return "$status"
 }
 
 # The runbook's checks against one web server: WebSocket upgrades to hbbs and hbbr, the /api/
