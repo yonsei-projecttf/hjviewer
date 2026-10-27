@@ -1534,6 +1534,11 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
   else
     skip "the client's unit tests of src/$unit (not in the patched tree)"
   fi
+  # The client's build script writes src/version.rs (its version and the minute of the build) in
+  # each target directory's first build of a checkout, which leaves the builds before the last one
+  # older than it: in the next run of the kept checkout cargo would compile the client crate again
+  # for that minute. Back at the checkout's time, the file leaves every build as it is.
+  if [ -e "$src/src/version.rs" ]; then touch -r "$src/Cargo.toml" "$src/src/version.rs"; fi
 }
 
 # The update code's unit tests once more, in a build without the update keys (minimum version
