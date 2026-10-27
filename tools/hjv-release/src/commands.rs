@@ -546,6 +546,8 @@ fn sign(argv: &[String]) -> Result<i32, String> {
     // the terminal first: without a person at it, nothing is read and nothing is signed
     let mut tty = Tty::open().map_err(no_tty("서명하지 않습니다"))?;
     tty::harden_process();
+    // which tool signs, before anything it asks (the owner signs with scripts/build-signer.sh's)
+    tty.say(&format!("서명하는 도구: {}\n", build_name()));
     let keys = load_keys(&args, true)?;
     let archive = open_archive(&args, &keys, true)?;
     let draft = Draft::parse(&read_text(draft_path, "초안")?)?;
@@ -1378,6 +1380,28 @@ fn test_sign(argv: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
+/// The tool by its version and the commit it was built from: scripts/build-signer.sh bakes in
+/// HJV_BUILD_COMMIT, the commit of the clean checkout it builds, so that `version` and `sign` show
+/// which commit's tool signs. A build without it (CI, tests, cargo by hand) says it does not know.
+pub fn build_name() -> String {
+    build_name_of(option_env!("HJV_BUILD_COMMIT"))
+}
+
+fn build_name_of(commit: Option<&str>) -> String {
+    match commit {
+        Some(commit) if !commit.is_empty() => {
+            format!(
+                "hjv-release {} (commit {commit})",
+                env!("CARGO_PKG_VERSION")
+            )
+        }
+        _ => format!(
+            "hjv-release {} (commit unknown: not built by scripts/build-signer.sh)",
+            env!("CARGO_PKG_VERSION")
+        ),
+    }
+}
+
 /// Runs a command line; returns the exit code.
 pub fn run(argv: &[String]) -> i32 {
     let Some((command, rest)) = argv.split_first() else {
@@ -1404,7 +1428,7 @@ pub fn run(argv: &[String]) -> i32 {
             return 0;
         }
         "version" | "--version" => {
-            println!("hjv-release {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", build_name());
             return 0;
         }
         other => {
@@ -1430,6 +1454,24 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn the_build_name_says_the_commit_or_that_it_is_unknown() {
+        let version = env!("CARGO_PKG_VERSION");
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            build_name_of(Some(commit)),
+            format!("hjv-release {version} (commit {commit})")
+        );
+        for unknown in [None, Some("")] {
+            assert_eq!(
+                build_name_of(unknown),
+                format!(
+                    "hjv-release {version} (commit unknown: not built by scripts/build-signer.sh)"
+                )
+            );
+        }
     }
 
     #[test]

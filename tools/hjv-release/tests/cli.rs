@@ -510,7 +510,22 @@ fn usage() {
     let bad_option = run(&["verify", "--serverr", "x", "file"], &dir);
     assert_eq!(bad_option.code, 1);
     assert!(bad_option.stderr.contains("모르는 옵션: --serverr"));
-    assert!(run(&["version"], &dir).stdout.starts_with("hjv-release "));
+    // the version and the commit it was built from, which a build without HJV_BUILD_COMMIT (this
+    // test's) does not know (scripts/build-signer.sh bakes it in)
+    for command in ["version", "--version"] {
+        let version = run(&[command], &dir);
+        assert_eq!(version.code, 0);
+        let line = version.stdout.strip_suffix('\n').unwrap();
+        let name = format!("hjv-release {} (commit ", env!("CARGO_PKG_VERSION"));
+        let commit = line
+            .strip_prefix(&name)
+            .and_then(|rest| rest.strip_suffix(')'));
+        assert!(
+            commit.is_some_and(|c| c == "unknown: not built by scripts/build-signer.sh"
+                || (c.len() == 40 && c.bytes().all(|b| b.is_ascii_hexdigit()))),
+            "{line:?}"
+        );
+    }
     fs::remove_dir_all(dir).unwrap();
 }
 
