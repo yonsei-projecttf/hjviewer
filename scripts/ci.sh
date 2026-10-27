@@ -1582,7 +1582,7 @@ deploy_offline() {
 # and tools. A pass that skipped nothing keeps the SHA-256 of all that in
 # build/ci/stamps/deploy-<part>.stamp, and the next run with the same prints one line instead of
 # running the part again, not a skip: the part passed with exactly that. HJV_CI_DEPLOY_ALL=1 runs
-# every part.
+# every part. A run of the part that fails or skips a check leaves no stamp.
 deploy_part() { # <part> <title> <inputs> <run> [<argument>...]
   local part=$1 title=$2 inputs=$3 run=$4 stamp="$CI/stamps/deploy-$1.stamp" hash old="" since=""
   local skips=${#SKIPPED[@]}
@@ -1600,10 +1600,12 @@ deploy_part() { # <part> <title> <inputs> <run> [<argument>...]
   else
     echo "runs: no pass of it recorded (build/ci/stamps/deploy-$part.stamp)"
   fi
+  # (gone before the part runs: an older record of the same inputs, HJV_CI_DEPLOY_ALL=1, no longer
+  # says what a run of the part does here once this one fails, whose fail ends the stage at once)
+  rm -f "$stamp"
   "$run" "$@"
-  # a run that skipped a check is no pass (with HJV_CI_STRICT=1 it fails at the end), and an older
-  # record of the same inputs (HJV_CI_DEPLOY_ALL=1) no longer says what a run of the part does here
-  if [ ${#SKIPPED[@]} != "$skips" ]; then rm -f "$stamp"; return 0; fi
+  # a run that skipped a check is no pass (with HJV_CI_STRICT=1 it fails at the end)
+  if [ ${#SKIPPED[@]} != "$skips" ]; then return 0; fi
   # what it read in the end: path A pulls the Caddy image when it is not here
   hash=$(part_hash "$inputs" "$@") || fail "deploy: what the part $part reads (above)"
   mkdir -p "$CI/stamps"

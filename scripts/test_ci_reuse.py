@@ -359,6 +359,41 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
         self.assertIn("\nserver did not pass\n", out)
         self.assertEqual(tree.plan("server:release")["server:release"], ("run", "no pass of it recorded"))
 
+    def test_a_deploy_part_that_did_not_pass_leaves_no_stamp(self):
+        # a part of the deploy stage whose inputs stay the same, each run of it a process of its own as
+        # the deploy stage's: its pass is not run again; run again with HJV_CI_DEPLOY_ALL=1, a failure
+        # (which ends the stage at once) or a skip leaves no stamp of the pass before, and the next run
+        # runs it
+        tree = self.copy("parts")
+        stamp = os.path.join(tree.env["HJV_CI_DIR"], "stamps", "deploy-fake.stamp")
+        script = '''fake_inputs() { echo "the same inputs"; }
+fake_run() {
+  echo "the part runs"
+  case ${PART:-} in
+    fails) fail "a check of the part (a stand-in)" ;;
+    skips) skip "a check of the part (a stand-in)" ;;
+  esac
+}
+deploy_part fake "deploy: a stand-in part" fake_inputs fake_run
+echo "deploy_part returned"'''
+
+        def part(**env):
+            return tree.source(script, env=dict(tree.env, **env), check=False)
+
+        done = part()
+        self.assertIn("runs: no pass of it recorded", done.stdout)
+        self.assertTrue(os.path.isfile(stamp))
+        self.assertIn("\nunchanged since ", part().stdout)
+        for how in ("fails", "skips"):
+            done = part(HJV_CI_DEPLOY_ALL="1", PART=how)
+            self.assertIn("runs: HJV_CI_DEPLOY_ALL=1\nthe part runs\n", done.stdout, how)
+            self.assertEqual(done.returncode, 1 if how == "fails" else 0, how)
+            self.assertFalse(os.path.exists(stamp), how)
+            done = part()
+            self.assertIn("runs: no pass of it recorded", done.stdout, how)
+            self.assertIn("\nthe part runs\n", done.stdout, how)
+            self.assertTrue(os.path.isfile(stamp), how)
+
     def test_a_unit_that_runs_has_its_binaries_built_from_this_trees_inputs(self):
         tree = self.copy("producer")
         ci = tree.env["HJV_CI_DIR"]
