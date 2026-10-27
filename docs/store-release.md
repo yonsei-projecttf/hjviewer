@@ -80,7 +80,7 @@ appstore 1.9.1 <빌드> release - <소스 커밋 40자리> 2026-11-02 store #15
 ```
 
 - **쓰는 곳**: Release record 잡(upload, submit, release가 성공했을 때, contents API로, 다른 실행이 먼저 쓰면 다시 읽고 5번까지). 커밋 메시지에 `[skip ci]`가 붙습니다. 콘솔에서 손으로 한 일은 같은 꼴로 손으로 더합니다.
-- **읽는 곳**: 스토어 실행의 Checks, 빌드 실행의 Android·iOS 잡 첫 단계, `hjv-release policy`(App Store 관문 T3). 주석과 빈 줄 밖의 모든 줄이 `스토어 버전 숫자빌드 동작 …` 꼴이어야 합니다. 빌드 번호는 숫자 1–18자리입니다. 줄은 `\n`에서만 나누고(CRLF 줄 끝의 `\r`은 뺌), 칸은 공백과 탭으로만 나눕니다. 탭 밖의 제어 문자나 U+2028·U+2029가 든 줄은 주석이어도 모르는 줄입니다. 두 읽는 쪽(`scripts/store-record.py`, `tools/hjv-release`)이 같은 규칙으로 읽습니다. 모르는 줄이 있으면 셋 다 멈춥니다. 자리 표시(`<…>`)가 남은 줄을 넣지 않습니다.
+- **읽는 곳**: 스토어 실행의 Checks, 빌드 실행의 Android·iOS 잡 첫 단계, TestFlight 업로드 실행의 첫 단계, `hjv-release policy`(App Store 관문 T3). 주석과 빈 줄 밖의 모든 줄이 `스토어 버전 숫자빌드 동작 …` 꼴이어야 합니다. 빌드 번호는 숫자 1–18자리입니다. 줄은 `\n`에서만 나누고(CRLF 줄 끝의 `\r`은 뺌), 칸은 공백과 탭으로만 나눕니다. 탭 밖의 제어 문자나 U+2028·U+2029가 든 줄은 주석이어도 모르는 줄입니다. 두 읽는 쪽(`scripts/store-record.py`, `tools/hjv-release`)이 같은 규칙으로 읽습니다. 모르는 줄이 있으면 셋 다 멈춥니다. 자리 표시(`<…>`)가 남은 줄을 넣지 않습니다.
 - **규칙은 (스토어, 버전) 단위**입니다. 같은 1.9.0도 Android와 iOS의 빌드 번호가 달랐고, 버전이 갈라지기도 하므로 다른 스토어의 줄로는 거부하지 않습니다.
   - 같은 버전·빌드·동작은 통과합니다(다시 실행).
   - 같은 버전의 다른 빌드, 그 스토어에 기록된 가장 높은 버전보다 낮은 버전은 거부합니다(소유자 규칙: 새 빌드는 더 높은 버전).
@@ -88,19 +88,19 @@ appstore 1.9.1 <빌드> release - <소스 커밋 40자리> 2026-11-02 store #15
   - 빌드 실행은 그 플랫폼의 스토어(android → play, ios → appstore)에 이미 있는 버전이나 그보다 낮은 버전을 빌드하지 않습니다.
 - **appstore 줄의 소스 커밋은 확인한 값이 아닙니다.** 태그 `client-<버전>`의 커밋을 적을 뿐이고, App Store 제출은 빌드를 번호로만 고릅니다(그 빌드가 태그 커밋의 빌드 실행에서 왔는지는 보지 않음). play 줄은 Checks가 빌드 실행의 출처를 확인한 값입니다.
 - after-approval로 Apple이 출시한 버전(둘째 App Store 버전부터)은 release를 돌리지 않으면 release 줄이 생기지 않습니다. status가 `READY_FOR_DISTRIBUTION`을 보이면 `store.yml ios release`를 한 번 돌립니다(이미 출시됨으로 성공하고 줄을 남김).
-- TestFlight의 중복은 기록이 아니라 App Store Connect를 봅니다. iOS 잡의 첫 단계(`asc-store.mjs check-new`, testflight=true일 때)가 그 버전의 빌드가 이미 있으면 멈춥니다.
+- TestFlight의 중복은 기록이 아니라 App Store Connect를 봅니다. TestFlight 업로드 실행(1.9.2부터, 빌드 없이 빌드 실행의 IPA를 올림)의 첫 단계(`asc-store.mjs check-new`)가 그 버전의 빌드가 이미 있으면 멈춥니다.
 
 ## 릴리스마다
 
 | # | Android | iOS | 누가 |
 |---|---|---|---|
 | 0 | 빌드 전: `store/`의 글을 이 버전으로(두 `version.txt`, 두 언어의 `whats_new.txt`, `release_notes.txt`, [store/README.md](../store/README.md)). 소유자가 공개될 글을 확인한 뒤 push. 비공개 `build.yml`·`store.yml`의 고정 SHA를 그 커밋으로(공개 main의 조상인지 `git merge-base --is-ancestor <sha> origin/main`으로 확인) | 같음 | 에이전트 초안, 소유자 확인 |
-| 1 | `build.yml -f platforms=windows` → **Windows 게이트**: 그 실행의 Windows 설치 시험 단계가 성공하고 소유자가 그 설치본을 Windows에서 확인한 것. Android·iOS 빌드는 둘 다 게이트 뒤입니다 | 같음 | 에이전트, 소유자 |
-| 2 | `build.yml -f platforms=android`(Play에 올리지 않음, `-play` AAB는 30일) | `build.yml -f platforms=ios -f testflight=true` | 에이전트 |
+| 1 | `build.yml`(`platforms=all`): Windows·Android·iOS(와 hjv-relay)를 한 실행에서 함께 빌드합니다(2026-10-27 사용자 결정). 이 실행은 아무것도 나눠 주지 않습니다(Play에 올리지 않음, `-play` AAB는 30일) → **Windows 게이트**: 그 실행의 Windows 설치 시험 단계가 성공하고 소유자가 그 설치본을 Windows에서 확인한 것. 나눠 주는 일은 모두 게이트 뒤입니다 | 같은 실행이 서명된 IPA를 산출물로만 남깁니다 | 에이전트, 소유자 |
+| 2 | 게이트 뒤에 따로 할 빌드 없음(1의 APK와 `-play` AAB를 씀) | 게이트 뒤: `build.yml -f platforms=ios -f testflight=true -f testflight_run=<1의 실행 ID>`(빌드 없이 1의 IPA를 TestFlight에 올림, 7일 안) | 에이전트 |
 | 3 | 같은 실행의 APK로 확인(APK 설치본 기기) | `store.yml ios status`로 처리를 본 뒤 TestFlight에서 확인 | 소유자 |
 | 4 | 태그 `client-<버전>`, 산출물을 `build/release-<버전>/`에(스토어 정책을 낼 때까지 지우지 않음) | 같음 | 에이전트 |
 | 5 | 패키지 정책(Windows·APK, 빌드 뒤 7일 안) | ios는 그대로(`--hold ios`). 스토어 항목(android_play, ios)은 늘 스토어 정책(9번)에서 올리고, App Store 제출 중에는 반드시 그대로 | 에이전트 초안, 소유자 서명 |
-| 6 | 전제: 서버에 이 버전의 hjv-api(1.9.1: 계정 삭제)가 돌고 있음([server-runbook.md](server-runbook.md) 9-10). "내보내도 됨" → `store.yml android upload run_id=<2의 실행 ID>` | 같은 전제. "내보내도 됨" → `store.yml ios submit`(첫 제출은 아래) | 소유자 승인, 에이전트 실행 |
+| 6 | 전제: 서버에 이 버전의 hjv-api(1.9.1: 계정 삭제)가 돌고 있음([server-runbook.md](server-runbook.md) 9-10). "내보내도 됨" → `store.yml android upload run_id=<1의 실행 ID>` | 같은 전제. "내보내도 됨" → `store.yml ios submit`(첫 제출은 아래) | 소유자 승인, 에이전트 실행 |
 | 7 | Google 심사(몇 시간–7일) | App Review | — |
 | 8 | `store.yml android status` → `PUBLISHED` | 수동 출시면 `store.yml ios release`. after-approval이면 status가 `READY_FOR_DISTRIBUTION`을 보인 뒤 `store.yml ios release`를 한 번(이미 출시됨으로 성공하고 기록 줄을 남김) | 에이전트 |
 | 9 | 스토어 정책: `--play-live <versionCode>`. 첫 android_play 항목은 `--min android_play=<android의 min>`으로 | 스토어 정책: `--appstore-live <버전>` | 에이전트 초안, 소유자 서명 |
