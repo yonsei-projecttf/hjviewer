@@ -1685,6 +1685,7 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
 
   # (still inside the minute X7b waits out: they restart nothing)
   account_allowlist
+  account_id_rule
 
   log "X7b: hjv-api asks hbbs again and marks the PC needs-relogin; then a login on the PC"
   # with a knock for the PC's sync: a PC started again has no list yet, so it would wait its
@@ -1762,14 +1763,10 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
 
 # The open login of 2026-10-14 (server/api/README.md, Admin): an ID the SSO accepts and nobody
 # imported logs in and is registered, a block logs its devices out and refuses its next login
-# after the SSO, and unblock lets it in again. Then HJViewer's ID rule of the same day (README.md,
-# hbbs and the SSO): an ID that is not a faculty or staff one gets its own answer without an SSO
-# call, and a person the SSO accepts and HJViewer denies gets its own after it. On hjv-ctl2, free
-# since D1, inside the minute that X7b waits out (none of them starts anything again).
+# after the SSO, and unblock lets it in again. On hjv-ctl2, free since D1, inside the minute that
+# X7b waits out (none of them starts anything again).
 account_allowlist() {
   local calls e_wrong blocked_text="이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요."
-  local id_rule_text="연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."
-  local denied_text="이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요."
   log "S28: a portal ID never imported logs in and is registered"
   calls=$(sso_calls)
   run ctl2 --hjv-e2e-login "$CAROL" "$CAROL_PW"
@@ -1813,19 +1810,30 @@ account_allowlist() {
   run ctl2 --hjv-e2e-devices
   want 0 "S30: carol's device list after unblock"
   pass "S30: unblock lets carol in again"
+}
 
+# HJViewer's ID rule of 2026-10-14 (README.md, hbbs and the SSO): an ID that is not a faculty or
+# staff one gets its own answer without an SSO call, and a person the SSO accepts and HJViewer
+# denies gets its own after it. Inside X7b's minute too, on hjv-ctl (alice's): its two denials are
+# first logins of IDs not on the allowlist, which take hjv-api's share of their SSO calls that one
+# address may hold (a quarter of HJV_API_LIMIT_SSO_NEW's 10 an hour). S11's carol took one of
+# hjv-ctl2's (until 2026-10-27 S32 ran on hjv-ctl2 after S31, whose restarts of hjv-api emptied
+# the shares); hjv-ctl's address has taken none.
+account_id_rule() {
+  local calls id_rule_text="연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."
+  local denied_text="이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요."
   log "S32: HJViewer's ID rule: IDs that are not faculty or staff ones are refused before the SSO; a person the SSO accepts and HJViewer denies is told so after it"
   calls=$(sso_calls)
   for id in 1234567890 zatest01 BZTEST01; do
-    run ctl2 --hjv-e2e-login "$id" "$WRONG_PW"
+    run ctl --hjv-e2e-login "$id" "$WRONG_PW"
     want 1 "S32: $id"
     has "login failed: HTTP 403: $id_rule_text" || fail "S32: $id did not get the ID rule's text ($(grep 'login failed' <<<"$OUT"))"
   done
   [ "$(sso_calls)" = "$calls" ] || fail "S32: an ID outside the rule reached the fake SSO"
-  run ctl2 --hjv-e2e-login ZZSSO-DENIED "$WRONG_PW"
+  run ctl --hjv-e2e-login ZZSSO-DENIED "$WRONG_PW"
   want 1 "S32: a person the SSO's user call refuses"
   has "login failed: HTTP 403: $denied_text" || fail "S32: not the denial's text ($(grep 'login failed' <<<"$OUT"))"
-  run ctl2 --hjv-e2e-login ZZSSO-ZA "$WRONG_PW"
+  run ctl --hjv-e2e-login ZZSSO-ZA "$WRONG_PW"
   want 1 "S32: a person whose pcode starts with ZA"
   has "login failed: HTTP 403: $denied_text" || fail "S32: a ZA pcode did not get the denial's text ($(grep 'login failed' <<<"$OUT"))"
   [ "$(sso_calls)" = $((calls + 2)) ] || fail "S32: the denied logins did not reach the fake SSO once each"
@@ -1835,8 +1843,8 @@ account_allowlist() {
     grep -q 'login denied-pcode-rule' "$RUN/report.txt" ||
     fail "S32: the report does not count the refusals by reason: $(grep -c . "$RUN/report.txt") lines"
   grep -qiE '1234567890|zatest01|bztest01|zzsso-denied|zzsso-za' "$RUN/hjv-api.log" && fail "S32: an ID typed in hjv-api's log"
-  run ctl2 --hjv-e2e-devices
-  want 0 "S32: the login of hjv-ctl2 (carol's, S30) after the refused ones"
+  run ctl --hjv-e2e-devices
+  want 0 "S32: the login of hjv-ctl (alice's) after the refused ones"
   pass "S32: a student-like number, ZA and B: 403 '$id_rule_text' without an SSO call; the user call refused and a ZA pcode: 403 '$denied_text' after one SSO call each"
 }
 
