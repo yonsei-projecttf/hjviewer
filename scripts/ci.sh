@@ -251,9 +251,10 @@ cleanup_systemd() {
 
 cleanup() {
   local pid
-  # the jobs still running when the stage stops early
+  # the jobs still running when the stage stops early, and the clean container they may have left
   for pid in "${DEPLOY_JOBS[@]}"; do end_tree "$pid"; done
   DEPLOY_JOBS=()
+  sudo docker rm -f hjv-ci-pkgtest > /dev/null 2>&1 || true
   stop_web
   cleanup_systemd
   # only this script's own project: its containers, network and Caddy volume
@@ -936,10 +937,13 @@ EOF
 # The release package installed the runbook's way in a clean Ubuntu 24.04 (the server's release)
 # with Ubuntu's nginx: binaries and their libraries, the units (systemd-analyze verify), the
 # account API's nginx files in place of the old /api/ block (nginx -t), and hjv-api behind that
-# nginx, started on its socket by systemd-socket-activate as hjviewer-api.socket would.
-check_package_container() { # <release dir> <package name>
+# nginx, started on its socket by systemd-socket-activate as hjviewer-api.socket would. The
+# container shares nothing with the deploy stage's other checks (its own network, the package
+# read-only): it runs beside them as hjv-ci-pkgtest, which cleanup removes, and
+# check_package_container shows and checks its output at the end.
+start_package_container() { # <release dir> <package name>
   local image="${HJV_REGISTRY:-public.ecr.aws/docker/library}/ubuntu:24.04"
-  step "deploy: the release package installed in a clean container ($image)"
+  echo "the release package installed in a clean container ($image), beside the checks below (build/ci/container.log)"
   cat > "$CI/container-test.sh" << 'EOF'
 set -euo pipefail
 name=$1
@@ -1061,10 +1065,14 @@ fi
 nginx -s quit
 echo CONTAINER_OK
 EOF
-  sudo docker run --rm -v "$1:/pkg:ro" -v "$CI/container-test.sh:/test.sh:ro" "$image" bash /test.sh "$2" 2>&1 |
-    tee "$CI/container.log" || fail "the release package in a clean container (build/ci/container.log)"
+  sudo docker rm -f hjv-ci-pkgtest > /dev/null 2>&1 || true
+  deploy_job "$CI/container.log" sudo docker run --rm --name hjv-ci-pkgtest -v "$1:/pkg:ro" \
+    -v "$CI/container-test.sh:/test.sh:ro" "$image" bash /test.sh "$2"
+}
+check_package_container() {
+  step "deploy: the release package installed in a clean container (build/ci/container.log)"
+  show_job "$CI/container.log" "the release package in a clean container (build/ci/container.log)"
   [ "$(tail -n 1 "$CI/container.log")" = CONTAINER_OK ] || fail "the release package in a clean container (build/ci/container.log)"
-  count_skips "$CI/container.log"
 }
 
 # The deploy stage's offline tests, a job beside its checks (deploy_job): the production settings
@@ -1123,6 +1131,41 @@ deploy_stage() {
     skip "hjv-relay's packages (no relay/)"
   fi
   DEPLOY_LOGS=1
+
+  step "deploy B, systemd: the release package (scripts/package-server.sh) without Docker"
+  local rel="$CI/release" pkg unit f api_files=()
+  rm -rf "$rel"
+  HJV_SKIP_SOURCE_CHECK=1 HJV_SERVER_BIN_DIR="$CI/target/release" HJV_API_BIN="$API" \
+    "$ROOT/scripts/package-server.sh" ci "$rel" > "$CI/package.log" 2>&1 ||
+    { tail -n 30 "$CI/package.log"; fail "scripts/package-server.sh"; }
+  [ "$(cat "$rel/SHA256SUMS")" = "$(cd "$rel" && sha256sum hjviewer-server-ci-linux-x86_64.tar.gz)" ] ||
+    fail "release package: SHA256SUMS does not name the package alone"
+  tar -xzf "$rel/hjviewer-server-ci-linux-x86_64.tar.gz" -C "$rel"
+  pkg="$rel/hjviewer-server-ci-linux-x86_64"
+  if [ -d "$ROOT/server/api" ]; then
+    # hjv-api, its units, settings and nginx files; the watch and backup units and the journal
+    # namespace's retention once deploy/ has them
+    api_files=(bin/hjv-api systemd/hjviewer-api.service systemd/hjviewer-api.socket systemd/hjviewer-api.env.example
+      web/nginx-hjviewer-api.conf web/nginx-hjviewer-api-zones.conf)
+    for f in "$ROOT"/deploy/systemd/hjviewer-api-*.service "$ROOT"/deploy/systemd/hjviewer-api-*.timer \
+      "$ROOT/deploy/journald@hjviewer.conf"; do
+      if [ -e "$f" ]; then api_files+=("systemd/$(basename "$f")"); fi
+    done
+  else
+    skip "hjv-api in the release package (no server/api)"
+  fi
+  for f in bin/hbbs bin/hbbr bin/hjv-update-verify.sh systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service systemd/hjviewer.env.example \
+    web/nginx-hjviewer-locations.conf web/nginx-hjviewer.conf web/apache-hjviewer.conf \
+    LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt "${api_files[@]}"; do
+    [ -s "$pkg/$f" ] || fail "release package: no $f"
+  done
+  grep -q 'server/patches' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe the server build"
+  if [ ${#api_files[@]} -gt 0 ]; then
+    grep -q 'server/api' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe hjv-api's build"
+    # a crate of hjv-api's that hbbs and hbbr do not use
+    grep -q '^crypto_box ' "$pkg/THIRD_PARTY_NOTICES.txt" || fail "release package: hjv-api's crates are not in THIRD_PARTY_NOTICES"
+    start_package_container "$rel" hjviewer-server-ci-linux-x86_64
+  fi
 
   step "deploy: copy of this working tree"
   if [ -d "$SRC/deploy" ]; then dc down -v --remove-orphans > /dev/null 2>&1 || true; fi
@@ -1334,44 +1377,12 @@ EOF
   [ "$(curl -s -w ' %{http_code}' --cacert "$CI/caddy-root.crt" -X POST -d '{}' https://localhost:18445/api/heartbeat)" = '{"error":"not found"} 404' ] ||
     fail "Caddy: the rest of /api/ does not answer 404 in JSON"
   check_account_down 18445 "$CI/caddy-root.crt" Caddy
-
-  step "deploy B, systemd: the release package (scripts/package-server.sh) without Docker"
   dc down
-  local rel="$CI/release" pkg unit f api_files=()
-  rm -rf "$rel"
-  HJV_SKIP_SOURCE_CHECK=1 HJV_SERVER_BIN_DIR="$CI/target/release" HJV_API_BIN="$API" \
-    "$ROOT/scripts/package-server.sh" ci "$rel" > "$CI/package.log" 2>&1 ||
-    { tail -n 30 "$CI/package.log"; fail "scripts/package-server.sh"; }
-  [ "$(cat "$rel/SHA256SUMS")" = "$(cd "$rel" && sha256sum hjviewer-server-ci-linux-x86_64.tar.gz)" ] ||
-    fail "release package: SHA256SUMS does not name the package alone"
-  tar -xzf "$rel/hjviewer-server-ci-linux-x86_64.tar.gz" -C "$rel"
-  pkg="$rel/hjviewer-server-ci-linux-x86_64"
-  if [ -d "$ROOT/server/api" ]; then
-    # hjv-api, its units, settings and nginx files; the watch and backup units and the journal
-    # namespace's retention once deploy/ has them
-    api_files=(bin/hjv-api systemd/hjviewer-api.service systemd/hjviewer-api.socket systemd/hjviewer-api.env.example
-      web/nginx-hjviewer-api.conf web/nginx-hjviewer-api-zones.conf)
-    for f in "$ROOT"/deploy/systemd/hjviewer-api-*.service "$ROOT"/deploy/systemd/hjviewer-api-*.timer \
-      "$ROOT/deploy/journald@hjviewer.conf"; do
-      if [ -e "$f" ]; then api_files+=("systemd/$(basename "$f")"); fi
-    done
-  else
-    skip "hjv-api in the release package (no server/api)"
-  fi
-  for f in bin/hbbs bin/hbbr bin/hjv-update-verify.sh systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service systemd/hjviewer.env.example \
-    web/nginx-hjviewer-locations.conf web/nginx-hjviewer.conf web/apache-hjviewer.conf \
-    LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt "${api_files[@]}"; do
-    [ -s "$pkg/$f" ] || fail "release package: no $f"
-  done
-  grep -q 'server/patches' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe the server build"
-  if [ ${#api_files[@]} -gt 0 ]; then
-    grep -q 'server/api' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe hjv-api's build"
-    # a crate of hjv-api's that hbbs and hbbr do not use
-    grep -q '^crypto_box ' "$pkg/THIRD_PARTY_NOTICES.txt" || fail "release package: hjv-api's crates are not in THIRD_PARTY_NOTICES"
-  fi
+
   # Installed as the runbook does, apart from the names that keep it away from a real installation:
   # runtime units hjv-ci-* (in /run, gone at reboot), a dynamic user and directories of its own. The
   # sandbox, limits and commands are those of the shipped units.
+  step "deploy B, systemd: hbbs and hbbr from the package"
   sudo install -d -m 755 /usr/local/lib/hjv-ci/bin /run/hjv-ci
   sudo install -m 755 "$pkg/bin/hbbs" "$pkg/bin/hbbr" /usr/local/lib/hjv-ci/bin/
   sed -e 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' -e 's/^TOTAL_BANDWIDTH=.*/TOTAL_BANDWIDTH=100/' \
@@ -1414,7 +1425,6 @@ EOF
       check_api_env "$HJV_API_ENV_FILE" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
     fi
     check_api_limits "$pkg"
-    check_package_container "$rel" hjviewer-server-ci-linux-x86_64
   fi
 
   # the jobs beside the checks, in the order they started
@@ -1424,6 +1434,7 @@ EOF
     step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
     show_job "$CI/relay-package.log" "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
   fi
+  if [ ${#api_files[@]} -gt 0 ]; then check_package_container; fi
 
   cleanup
   trap - EXIT
