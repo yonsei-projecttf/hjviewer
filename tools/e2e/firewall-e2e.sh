@@ -79,6 +79,11 @@
 # HJV_E2E_HOLD=<seconds> (at most 3600): a run that fails keeps its namespaces, servers and
 # clients up that long, or until $RUN/release exists, before it cleans up, so that the state can
 # be looked at (logs, --hjv-e2e-option through in_ns) without running it again.
+#
+# In strict mode the base path's controller and the sides ver, rev and pc2 hold a relay that is
+# paired for the client's default WebRTC window (2.5 s), as every 443-only network does; the other
+# controller sides get a window of 0.1 s (relay_window), and the run's last check, relay_held,
+# reads every controller's log for both.
 set -euo pipefail
 
 MODE=${1:-strict}
@@ -514,6 +519,7 @@ cat "$RUN/probe.log"
 
 log "controller logs in with the password and forwards 127.0.0.1:9099 to the PC's 127.0.0.1:8099"
 in_ns hjv-ctl ctl "$CLIENT" --hjv-e2e-forward "$ID" "$PASSWORD" 9099 127.0.0.1 8099 >"$RUN/ctl.log" 2>&1 &
+FORWARD=$!
 got=
 for _ in $(seq 30); do
   got=$(in_ns hjv-ctl ctl curl -s --max-time 20 http://127.0.0.1:9099/index.html || true)
@@ -526,8 +532,14 @@ if [ "$got" != "$TOKEN" ]; then
   exit 1
 fi
 echo "page from the PC, fetched through the session: $got"
-# the forward stays up until the end otherwise; the account part opens sessions of its own
+# the forward stays up until the end otherwise; the account part opens sessions of its own, and
+# gives the controller its relay window, which no process of it may still be running for
 sudo ip netns pids hjv-ctl | xargs -r ps -o pid=,args= -p | awk '/--hjv-e2e-forward/ {print $1}' | xargs -r sudo kill 2>/dev/null || true
+for _ in $(seq 50); do
+  [ -e "/proc/$FORWARD" ] || break
+  sleep 0.1
+done
+[ ! -e "/proc/$FORWARD" ] || { echo "FAIL: the forward did not end"; exit 1; }
 
 log "controller opens a remote desktop session and decodes the PC's screen"
 in_ns hjv-ctl ctl "$CLIENT" --hjv-e2e-screenshot "$ID" "$PASSWORD" "$RUN/screen.ppm" >"$RUN/ctl-screen.log" 2>&1 || true
@@ -586,6 +598,72 @@ fail() {
 }
 client_of() { case $1 in pc | pc2) echo "$PC_CLIENT" ;; *) echo "$CLIENT" ;; esac }
 
+# The relay window (E2E-1 of the CI audit, 2026-10-27). Behind strict's firewall a controller's
+# WebRTC offer cannot connect, and the client holds the relay, paired within some 30 ms, for
+# upstream's relay-fallback-delay (RELAY_FALLBACK_DELAY_MS, 2.5 s) before the session starts. That
+# is no security timer, only the time a direct path gets to win. The base path's forward and screen
+# keep the default, the fallback every 443-only network takes; so do ver (the minimum version's
+# refusals), rev (the App Review account's ticket) and pc2 (X4's proof from PC to PC), which run the
+# product's whole hold through those paths, and the PCs, which connect out nowhere else. Every other
+# controller side gets RELAY_WINDOW s (more than 0, which means the default), written to its
+# LocalConfig before its first process starts: a process stores its LocalConfig whole and would put
+# its own copy back. The file relay-window of a side says since when; relay_held checks at the end.
+RELAY_WINDOW=0.1
+RELAY_DEFAULT=" pc pc2 pcb rev ver "
+relay_window() { # <ns> <side> <client>: before each call of a client
+  [ "$MODE" = strict ] && [[ $RELAY_DEFAULT != *" $2 "* ]] && [ ! -e "$RUN/$2/relay-window" ] || return 0
+  mkdir -p "$RUN/$2/home" "$RUN/$2/ipc"
+  in_ns "$1" "$2" "$3" --hjv-e2e-local-option relay-fallback-delay "$RELAY_WINDOW" >/dev/null 2>&1 || true
+  [ "$(local_option "$2" relay-fallback-delay)" = "$RELAY_WINDOW" ] || fail "$2: its relay window did not reach its LocalConfig"
+  date +%s.%N >"$RUN/$2/relay-window"
+}
+# Every controller's log line of a relay connection (client.rs: "<time> used to establish WebSocket
+# connection"): those of a side since its relay window held the paired relay less than 2.4 s, all
+# others at least 2.4 s, the base path's forward and screen among them
+relay_held() {
+  local out
+  out=$(python3 -I -c '
+import datetime, glob, os, re, sys
+run, window = sys.argv[1:3]
+line = re.compile(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ [+-]\d\d:\d\d)\] INFO \[[^]]*\] "
+                  r"([0-9.]+)(ms|s) used to establish WebSocket connection$")
+unit = {"ms": 1e-3, "s": 1.0}
+held, bad = {"default": {}, "window": {}}, []
+for logs in sorted(glob.glob(os.path.join(run, "*", "home", ".local", "share", "logs", "HJViewer", "hjv-e2e"))):
+    side = os.path.relpath(logs, run).split(os.sep)[0]
+    try:
+        since = float(open(os.path.join(run, side, "relay-window")).read())
+    except OSError:
+        since = None
+    for path in sorted(glob.glob(os.path.join(logs, "*.log"))):
+        for text in open(path, encoding="utf-8", errors="replace"):
+            m = line.match(text.rstrip("\n"))
+            if not m:
+                continue
+            at = datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S.%f %z").timestamp()
+            secs = float(m.group(2)) * unit[m.group(3)]
+            kind = "window" if since is not None and at > since else "default"
+            held[kind][side] = held[kind].get(side, 0) + 1
+            if (secs < 2.4) != (kind == "window"):
+                bad.append("%s %.2f s %s" % (side, secs, "in its window" if kind == "window" else "without one"))
+def count(kind):
+    sides = ", ".join("%s %d" % item for item in sorted(held[kind].items()))
+    return "%d (%s)" % (sum(held[kind].values()), sides or "none")
+if bad:
+    print("held the relay as no side should: " + "; ".join(bad))
+elif held["default"].get("ctl", 0) < 2:
+    print("the base path forward and screen are not among the connections that held the default")
+elif glob.glob(os.path.join(run, "*", "relay-window")) and not held["window"]:
+    print("no relay connection in a window that was given")
+else:
+    print("ok %s held the paired relay the default 2.5 s for WebRTC; %s took their side\x27s %s s"
+          % (count("default"), count("window"), window))' "$RUN" "$RELAY_WINDOW")
+  case $out in
+    "ok "*) pass "relay window: ${out#ok }" ;;
+    *) fail "relay window: $out" ;;
+  esac
+}
+
 # <side> [NAME=value...] <args...>: the side's client in its namespace (hjv-<side>). Its standard
 # output is $OUT, its exit code $RC and its run time $MS (ms); both outputs go to $RUN/<side>.out,
 # with the portal passwords masked. Prints the hjv-e2e lines, indented.
@@ -599,6 +677,7 @@ run() {
   for a in "$@"; do
     case "$a" in "$ALICE_PW" | "$BOB_PW" | "$CAROL_PW" | "$WRONG_PW") shown+=("***") ;; *) shown+=("$a") ;; esac
   done
+  relay_window "hjv-$s" "$s" "$(client_of "$s")"
   t0=$(date +%s%N)
   RC=0
   OUT=$(in_ns "hjv-$s" "$s" env "${envs[@]}" "$(client_of "$s")" "$@" 2>"$RUN/$s.err") || RC=$?
@@ -653,6 +732,7 @@ until_ok() { # <seconds> <what> <command...>: retries the command until it succe
 # up, and is ended here (RC 0).
 forward_try() {
   local s=$1 port=$3 fpid
+  relay_window "hjv-$s" "$s" "$(client_of "$s")"
   in_ns "hjv-$s" "$s" "$(client_of "$s")" --hjv-e2e-forward "$PC_ID" "$2" "$port" 127.0.0.1 8099 \
     >"$RUN/$s-forward.out" 2>&1 &
   fpid=$!
@@ -867,6 +947,7 @@ bg_start() {
     shift
   done
   mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
+  relay_window "$ns" "$side" "$client"
   in_ns "$ns" "$side" timeout -k 5 "$BG_LIMIT" env "${envs[@]}" "$client" "$@" >"$RUN/$tag.bg" 2>&1 &
   BG_PID[$tag]=$!
 }
@@ -1764,6 +1845,7 @@ arun() {
   # (EL4 calls it in the account part, which runs without the access part's passwords too)
   for p in "$PASSWORD" "$ALICE_PW" "${GUEST_PW:-}" "${WRONG_GUEST_PW:-}" "${REVIEW_PW:-}"; do line=${line//"$p"/***}; done
   mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
+  relay_window "$ns" "$side" "$client"
   t0=$(date +%s%N)
   RC=0
   OUT=$(in_ns "$ns" "$side" timeout -k 5 30 env "${envs[@]}" "$client" "$@" 2>"$RUN/$side.err") || RC=$?
@@ -2482,6 +2564,7 @@ vrun() {
     if [ "$a" = "$PASSWORD" ]; then shown+=("***"); else shown+=("$a"); fi
   done
   mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
+  relay_window hjv-ctl "$side" "$client"
   t0=$(date +%s%N)
   RC=0
   OUT=$(in_ns hjv-ctl "$side" timeout -k 5 30 "$client" "$@" 2>"$RUN/$side.err") || RC=$?
@@ -2674,6 +2757,10 @@ if [ -n "$POLICY" ]; then
   policy_part
 elif [ -n "$KEYED" ]; then
   echo "skipped: V5-V7 and V9, the version policy (no HJV_RELEASE, tools/hjv-release to sign its test policies)"
+fi
+if [ "$MODE" = strict ]; then
+  log "relay window: the relay connections' hold for WebRTC"
+  relay_held
 fi
 
 log "what hbbs saw"

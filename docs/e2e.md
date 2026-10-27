@@ -30,6 +30,8 @@
 
 `open`에서는 호스트가 두 네임스페이스 사이의 UDP를 넘겨줘야 합니다. Docker가 깔린 호스트는 iptables `FORWARD` 정책이 DROP이라 이 UDP가 버려지고, 세션은 조용히 중계로 붙습니다. 그래서 스크립트는 `open`으로 도는 동안 두 veth 사이의 UDP만 허용하는 `FORWARD` 규칙 둘을 넣고, 끝나면 지웁니다.
 
+**strict의 중계 대기**(2026-10-27부터): `strict`에서는 UDP가 막혀 컨트롤러의 WebRTC 제안이 이어질 수 없는데도, 클라이언트는 30밀리초쯤 만에 짝이 맺어진 중계를 upstream의 `relay-fallback-delay`(기본 2.5초, `client.rs`의 `RELAY_FALLBACK_DELAY_MS`) 동안 붙잡았다가 세션을 시작합니다. 보안 타이머가 아니라 직접 경로가 이길 기회를 주는 시간입니다. 스크립트는 처음 단계의 포트 포워딩과 화면, 그리고 `ver`(최소 버전의 거절), `rev`(심사 계정의 출입증), `pc2`(X4의 PC → PC 증명) 쪽은 기본값 그대로 둡니다. 443만 열린 네트워크의 사용자가 겪는 대기를 그 경로들로 그대로 지납니다. 나머지 컨트롤러 쪽에는 그 쪽의 첫 프로세스가 뜨기 전에 LocalConfig에 0.1초를 씁니다(`--hjv-e2e-local-option relay-fallback-delay 0.1`. 0이나 빈 값은 기본값이라는 뜻). 실행 중인 프로세스는 LocalConfig를 통째로 저장해 자기 사본으로 덮으므로, 그 쪽의 프로세스가 하나도 없을 때만 씁니다. 실행 끝에 모든 컨트롤러 로그의 `… used to establish WebSocket connection` 줄을 모아, 0.1초를 받은 쪽의 연결은 2.4초 미만, 나머지(처음 단계의 둘 포함)는 2.4초 이상인지 봅니다(`relay window` PASS 줄). `open`에서는 어느 쪽에도 쓰지 않습니다(WebRTC가 이겨야 S21이 통과). 그래서 이날부터 계정 단계와 출입 제한 단계의 연결 시간(아래 표의 T0 3.6초, S8 2.6초 같은 것)은 2.4초쯤 짧고, B(= T0 + 2초)도 그만큼 작습니다. 한 실행에 80개쯤인 연결의 대기만 줄어 strict가 3분쯤 짧아집니다.
+
 ## 실행
 
 개발 PC에서는 먼저 `scripts/ci.sh server`로 서버(hbbs, hbbr)와 `hjv-probe`를 빌드합니다. 그다음 `scripts/ci.sh e2e`가 나머지를 합니다(sudo가 비밀번호 없이 되어야 함, [ci.md](ci.md)). 서버가 빌드되어 있지 않으면 `scripts/ci.sh server`를 먼저 하라고 하며 멈춥니다.
