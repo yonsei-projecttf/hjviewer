@@ -272,6 +272,11 @@ jobs:
       BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
       CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
       FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
+    # for the run summary
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
+      bridge_cache: ${{ steps.bridge-out.outputs.cache-hit }}
     steps:
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -328,11 +333,15 @@ jobs:
       # key and its fallback, and the image's own stable Rust changes with the image, which GitHub
       # does not roll out at once (GHA-01 of the 2026-10-27 CI audit: 1.9.1's Windows and Android
       # builds found no cache). With a rustup directory of the job's own, rustup knows the pinned
-      # toolchain only. The same in every job that builds Rust.
-      - name: Give rustup a directory of this job's own
+      # toolchain only. The same in every job that builds Rust, which also hands the runner image to
+      # the run summary.
+      - name: Runner image and rustup directory
+        id: image
         if: steps.bridge-out.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
-        run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       # bridge.yml L61-70
       - name: Install Rust toolchain
@@ -343,7 +352,8 @@ jobs:
           targets: x86_64-unknown-linux-gnu
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         if: steps.bridge-out.outputs.cache-hit != 'true'
         with:
           prefix-key: bridge-ubuntu-22.04
@@ -529,6 +539,12 @@ jobs:
         working-directory: upstream/rustdesk
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+    # for the run summary
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
+      vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}
+      vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}
     steps:
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -606,10 +622,13 @@ jobs:
           fi
 
       # Not upstream: as in the Bridge codegen job
-      - name: Give rustup a directory of this job's own
+      - name: Runner image and rustup directory
+        id: image
         shell: bash
         working-directory: ${{ github.workspace }}
-        run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       # L240-249
       - name: Install Rust toolchain
@@ -619,7 +638,8 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: windows-2022
           workspaces: upstream/rustdesk -> target
@@ -1046,6 +1066,13 @@ jobs:
       ANDROID_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
       CARGO_NDK_VERSION: "3.1.2" # L24
+    # for the run summary
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
+      vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}
+      vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}
+      disk_free: ${{ steps.disk.outputs.free }}
     steps:
       # Not upstream. The first steps, before any third-party build code (auto-deploy design 2-2):
       # the release record of the repository that runs this (store-releases.txt, design 3-8) must
@@ -1284,9 +1311,12 @@ jobs:
           path: upstream/rustdesk
 
       # Not upstream: as in the Bridge codegen job
-      - name: Give rustup a directory of this job's own
+      - name: Runner image and rustup directory
+        id: image
         working-directory: ${{ github.workspace }}
-        run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -1296,7 +1326,8 @@ jobs:
 
       # upstream's prefix-key is rustdesk-lib-cache-android, with "TODO: drop '-android' part after
       # caches are invalidated": done here, where the rustup directory above gave new keys anyway
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: rustdesk-lib-cache
           key: aarch64-linux-android
@@ -1677,6 +1708,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: rm -f "$RUNNER_TEMP/play-upload.keystore" upstream/rustdesk/signed-apk/signingKey.jks
 
+      # Not in upstream (GHA-15 of the 2026-10-27 CI audit): what the job leaves of the disk, for the
+      # run summary. Whether "Free Disk Space" can go shows only over runs, a run that builds the
+      # vcpkg packages again needing the most.
+      - name: Disk space left
+        id: disk
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          df -h /
+          echo "free=$(df -h --output=avail / | tail -n 1 | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
   # upstream: L624-743 (build-rustdesk-ios), matrix entry L633-638. Dropped: the liblibrustdesk.a
   # upload (L715-719). Upstream only builds `flutter build ipa --release --no-codesign` (L721-727);
   # with the signing secrets this job archives with manual signing and exports an IPA instead,
@@ -1699,6 +1741,12 @@ jobs:
       # public repository are public. A public run builds the unsigned IPA.
       IOS_SIGNING: ${{ github.event.repository.private && secrets.IOS_DIST_CERT_P12_BASE64 != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+    # for the run summary
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
+      vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}
+      vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}
     steps:
       # Not upstream. The first steps, before any third-party build code (auto-deploy design 2-2):
       # the release record of the repository that runs this (store-releases.txt, design 3-8) must
@@ -1865,9 +1913,12 @@ jobs:
           key: ${{ steps.vcpkg-fp.outputs.key }}
 
       # Not upstream: as in the Bridge codegen job
-      - name: Give rustup a directory of this job's own
+      - name: Runner image and rustup directory
+        id: image
         working-directory: ${{ github.workspace }}
-        run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       # L692-713
       - name: Install Rust toolchain
@@ -1877,7 +1928,8 @@ jobs:
           targets: aarch64-apple-ios
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: rustdesk-lib-cache-ios
           key: aarch64-apple-ios
@@ -2363,3 +2415,37 @@ jobs:
           gh release create "$tag" -R "$GITHUB_REPOSITORY" --draft --title "hjv-relay $VERSION" \
             --notes-file "$notes" relay/*.tar.gz relay/SHA256SUMS
           echo "Draft release $tag: publish it after the checks (docs/ci.md)." >> "$GITHUB_STEP_SUMMARY"
+
+  # Not in upstream (GHA-09 of the 2026-10-27 CI audit). What the run took and what its caches gave,
+  # on the run's page: every job's and step's minutes from the jobs API, and the runner images and
+  # cache results the jobs hand on as outputs (scripts/run-summary.py, which also reads a finished
+  # run from the development machine). It never fails the run: the release tool takes successful
+  # runs only.
+  summary:
+    name: Run summary
+    needs: [preflight, generate-bridge, dart-tests, windows, android, ios, testflight, relay, relay-release]
+    if: ${{ !cancelled() }}
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out the summary script
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.preflight.outputs.source_sha || inputs.source_ref || github.sha }}
+          sparse-checkout: |
+            scripts/run-summary.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Write the run summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.json"
+          python3 -I scripts/run-summary.py "$RUNNER_TEMP/jobs.json" >> "$GITHUB_STEP_SUMMARY"

@@ -9,14 +9,24 @@ every checkout of this file's own repository and commit without credentials, the
 `store` and the secrets in the play and appstore jobs alone (by name, never inherit), status out
 of the editing jobs' concurrency groups. client-build.yml: no Google Play job, play refused, the
 -play bundle kept 30 days, the release checks before any third-party build step, and the TestFlight
-upload a job of its own that builds nothing and takes the IPA of a checked, finished build run.
+upload a job of its own that builds nothing and takes the IPA of a checked, finished build run. The
+run summary (scripts/run-summary.py, RunSummaryTest) never fails a run.
 """
+import importlib.util
+import io
+import json
 import os
 import re
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
+
+_spec = importlib.util.spec_from_file_location("run_summary", os.path.join(ROOT, "scripts", "run-summary.py"))
+rs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(rs)
 SHA_PIN = re.compile(r"uses: [\w./-]+@[0-9a-f]{40}(?: #.*)?$")
 
 
@@ -334,6 +344,109 @@ class ClientBuildWorkflowTest(unittest.TestCase):
         for build in ("windows", "android", "ios"):
             self.assertNotIn("altool", "\n".join(self.jobs[build]), build)
         self.assertEqual(key(self.jobs["ios"], "needs"), "[preflight, generate-bridge]")
+
+
+    def test_the_run_summary_never_fails_the_run(self):
+        """GHA-09: the release tool takes successful runs only, so the summary may not fail one."""
+        job = self.jobs["summary"]
+        self.assertEqual(key(job, "continue-on-error"), "true")
+        self.assertEqual(key(job, "if"), "${{ !cancelled() }}")
+        self.assertEqual(block(job, "permissions"), ["contents: read", "actions: read"])
+        needs = key(job, "needs").strip("[]").split(", ")
+        self.assertEqual(sorted(needs), sorted(set(self.jobs) - {"summary"}))
+        (write,) = [s for s in steps(job) if name_of(s) == "Write the run summary"]
+        self.assertIn("NEEDS: ${{ toJSON(needs) }}", write)
+        self.assertIn("scripts/run-summary.py", write)
+        self.assertIn(">> \"$GITHUB_STEP_SUMMARY\"", write)
+        # what the summary reads: every Rust job's image and cache, the vcpkg jobs' packages
+        for build in ("generate-bridge", "windows", "android", "ios"):
+            outputs = block(self.jobs[build], "outputs")
+            self.assertIn("image: ${{ steps.image.outputs.image }}", outputs, build)
+            self.assertIn("rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}", outputs, build)
+            if build != "generate-bridge":
+                self.assertIn("vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}", outputs, build)
+                self.assertIn("vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}", outputs, build)
+            (image,) = [s for s in steps(self.jobs[build]) if name_of(s) == "Runner image and rustup directory"]
+            self.assertIn('echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"', image)
+            names = [name_of(s) for s in steps(self.jobs[build])]
+            self.assertEqual(names.index("Install Rust toolchain"), names.index("Runner image and rustup directory") + 1, build)
+
+
+class RunSummaryTest(unittest.TestCase):
+    """scripts/run-summary.py on answers of the jobs API, cut down to the fields it reads."""
+
+    JOBS = [
+        {"name": "client / Checks", "status": "completed", "conclusion": "success", "labels": ["ubuntu-24.04"],
+         "created_at": "2026-10-26T15:03:30Z", "started_at": "2026-10-26T15:03:40Z",
+         "completed_at": "2026-10-26T15:04:10Z",
+         "steps": [{"name": "Set up job", "status": "completed", "conclusion": "success",
+                    "started_at": "2026-10-26T15:03:40Z", "completed_at": "2026-10-26T15:03:43Z"},
+                   {"name": "Check the Google Play input", "status": "completed", "conclusion": "skipped",
+                    "started_at": "2026-10-26T15:03:44Z", "completed_at": "2026-10-26T15:03:44Z"}]},
+        {"name": "client / Windows x64", "status": "completed", "conclusion": "success", "labels": ["windows-2022"],
+         "created_at": "2026-10-26T15:04:12Z", "started_at": "2026-10-26T15:04:18Z",
+         "completed_at": "2026-10-26T15:31:18Z",
+         "steps": [{"name": "Build rustdesk", "status": "completed", "conclusion": "success",
+                    "started_at": "2026-10-26T15:12:00Z", "completed_at": "2026-10-26T15:24:30Z"},
+                   {"name": "Build rustdesk lib | x", "status": "completed", "conclusion": "success",
+                    "started_at": "2026-10-26T15:24:30Z", "completed_at": "2026-10-26T15:25:00Z"}]},
+        {"name": "client / Run summary", "status": "in_progress", "conclusion": None, "labels": ["ubuntu-24.04"],
+         "created_at": "2026-10-26T15:31:20Z", "started_at": "2026-10-26T15:31:25Z", "completed_at": None,
+         "steps": []},
+    ]
+    NEEDS = {
+        "windows": {"result": "success", "outputs": {"image": "win22 20261022.344", "rust_cache": "true",
+                                                     "vcpkg_restored": "16", "vcpkg_packages": "16"}},
+        "generate-bridge": {"result": "success", "outputs": {"image": "", "rust_cache": "", "bridge_cache": "true"}},
+        "android": {"result": "success", "outputs": {"image": "ubuntu24 20261012.334", "rust_cache": "false",
+                                                     "vcpkg_restored": "0", "vcpkg_packages": "26",
+                                                     "disk_free": "21G"}},
+        "relay": {"result": "skipped", "outputs": {}},
+    }
+
+    def summary(self, text, needs=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "jobs.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            out = io.StringIO()
+            env = {} if needs is None else {"NEEDS": json.dumps(needs)}
+            with redirect_stdout(out):
+                code = rs.main([path], env)
+        return code, out.getvalue()
+
+    def test_times_of_the_jobs_and_their_steps(self):
+        # gh --jq prints one job after another; the API's pages work as well
+        for text in ("\n".join(json.dumps(j, indent=1) for j in self.JOBS), json.dumps({"jobs": self.JOBS})):
+            code, out = self.summary(text)
+            self.assertEqual(code, 0)
+            self.assertIn("From the first job's start to the last job's end: 27.8 minutes.", out)
+            self.assertIn("| client / Checks | success | 0.2 | 0.5 | ubuntu-24.04 |", out)
+            self.assertIn("| client / Windows x64 | success | 0.8 | 27.0 | windows-2022 |", out)
+            self.assertIn("| client / Run summary | in progress | 27.9 |  | ubuntu-24.04 |", out)
+            self.assertIn("<details><summary>Steps of client / Windows x64 (27.0 minutes)</summary>", out)
+            self.assertIn("| Build rustdesk | success | 12.5 |", out)
+            # names as they are, never matched by prefix; a separator in one stays in its cell
+            self.assertIn("| Build rustdesk lib \\| x | success | 0.5 |", out)
+            # skipped steps make no line
+            self.assertNotIn("Check the Google Play input", out)
+            self.assertNotIn("Runner images and caches", out)
+
+    def test_images_and_caches_from_the_jobs_outputs(self):
+        code, out = self.summary(json.dumps(self.JOBS[0]), self.NEEDS)
+        self.assertEqual(code, 0)
+        self.assertIn("| windows | win22 20261022.344 | hit | 16 of 16 |  |", out)
+        self.assertIn("| android | ubuntu24 20261012.334 | miss or fallback | 0 of 26 | disk left 21G |", out)
+        self.assertIn("| generate-bridge |  |  |  | bridge files from the cache |", out)
+        self.assertNotIn("| relay |", out)
+
+    def test_what_it_cannot_read_becomes_a_line(self):
+        code, out = self.summary("{not json", {"windows": {"outputs": {"image": "x"}}})
+        self.assertEqual(code, 0)
+        self.assertIn("The run's jobs could not be read", out)
+        self.assertIn("| windows | x |", out)
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            self.assertEqual(rs.main([os.path.join(tmp, "missing.json")], {"NEEDS": "not json"}), 0)
 
 
 if __name__ == "__main__":
