@@ -255,10 +255,23 @@ cleanup() {
   return 0
 }
 
+# Runs <command...> until it succeeds, five times a second for up to <seconds>: a server that is up
+# a moment later costs that moment, not a whole second
 wait_for() { # <seconds> <command...>
   local n=$1; shift
-  for _ in $(seq "$n"); do "$@" > /dev/null 2>&1 && return 0; sleep 1; done
+  for _ in $(seq $((n * 5))); do "$@" > /dev/null 2>&1 && return 0; sleep 0.2; done
   return 1
+}
+
+# hbbs's and hbbr's listeners, each once: TCP 21115-21119 and UDP 21116
+listeners() { ss -Hltnu '( sport >= :21115 and sport <= :21119 )' | awk '{print $1, $5}' | sort -u; }
+listening() { [ "$(listeners | wc -l)" -ge 6 ]; }
+# Waits for all six, and half a second more, in which a late one would still show; the list goes to
+# build/ci/listen.txt for the checks (exactly six, all on 127.0.0.1)
+wait_listeners() {
+  wait_for 10 listening || true
+  sleep 0.5
+  listeners | tee "$CI/listen.txt"
 }
 
 # A server on 127.0.0.1:18599 that answers with the address headers it got, for check_headers, and
@@ -1072,8 +1085,7 @@ deploy_stage() {
   dc build > "$CI/build.log" 2>&1 || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
   dc up -d
   wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
-  sleep 2
-  ss -Hltnu '( sport >= :21115 and sport <= :21119 )' | awk '{print $1, $5}' | sort -u | tee "$CI/listen.txt"
+  wait_listeners
   [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "expected TCP 21115-21119 and UDP 21116"
   if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "hbbs/hbbr listen beyond 127.0.0.1"; fi
   check_stack
@@ -1301,8 +1313,7 @@ EOF
   sudo systemctl start hjv-ci-hbbs hjv-ci-hbbr || fail "systemd: the units did not start"
   wait_for 15 sudo test -s /var/lib/hjv-ci/id_ed25519.pub || fail "systemd: hbbs wrote no key"
   wait_for 15 systemctl is-active --quiet hjv-ci-hbbr || fail "systemd: hbbr is not running"
-  sleep 2
-  ss -Hltnu '( sport >= :21115 and sport <= :21119 )' | awk '{print $1, $5}' | sort -u | tee "$CI/listen.txt"
+  wait_listeners
   [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "systemd: expected TCP 21115-21119 and UDP 21116"
   if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "systemd: hbbs/hbbr listen beyond 127.0.0.1"; fi
   check_systemd
