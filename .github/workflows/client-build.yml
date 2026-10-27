@@ -553,13 +553,32 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: true # GHA-10, see the top of this file
 
+      # Not upstream (GHA-06 of the 2026-10-27 CI audit). vcpkg hashes the compiler and PowerShell
+      # into every package's ABI: 1.9.1's build ran on an image with a newer Visual Studio
+      # (17.14.37806.7) and PowerShell (7.6.8) and built all 16 packages again (17.8 minutes), and
+      # the prune step below then drops the older image's packages. With both versions in the key,
+      # each image keeps its own entry, and a job that lands on the older image again, as GitHub
+      # serves both for days during a rollout, finds its packages; a new image falls back to the
+      # latest entry.
+      - name: Read the image's compiler and PowerShell versions
+        id: vcpkg-tools
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = if (Test-Path $vswhere) { & $vswhere -latest -property installationVersion } else { 'unknown' }
+          "Visual Studio $vs, PowerShell $($PSVersionTable.PSVersion)"
+          "key=vs$vs-pwsh$($PSVersionTable.PSVersion)" >> $env:GITHUB_OUTPUT
+
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
         with:
           path: vcpkg-bincache
-          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-
-          restore-keys: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-
+          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-${{ steps.vcpkg-tools.outputs.key }}-
+          restore-keys: |
+            vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-${{ steps.vcpkg-tools.outputs.key }}-
+            vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-
 
       # L258-276
       - name: Install vcpkg dependencies
@@ -567,6 +586,8 @@ jobs:
           VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         run: |
           mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          # Not upstream: the packages the cache gave, which the next step counts
+          find "$GITHUB_WORKSPACE/vcpkg-bincache" -name '*.zip' > "$RUNNER_TEMP/vcpkg-restored.txt"
           if ! "$VCPKG_ROOT/vcpkg" \
             install \
             --triplet x64-windows-static \
@@ -593,6 +614,20 @@ jobs:
             grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
           done
           echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+          # GHA-06 of the 2026-10-27 CI audit: how many packages came from the cache, and what
+          # vcpkg hashed into their ABIs, to compare with another run's log when every package was
+          # built again. What all ports share (triplet_abi with the compiler's hash, cmake and on
+          # Windows powershell) shows in a port of scripts only, e.g. vcpkg-cmake-config.
+          restored=$(sed 's|.*/||; s|\.zip$||' "$RUNNER_TEMP/vcpkg-restored.txt" | grep -cxF "$abis" || true)
+          packages=$(grep -c . <<< "$abis")
+          echo "vcpkg: $restored of $packages packages from the cache"
+          { echo "restored=$restored"; echo "packages=$packages"; } >> "$GITHUB_OUTPUT"
+          echo "::group::What vcpkg hashed into each package's ABI (installed/*/share/*/vcpkg_abi_info.txt)"
+          for f in "$VCPKG_ROOT"/installed/*/share/*/vcpkg_abi_info.txt; do
+            echo "== ${f#"$VCPKG_ROOT"/installed/}"
+            cat "$f"
+          done
+          echo "::endgroup::"
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
@@ -1045,6 +1080,8 @@ jobs:
       - name: Install vcpkg dependencies
         run: |
           mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          # Not upstream: the packages the cache gave, which the next step counts
+          find "$GITHUB_WORKSPACE/vcpkg-bincache" -name '*.zip' > "$RUNNER_TEMP/vcpkg-restored.txt"
           ANDROID_TARGET=arm64-v8a
           if ! ./flutter/build_android_deps.sh "${ANDROID_TARGET}"; then
             find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
@@ -1067,6 +1104,20 @@ jobs:
             grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
           done
           echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+          # GHA-06 of the 2026-10-27 CI audit: how many packages came from the cache, and what
+          # vcpkg hashed into their ABIs, to compare with another run's log when every package was
+          # built again. What all ports share (triplet_abi with the compiler's hash, cmake and on
+          # Windows powershell) shows in a port of scripts only, e.g. vcpkg-cmake-config.
+          restored=$(sed 's|.*/||; s|\.zip$||' "$RUNNER_TEMP/vcpkg-restored.txt" | grep -cxF "$abis" || true)
+          packages=$(grep -c . <<< "$abis")
+          echo "vcpkg: $restored of $packages packages from the cache"
+          { echo "restored=$restored"; echo "packages=$packages"; } >> "$GITHUB_OUTPUT"
+          echo "::group::What vcpkg hashed into each package's ABI (installed/*/share/*/vcpkg_abi_info.txt)"
+          for f in "$VCPKG_ROOT"/installed/*/share/*/vcpkg_abi_info.txt; do
+            echo "== ${f#"$VCPKG_ROOT"/installed/}"
+            cat "$f"
+          done
+          echo "::endgroup::"
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
@@ -1640,6 +1691,8 @@ jobs:
       - name: Install vcpkg dependencies
         run: |
           mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          # Not upstream: the packages the cache gave, which the next step counts
+          find "$GITHUB_WORKSPACE/vcpkg-bincache" -name '*.zip' > "$RUNNER_TEMP/vcpkg-restored.txt"
           if ! "$VCPKG_ROOT/vcpkg" \
             install \
             --triplet arm64-ios \
@@ -1665,6 +1718,20 @@ jobs:
             grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
           done
           echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+          # GHA-06 of the 2026-10-27 CI audit: how many packages came from the cache, and what
+          # vcpkg hashed into their ABIs, to compare with another run's log when every package was
+          # built again. What all ports share (triplet_abi with the compiler's hash, cmake and on
+          # Windows powershell) shows in a port of scripts only, e.g. vcpkg-cmake-config.
+          restored=$(sed 's|.*/||; s|\.zip$||' "$RUNNER_TEMP/vcpkg-restored.txt" | grep -cxF "$abis" || true)
+          packages=$(grep -c . <<< "$abis")
+          echo "vcpkg: $restored of $packages packages from the cache"
+          { echo "restored=$restored"; echo "packages=$packages"; } >> "$GITHUB_OUTPUT"
+          echo "::group::What vcpkg hashed into each package's ABI (installed/*/share/*/vcpkg_abi_info.txt)"
+          for f in "$VCPKG_ROOT"/installed/*/share/*/vcpkg_abi_info.txt; do
+            echo "== ${f#"$VCPKG_ROOT"/installed/}"
+            cat "$f"
+          done
+          echo "::endgroup::"
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
