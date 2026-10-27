@@ -7,7 +7,7 @@
 # EXIT line, of a run cut off or still running, counts without its time). Since the jobs of a run go
 # side by side, those times add up to more than the run took: its own time is the line "prepush:
 # passed, <seconds> s" of its summary.txt, added up last. Then the steps that took the most time in
-# all, by the folders' times.tsv (which runs before 2026-10-27 do not have).
+# all, by the folders' times.tsv (a run of a scripts/ci.sh older than these two files has neither).
 #   scripts/ci-times.sh [<prepush log folder>...]   every folder of the CI directory (HJV_CI_DIR,
 #                                                   default build/ci) when none is named
 #   scripts/ci-times.sh build/ci/prepush/20261026-*   the runs of a day
@@ -25,10 +25,13 @@ for dir in "$@"; do
   [ -d "$dir" ] || { echo "ci-times: $dir is no folder" >&2; exit 1; }
   folders=$((folders + 1))
   [ ! -f "$dir/times.tsv" ] || tsv+=("$dir/times.tsv")
-  # (the folder of a run before 2026-10-27 has no summary.txt)
+  # (the folder of a run of a scripts/ci.sh older than summary.txt has none)
   secs=$(sed -n 's/^prepush: passed, \([0-9]*\) s.*/\1/p' "$dir/summary.txt" 2> /dev/null | tail -n 1 || true)
   if [ -n "$secs" ]; then passed=$((passed + 1)) wall=$((wall + secs)); fi
   for log in "$dir"/*.log; do
+    # (no log at all, and the pattern stays as it is: a prepush that stopped before its first
+    # unit, as at a held lock or a failed preflight)
+    [ -e "$log" ] || continue
     # a stage's log starts with its head; the deploy stage's side logs (deploy-build.log ...) do not
     start=$(sed -n 's/^START //p' "$log" 2> /dev/null | head -n 1)
     [ -n "$start" ] || continue

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Tests of scripts/ci.sh's reuse of strict passes (prepush's plan, its inputs, records and the
-evidence they take), of its lock and of how prepush stops its jobs, on throwaway copies of this tree
-and CI directories (scripts/ci.sh leak runs them):
+evidence they take), of its lock, of how prepush stops its jobs and of what scripts/ci-times.sh adds
+up from prepush's log folders, on throwaway copies of this tree and CI directories (scripts/ci.sh
+leak runs them):
 
     python3 -I -B -m unittest discover -s scripts -p 'test_ci_reuse.py'
 """
@@ -893,6 +894,43 @@ sleep 30''', stdout=write)
             self.assertEqual(f.read(), "screen started\nscreen ended\n")
         with open(os.path.join(self.tmp, "summary.txt"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "prepush: SIGINT: waiting up to 120 s for screen to end, cleaning up\n")
+
+
+class TimesTest(unittest.TestCase):
+    """scripts/ci-times.sh on prepush log folders of its own"""
+
+    def test_every_folder_counts_also_one_without_a_summary_or_any_log(self):
+        tmp = tempfile.mkdtemp(prefix="hjv-times-")
+        try:
+            prepush = os.path.join(tmp, "ci", "prepush")
+            folders = {
+                # a run that passed
+                "20261027-100000-aaaaaaa": {
+                    "leak.log": "LOG scripts/ci.sh leak (prepush)\nSTART 2026-10-27 10:00:00 +0900\n"
+                                "== CI passed: leak (0 skipped)\nEXIT 0 2026-10-27 10:00:30 +0900\n",
+                    "summary.txt": "prepush: leak on C\nprepush: passed, 32 s, 0 of 0 units reused\n",
+                    "times.tsv": "leak\t25\tleak: tests\n"},
+                # a run of a scripts/ci.sh older than summary.txt and times.tsv
+                "20261027-110000-bbbbbbb": {"e2e.log": "START 2026-10-27 11:00:00 +0900\nEXIT 0 2026-10-27 11:10:00 +0900\n"},
+                # a prepush that stopped before its first unit (a held lock): no log at all
+                "20261027-120000-ccccccc": {"summary.txt": "prepush: server:release on C\n", "times.tsv": ""},
+            }
+            for folder, files in folders.items():
+                os.makedirs(os.path.join(prepush, folder))
+                for name, text in files.items():
+                    with open(os.path.join(prepush, folder, name), "w", encoding="utf-8") as f:
+                        f.write(text)
+            # every folder of the CI directory, then the folders named
+            for named in ([], [os.path.join(prepush, folder) for folder in reversed(list(folders))]):
+                done = subprocess.run(["bash", os.path.join(HERE, "ci-times.sh"), *named],
+                                      env=clean_env(os.path.join(tmp, "ci")), capture_output=True, text=True)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn("3 folders, 2 stage logs (0 without an EXIT line)\n", done.stdout)
+                self.assertRegex(done.stdout, r"\ne2e +1 +1 +0 +600 +10\.0\n")
+                self.assertIn("the 1 runs that passed took 32 s (0.5 min) from start to end\n", done.stdout)
+                self.assertRegex(done.stdout, r"\n +25 s +1 runs  leak: tests\n")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
