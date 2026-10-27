@@ -259,6 +259,21 @@ echo "functions $(declare -F | wc -l)"
                           os.path.join(inputs, unit + ".txt"), env=env).stdout
         return out
 
+    def record_passes(self, tree, *units):
+        """A pass of each of <units> (pass_log) recorded, on the inputs of one scripts/ci.sh inputs."""
+        inputs = tempfile.mkdtemp(dir=self.tmp)
+        tree.ci("inputs", inputs, *units)
+        for unit in units:
+            self.pass_log(tree, unit)
+        tree.source('d=$1\nshift\nfor u in "$@"; do reuse_record "$u" "$CI/${u//:/-}.log" "$d/$u.txt" "$(git rev-parse HEAD)"; done',
+                    inputs, *units)
+
+    def recorded(self, tree):
+        """The units with a recorded pass in the tree's CI directory."""
+        passes = os.path.join(tree.env["HJV_CI_DIR"], "passes")
+        return sorted(u for u in (os.listdir(passes) if os.path.isdir(passes) else ())
+                      if any(f.endswith(".pass") for f in os.listdir(os.path.join(passes, u))))
+
     def test_only_a_strict_clean_pass_without_skips_is_recorded(self):
         tree = self.copy("records")
         passes = os.path.join(tree.env["HJV_CI_DIR"], "passes", "server:release")
@@ -359,6 +374,73 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
         self.assertIn("\nserver did not pass\n", out)
         self.assertEqual(tree.plan("server:release")["server:release"], ("run", "no pass of it recorded"))
 
+    def test_a_run_of_its_own_that_did_not_pass_forgets_the_passes_of_its_units(self):
+        # reuse_own's run of a stage, a stand-in that ends with $STATUS, on the inputs of recorded passes
+        tree = self.copy("own")
+        stage = os.path.join(self.tmp, "own-stage.sh")
+        with open(stage, "w", encoding="utf-8") as f:
+            f.write('#!/usr/bin/env bash\n[ "$1" != inputs ] || exec bash "$CI_SH" "$@"\necho "the run of $1"\n'
+                    # (the parts beside the others that passed, with their own logs)
+                    'for p in ${PASSED:-}; do echo "== CI passed: server:$p (0 skipped)" > "$HJV_CI_DIR/server-$p.log"; done\n'
+                    'exit "$STATUS"\n')
+        os.chmod(stage, 0o755)
+        tmpdir = tempfile.mkdtemp(dir=self.tmp)
+        env = dict(tree.env, CI_SH=os.path.join(tree.dir, "scripts", "ci.sh"), TMPDIR=tmpdir)
+        units = ("server:hbbs", "server:api", "server:relay", "server:release", "e2e", "drill:full", "drill:quick")
+        self.record_passes(tree, *units)
+
+        def own(target, status, **more):
+            done = tree.source('SELF=$1\nshift\nreuse_own "$@"\necho "reuse_own returned"', stage, target,
+                               env=dict(env, STATUS=str(status), **more), check=False)
+            self.assertEqual(os.listdir(tmpdir), [], target)
+            return done, re.findall(r"(?m)^scripts/ci\.sh " + re.escape(target) + r": forgot the pass of (\S+) on these "
+                                    r"inputs, its strict pass of [0-9a-f]{7} at .*: this run of them did not pass$", done.stdout)
+
+        # a pass, or a run that a signal ended, forgets nothing; nor does a run of a tree with changes, or
+        # one of prepush or beside a server stage's other parts, which runs on in this process
+        for status in (0, 143):
+            done, forgot = own("server:release", status)
+            self.assertEqual((done.returncode, forgot), (status, []), done.stdout + done.stderr)
+            self.assertIn("the run of server:release\n", done.stdout)
+            self.assertNotIn("reuse_own returned", done.stdout)
+        for how, more in (("changes", {}), ("HJV_CI_RUN", {"HJV_CI_RUN": "1-1"}), ("HJV_CI_PART", {"HJV_CI_PART": "1"})):
+            if how == "changes":
+                tree.write("README.md", "an edit\n", "a")
+            done, forgot = own("server:release", 1, **more)
+            tree.git("checkout", "README.md")
+            self.assertEqual((done.returncode, done.stdout), (0, "reuse_own returned\n"), how)
+        self.assertEqual(self.recorded(tree), sorted(units))
+        # the server stage's parts but those beside the others whose logs show their pass; e2e of
+        # e2e:build; the quick drill's and the full drill's of the quick drill
+        done, forgot = own("server", 1, PASSED="hbbs relay")
+        self.assertEqual((done.returncode, forgot), (1, ["server:api", "server:release"]), done.stdout + done.stderr)
+        self.assertEqual(own("e2e:build", 1)[1], ["e2e"])
+        self.assertEqual(own("drill:quick", 2)[1], ["drill:full", "drill:quick"])
+        self.assertEqual(self.recorded(tree), ["server:hbbs", "server:relay"])
+        # of the drill's build both drills'
+        self.record_passes(tree, "drill:full", "drill:quick")
+        self.assertEqual(own("drill:build", 1)[1], ["drill:full", "drill:quick"])
+
+    def test_a_stage_run_on_its_own_that_did_not_pass_forgets_its_pass(self):
+        # scripts/ci.sh server:release on the inputs of a recorded pass, in strict mode, whose preflight
+        # finds no network namespaces (an unshare that cannot make them, as a stand-in for a flake), under
+        # the lock it takes and under its caller's
+        tree = self.copy("own-run")
+        stubs = tempfile.mkdtemp(dir=self.tmp)
+        with open(os.path.join(stubs, "unshare"), "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho 'unshare: a stand-in that cannot' >&2\nexit 1\n")
+        os.chmod(os.path.join(stubs, "unshare"), 0o755)
+        env = dict(tree.env, PATH=stubs + ":" + tree.env["PATH"])
+        for how, more in (("its own lock", {}), ("its caller's", {"HJV_CI_LOCK": tree.env["HJV_CI_DIR"]})):
+            self.record(tree, "server:release", self.pass_log(tree, "server:release"))
+            self.assertEqual(tree.plan("server:release")["server:release"][0], "reuse", how)
+            done = tree.ci("server:release", env=dict(env, **more), check=False)
+            self.assertEqual(done.returncode, 1, how)
+            self.assertIn("FAIL: preflight: server:release would skip or fail", done.stderr, how)
+            self.assertRegex(done.stdout, r"\nscripts/ci\.sh server:release: forgot the pass of server:release on these "
+                                          r"inputs, its strict pass of [0-9a-f]{7} at .*: this run of them did not pass\n$", how)
+            self.assertEqual(tree.plan("server:release")["server:release"], ("run", "no pass of it recorded"), how)
+
     def test_a_build_or_a_quick_drill_that_did_not_pass_forgets_the_passes_it_stands_for(self):
         # prepush with stand-ins for the stages, one of which fails on the inputs of a recorded pass:
         # e2e:build is e2e's, the drill's build is either drill's, and the quick drill's steps are the
@@ -379,17 +461,17 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
             return re.findall(r"(?m)^prepush: forgot the pass of (\S+) on these inputs", done.stdout)
 
         quick = ("--drill=quick", "server:release")
-        # the pass recorded, what fails in a prepush run of its inputs (HJV_CI_FRESH=1), that run, and
-        # the plan whose line of a unit reuses the pass before and runs the unit after
-        for unit, fails, args, plan, line in (("drill:full", "drill:quick", quick, quick, "drill:quick"),
-                                              ("drill:full", "drill:build", quick, quick, "drill:quick"),
-                                              ("drill:quick", "drill:build", ("--drill=full", "server:release"), quick,
-                                               "drill:quick"),
-                                              ("e2e", "e2e:build", ("e2e",), ("e2e",), "e2e")):
-            self.record(tree, unit, self.pass_log(tree, unit))
-            self.assertEqual(tree.plan(*plan)[line][0], "reuse", fails)
+        # the pass recorded and what fails in a prepush run of its inputs (HJV_CI_FRESH=1)
+        for unit, fails, args in (("drill:full", "drill:quick", quick), ("drill:full", "drill:build", quick),
+                                  ("drill:quick", "drill:build", ("--drill=full", "server:release")),
+                                  ("e2e", "e2e:build", ("e2e",))):
+            self.record_passes(tree, unit)
+            if fails == "drill:quick":
+                self.assertEqual(tree.plan(*quick)["drill:quick"][0], "reuse")
             self.assertEqual(prepush(fails, *args), [unit], fails)
-            self.assertEqual(tree.plan(*plan)[line][0], "run", fails)
+            self.assertNotIn(unit, self.recorded(tree), fails)
+            if fails == "drill:quick":
+                self.assertEqual(tree.plan(*quick)["drill:quick"], ("run", "no pass of it recorded"))
 
     def test_a_deploy_part_that_did_not_pass_leaves_no_stamp(self):
         # a part of the deploy stage whose inputs stay the same, each run of it a process of its own as

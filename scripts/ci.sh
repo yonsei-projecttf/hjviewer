@@ -19,7 +19,9 @@
 #                          (tools/e2e/hjv-api-drill.sh, full or quick). summary.txt there says what
 #                          each unit took and how it ended, times.tsv holds each stage's steps by
 #                          time (scripts/ci-times.sh adds them up over runs). With stages named,
-#                          only those (docs/ci.md). A stage run on its own starts with the same head.
+#                          only those (docs/ci.md). A stage run on its own starts with the same head,
+#                          and one that does not pass on a clean tree forgets the passes of its
+#                          units on its inputs (reuse_own).
 #   scripts/ci.sh server   four parts side by side, each with its own log (server:<part>[,<part>]
 #                          runs some of them, also as a stage of prepush): hbbs, a fresh upstream
 #                          checkout with server/patches (the one there before kept when it has the
@@ -2631,10 +2633,11 @@ lock_holder() {
   fi
 }
 # At the start of a run under the lock, in its first process only (the stages that prepush starts
-# are its): who holds the lock, for lock_holder. flock gives the lock up as soon as its own process
-# ends, and a Ctrl-C ends that at once, while the run under it is still ending (its exit traps,
-# prepush_stop's wait for its jobs): the run before, while its first process is still there, is
-# waited for, up to five minutes. So are the runs that a caller starts side by side under its own
+# are its; a stage run on its own comes here in the process that reuse_own starts it in, which ends
+# with the stage): who holds the lock, for lock_holder. flock gives the lock up as soon as its own
+# process ends, and a Ctrl-C ends that at once, while the run under it is still ending (its exit
+# traps, prepush_stop's wait for its jobs): the run before, while its first process is still there,
+# is waited for, up to five minutes. So are the runs that a caller starts side by side under its own
 # lock: they run one after another (docs/ci.md).
 lock_held() { # <argument...>
   local pid rest
@@ -3077,16 +3080,66 @@ reuse_record() { # <unit> <log> <inputs file> <commit>
 # next prepush runs the unit again). The inputs list stays, for what a later plan says changed. A
 # quick drill's forgets the full drill's pass too, on the inputs beside its own (<dir>/drill:full.txt
 # of reuse_inputs): that pass serves the quick drill (reuse_plan), whose steps are the full drill's.
-reuse_forget() { # <unit> <inputs file>
+# <run> says which run forgot it (prepush by default).
+reuse_forget() { # <unit> <inputs file> [<run>]
   local unit=$1 rec name
   reuse_rules
   for name in $REUSE_FILES_FROM; do [ -z "${!name:-}" ] || return 0; done
-  if [ "$unit" = drill:quick ]; then reuse_forget drill:full "${2%/*}/drill:full.txt"; fi
+  if [ "$unit" = drill:quick ]; then reuse_forget drill:full "${2%/*}/drill:full.txt" "${3:-}"; fi
   [ -f "$2" ] || return 0
   rec="$CI/passes/$unit/$(sha256sum < "$2" | cut -d' ' -f1).pass"
   [ -f "$rec" ] || return 0
-  echo "prepush: forgot the pass of $unit on these inputs, $(reuse_said "$rec"): this run of them did not pass"
+  echo "${3:-prepush}: forgot the pass of $unit on these inputs, $(reuse_said "$rec"): this run of them did not pass"
   rm -f "$rec"
+}
+# The units of the reuse that a run of <target> is a run of (reuse_own): the server stage's parts that
+# it names (all, its four and deploy), client, deploy, e2e (e2e:build too), wol and the drills, both
+# of them for drill:build, either drill's build; none for another target
+reuse_target_units() { # <target>
+  local part
+  case $1 in
+    all) for part in $SERVER_PARTS; do echo "server:$part"; done; echo deploy ;;
+    server | server:*) for part in $(server_parts "$1" || true); do echo "server:$part"; done ;;
+    client | deploy | wol | drill:full | drill:quick) echo "$1" ;;
+    e2e | e2e:build) echo e2e ;;
+    drill:build) printf '%s\n' drill:full drill:quick ;;
+  esac
+}
+# A run of the units' stages on its own (no job of prepush, HJV_CI_RUN, nor a part beside the server
+# stage's others, HJV_CI_PART) on a clean tree: one that does not pass forgets the recorded passes of
+# its units on its inputs (reuse_forget), as prepush_end does for its jobs, since the newest run of
+# the same inputs, a flake or not, says how they fare. So such a run is a process of its own under
+# this one (HJV_CI_OWN), which counts the inputs at the start (scripts/ci.sh inputs) and ends with
+# its exit status. A run that a signal ended (above 128) says nothing of them, and a part of the
+# server stage whose own log of this run (build/ci/server-<part>.log) shows its pass keeps it.
+reuse_own() { # <argument...>
+  local units=() more=() u dir log status=0
+  [ -z "${HJV_CI_RUN:-}${HJV_CI_PART:-}${HJV_CI_OWN:-}" ] || return 0
+  readarray -t units < <(reuse_target_units "${1:-all}")
+  [ ${#units[@]} -gt 0 ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] || return 0
+  dir=$(mktemp -d) || return 0
+  # shellcheck disable=SC2064 # (this run's folder, named now)
+  trap "rm -rf $(printf %q "$dir")" EXIT
+  # (and the full drill's, whose pass a quick drill that does not pass forgets too)
+  if [[ " ${units[*]} " == *" drill:quick "* ]] && [[ " ${units[*]} " != *" drill:full "* ]]; then more=(drill:full); fi
+  if ! "$SELF" inputs "$dir" "${units[@]}" "${more[@]}" > "$dir/inputs.log" 2>&1; then
+    cat "$dir/inputs.log"
+    echo "scripts/ci.sh inputs failed (above): this run forgets no pass of ${units[*]} when it does not pass"
+    units=()
+  fi
+  : > "$dir/start"
+  env HJV_CI_OWN=1 "$SELF" "$@" || status=$?
+  if [ "$status" -gt 0 ] && [ "$status" -le 128 ]; then
+    for u in "${units[@]}"; do
+      log="$CI/server-${u#server:}.log"
+      if [[ $u == server:* ]] && [ -f "$log" ] && [ ! "$log" -ot "$dir/start" ] &&
+        grep -qx "== CI passed: $u (0 skipped)" "$log" && ! grep -q '^skipped:' "$log"; then
+        continue
+      fi
+      reuse_forget "$u" "$dir/$u.txt" "scripts/ci.sh ${1:-all}"
+    done
+  fi
+  exit "$status"
 }
 # Whether <unit> is reused, by its inputs <inputs file>: "reuse <record>" for its recorded strict pass
 # with the same inputs (key) of the last HJV_CI_REUSE_HOURS hours (24 by default: some tests depend
@@ -3642,13 +3695,15 @@ case "$TARGET" in
   prepush) shift; prepush_run "$@" ;;
   *)
     if [ "${HJV_CI_LOCK:-}" != "$CI" ]; then lock_run "$@"; fi
+    # (a run of its own that does not pass forgets its units' passes: it runs under this process)
+    reuse_own "$@"
     lock_held "$@"
     ;;
 esac
 # the head of a run of its own and what it needs (a stage that prepush runs, with HJV_CI_RUN, has the
 # head in its log, and a part that a server stage runs beside the others, with HJV_CI_PART, in that
-# stage's); such a run ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an
-# EXIT line
+# stage's); such a run ends with "== CI passed: ..." or "FAIL: ..." (and the passes that it forgot,
+# reuse_own), and only prepush's logs with an EXIT line
 case "$TARGET" in
   all | server | server:* | client | deploy | e2e | e2e:build | wol | leak | drill:*)
     if [ -z "${HJV_CI_RUN:-}${HJV_CI_PART:-}" ]; then
