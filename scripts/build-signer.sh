@@ -47,9 +47,19 @@ kept() {
 work=
 finish() {
   local status=$?
-  # another signal (a second Ctrl-C) does not cut the clean-up and the message short
+  # neither another signal (a second Ctrl-C) nor a step that fails cuts the clean-up and the message
+  # short
   trap '' INT TERM HUP
-  if [ -n "$work" ]; then rm -rf "$work"; fi
+  set +e
+  # After a Ctrl-C during cargo build, rustc stops a moment later and a linker that it started then
+  # runs on, writing in the build folder: a removal that fails is tried again, for up to 5 s
+  if [ -n "$work" ]; then
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if rm -rf "$work" 2> /dev/null; then break; fi
+      sleep 0.5
+    done
+    if [ -e "$work" ]; then echo "build-signer: $work stays: it could not be removed" >&2; fi
+  fi
   rm -f "$out/hjv-release.new" "$out/hjv-release.record.new"
   if [ "$status" != 0 ]; then echo "build-signer: $(kept)" >&2; fi
 }
