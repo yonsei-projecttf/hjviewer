@@ -1112,10 +1112,17 @@ deploy_stage() {
     tar --null --ignore-failed-read -T - -cf -) | tar -xf - -C "$SRC"
 
   step "deploy: Ubuntu's nginx and Apache, unpacked"
-  if [ ! -x "$PKGS/root/usr/sbin/nginx" ] || [ ! -x "$PKGS/root/usr/sbin/apache2" ]; then
+  # again when apt has another version of one of them (a security update): the checks run the
+  # nginx and Apache that a server gets
+  local debs=(nginx apache2-bin libapr1t64 libaprutil1t64 libjansson4 liblua5.4-0) d stale=""
+  for d in "${debs[@]}"; do
+    [ "$(dpkg-deb -f "$PKGS/$d"_*.deb Version 2> /dev/null)" = "$(apt-cache policy "$d" | sed -n 's/^ *Candidate: //p')" ] ||
+      stale=1
+  done
+  if [ -n "$stale" ] || [ ! -x "$PKGS/root/usr/sbin/nginx" ] || [ ! -x "$PKGS/root/usr/sbin/apache2" ]; then
     rm -rf "$PKGS"
     mkdir -p "$PKGS/root"
-    (cd "$PKGS" && apt-get download nginx apache2-bin libapr1t64 libaprutil1t64 libjansson4 liblua5.4-0 > /dev/null)
+    (cd "$PKGS" && apt-get download "${debs[@]}" > /dev/null)
     for d in "$PKGS"/*.deb; do dpkg-deb -x "$d" "$PKGS/root"; done
   fi
   "$PKGS/root/usr/sbin/nginx" -v
