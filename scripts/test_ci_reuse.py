@@ -405,6 +405,16 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
                 f"HEAD moved from {head}, which prepush began on, to {now} before it took the lock" if how == "lock_run" else
                 f"HEAD or the working tree changed since prepush began on {head}, which is what it checked"), done.stderr, how)
 
+    def test_a_plan_or_a_check_of_the_rules_that_fails_leaves_no_folder_behind(self):
+        tmpdir = tempfile.mkdtemp(dir=self.tmp)
+        env = dict(self.tree.env, TMPDIR=tmpdir)
+        done = self.tree.ci("prepush", "--plan", "server:release", env=dict(env, HJV_CI_REUSE_HOURS="x"), check=False)
+        self.assertIn("FAIL: HJV_CI_REUSE_HOURS=x is no number of hours", done.stderr)
+        done = self.tree.source('REUSE_CODE[server:release]+=" prepush_passed"\nreuse_check', env=env, check=False)
+        self.assertIn("FAIL: reuse: the code of server:release takes the code of prepush, its plan or the lock "
+                      "(prepush_passed)", done.stderr)
+        self.assertEqual(os.listdir(tmpdir), [])
+
     def test_prepush_starts_no_unit_after_one_failed(self):
         # the full drill fails beside e2e, which passes once the drill has ended: wol, which would
         # start after e2e, does not (the stages are stand-ins that say they start)

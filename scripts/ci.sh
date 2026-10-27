@@ -3185,6 +3185,10 @@ reuse_check() {
   local dir u fns rules=() table=() names
   reuse_rules
   dir=$(mktemp -d)
+  # (gone however this ends: a failure below ends the leak stage, whose process has no exit trap
+  # but this one)
+  # shellcheck disable=SC2064 # (this call's folder, named now)
+  trap "rm -rf $(printf %q "$dir")" EXIT
   for u in $REUSE_UNITS; do
     rules+=("$u=${REUSE_SKIP[$u]//$'\n'/ }")
     [ "$u" = drill:quick ] || table+=("${u%:full}=${REUSE_SKIP[$u]} $REUSE_SKIP_ALL")
@@ -3211,6 +3215,7 @@ reuse_check() {
   [ -z "$names" ] || fail "reuse: the lines that reuse_top takes for a function of scripts/ci.sh are not its code: $names"
   echo "reuse: $(reuse_top functions | wc -l) functions, $(reuse_top code | wc -l) lines of top-level code"
   rm -rf "$dir"
+  trap - EXIT
 }
 
 # --- prepush ---
@@ -3437,10 +3442,10 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
     [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
       echo "prepush --plan: the working tree has changes, which prepush does not take: the plan of HEAD"
     PREPUSH_LOGS=$(mktemp -d)
+    trap 'rm -rf "$PREPUSH_LOGS"' EXIT
     reuse_plan "$PREPUSH_LOGS/inputs" "${units[@]}"
     echo "prepush plan of $(git -C "$ROOT" rev-parse --short HEAD) (records of the last ${HJV_CI_REUSE_HOURS:-24} h in $CI/passes):"
     reuse_plan_lines
-    rm -rf "$PREPUSH_LOGS"
     exit 0
   fi
   [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
