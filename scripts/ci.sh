@@ -9,14 +9,17 @@
 #                          first the commits, the toolchain and the start, last the exit status),
 #                          stopping at the first that fails. With stages named, only those, in this
 #                          order: after a fix, the stages that read what it changed (docs/ci.md).
-#   scripts/ci.sh server   four parts (server:<part>[,<part>] runs some of them, also as a stage of
-#                          prepush): hbbs, a fresh upstream checkout with server/patches and all of
-#                          its tests in release (the library's and binaries' unit tests, the
-#                          signaling, relay, protobuf, hbbs hjv-pk, lowest controller version and
-#                          access ticket tests, against hjv-api's shared vectors), hjv-probe and
-#                          hjv-load; api, hjv-api's tests and release build (server/api); relay,
-#                          hjv-relay's tests (relay/); release, tools/hjv-release's format, lints,
-#                          tests (its shared test vectors among them) and release build
+#   scripts/ci.sh server   four parts side by side, each with its own log (server:<part>[,<part>]
+#                          runs some of them, also as a stage of prepush): hbbs, a fresh upstream
+#                          checkout with server/patches (the one there before kept when it has the
+#                          same patched tree) and all of its tests in release (the library's and
+#                          binaries' unit tests, the signaling, relay, protobuf, hbbs hjv-pk, lowest
+#                          controller version and access ticket tests, against hjv-api's shared
+#                          vectors), each test binary in a network namespace of its own, hjv-probe
+#                          and hjv-load; api, hjv-api's tests (in namespaces of their own too) and
+#                          release build (server/api); relay, hjv-relay's tests (relay/); release,
+#                          tools/hjv-release's format, lints, tests (its shared test vectors among
+#                          them) and release build
 #   scripts/ci.sh client   the offline tests of the Google Play upload script and of the build-key
 #                          check (scripts/test_*.py, the key files also against hjv-release), the store
 #                          run's: the store texts (scripts/check-store-text.py and its tests), the
@@ -568,13 +571,41 @@ server_release() {
   fi
 }
 
-# The server stage: the parts that <stage> names (server_parts), one after another. Its last line
-# says which parts ran.
+# The server stage: the parts that <stage> names (server_parts). One runs here. Several run side by
+# side, each as a run of this script (server:<part>, under this run's lock) with its output in
+# build/ci/server-<part>.log, shown in their order once it ended: they share no target directory,
+# port or file, as the hbbs and hjv-api tests run in network namespaces of their own
+# (cargo_tests). Where this user cannot make those, the parts run here one after another. A part
+# that fails stops none of the others: the stage fails once all of them ended. Its last line says
+# which parts ran.
 server_stage() { # <stage>
-  local parts=() part rest=()
+  local parts=() part rest=() log status failed=()
+  local -A pids=() starts=()
   read -ra parts <<< "$(server_parts "$1")"
   [ ${#parts[@]} -gt 0 ] || fail "no stage $1: server:<part>[,<part>] names parts of the server stage ($SERVER_PARTS)"
-  for part in "${parts[@]}"; do "server_$part"; done
+  if [ ${#parts[@]} -eq 1 ] || ! own_net true 2> /dev/null; then
+    [ ${#parts[@]} -eq 1 ] || echo "no unprivileged user and network namespaces here: the server stage's parts run one after another"
+    for part in "${parts[@]}"; do "server_$part"; done
+  else
+    step "server: ${parts[*]} side by side, the output of each also in build/ci/server-<part>.log"
+    for part in "${parts[@]}"; do
+      # as a job of its own, which gets back SIGINT and SIGQUIT (with_skips)
+      env --default-signal=INT,QUIT "$SELF" "server:$part" < /dev/null > "$CI/server-$part.log" 2>&1 &
+      pids[$part]=$! starts[$part]=$(date +%s)
+    done
+    for part in "${parts[@]}"; do
+      log="$CI/server-$part.log" status=0
+      wait "${pids[$part]}" || status=$?
+      printf '\n---- server:%s (%s)\n' "$part" "$log"
+      cat "$log"
+      count_skips "$log"
+      if [ "$status" = 0 ] && ! grep -q "^== CI passed: server:$part (" "$log"; then status=1; fi
+      echo "server: $part: exit $status, $(($(stat -c %Y "$log") - ${starts[$part]})) s," \
+        "$(grep -c '^skipped:' "$log" || true) skipped line(s)"
+      [ "$status" = 0 ] || failed+=("$part")
+    done
+    [ ${#failed[@]} -eq 0 ] || fail "server: ${failed[*]} failed (above, and in build/ci/server-<part>.log)"
+  fi
   for part in $SERVER_PARTS; do
     if [[ " ${parts[*]} " != *" $part "* ]]; then rest+=("$part"); fi
   done
