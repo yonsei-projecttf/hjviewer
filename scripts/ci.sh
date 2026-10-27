@@ -3283,8 +3283,11 @@ prepush_end() { # <name> <target> <commit> [<unit>...]
 }
 # The signal that stops prepush (prepush_run's traps), which its jobs may have had too
 PREPUSH_SIGNAL=""
-# Stops the jobs that still run when prepush stops early
+# Stops the jobs that still run when prepush stops early (its exit trap): what fails from here on,
+# a screen that has gone among it (a pipe whose reader the Ctrl-C ended, a terminal that hung up),
+# no longer ends prepush before its jobs have ended
 prepush_stop_all() {
+  set +e
   prepush_stop "${!PREPUSH_PID[@]}"
 }
 # Stops the jobs <name...> while they run, their processes with them, and waits until every one of
@@ -3309,23 +3312,29 @@ prepush_stop() { # <name...>
   done
   left=$(prepush_alive "${pids[@]}")
   if [ -n "$left" ] && [ -n "$PREPUSH_SIGNAL" ]; then
-    echo "prepush: $PREPUSH_SIGNAL: waiting up to 120 s for ${names[*]} to end, cleaning up" | tee -a "$PREPUSH_LOGS/summary.txt"
+    prepush_say "prepush: $PREPUSH_SIGNAL: waiting up to 120 s for ${names[*]} to end, cleaning up"
     # shellcheck disable=SC2086 # (pids)
     left=$(prepush_wait 120 $left)
   fi
   if [ -n "$left" ]; then
-    echo "prepush: stopping ${names[*]}, which a failure before makes pointless" | tee -a "$PREPUSH_LOGS/summary.txt"
+    prepush_say "prepush: stopping ${names[*]}, which a failure before makes pointless"
     # the processes as they were found, each before those it started (end_tree)
     for pid in $left; do kill "$pid" 2> /dev/null || true; done
     # shellcheck disable=SC2086 # (pids)
     left=$(prepush_wait 120 $left)
-    [ -z "$left" ] || echo "prepush: processes of ${names[*]} still run after 120 s: $left" | tee -a "$PREPUSH_LOGS/summary.txt"
+    [ -z "$left" ] || prepush_say "prepush: processes of ${names[*]} still run after 120 s: $left"
   fi
   for name in "$@"; do
     [ -n "${PREPUSH_PID[$name]:-}" ] || continue
     wait "${PREPUSH_PID[$name]}" 2> /dev/null || true
     unset "PREPUSH_PID[$name]"
   done
+}
+# A line of prepush_stop: in summary.txt first, then on the screen, which may have gone by then
+# (prepush_stop_all), in a process of its own that a write there may end
+prepush_say() { # <line>
+  echo "$1" >> "$PREPUSH_LOGS/summary.txt"
+  (echo "$1") 2> /dev/null || true
 }
 # <pid> and the processes it started, each before those it started
 prepush_pids() { # <pid>

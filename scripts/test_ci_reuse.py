@@ -533,13 +533,18 @@ class StopTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def jobs(self, script):
+    def jobs(self, script, stdout=None):
         """<script> in a bash that sourced scripts/ci.sh, where prepush_start's jobs run the stage
-        above after a log head that says nothing; "says <line>" waits for <line> in their $TRAPS"""
-        return bash('source "$1"\nPREPUSH_LOGS=$2 SELF=$3\nexport TRAPS=$2/traps\nlog_head() { :; }\n'
-                    'says() { for _ in $(seq 100); do if grep -qx "$1" "$TRAPS" 2> /dev/null; then return; fi; '
-                    'sleep 0.05; done; return 1; }\n' + script, os.path.join(ROOT, "scripts", "ci.sh"), self.tmp,
-                    self.stage, env=clean_env(os.path.join(self.tmp, "ci"))).stdout
+        above after a log head that says nothing; "says <line>" waits for <line> in their $TRAPS.
+        Its output, or with <stdout> (a file descriptor) as its output, the process that ended."""
+        script = ('source "$1"\nPREPUSH_LOGS=$2 SELF=$3\nexport TRAPS=$2/traps\nlog_head() { :; }\n'
+                  'says() { for _ in $(seq 100); do if grep -qx "$1" "$TRAPS" 2> /dev/null; then return; fi; '
+                  'sleep 0.05; done; return 1; }\n' + script)
+        args, env = (os.path.join(ROOT, "scripts", "ci.sh"), self.tmp, self.stage), clean_env(os.path.join(self.tmp, "ci"))
+        if stdout is None:
+            return bash(script, *args, env=env).stdout
+        return subprocess.run(["bash", "-c", script, "bash", *args], env=env, stdout=stdout, stderr=subprocess.PIPE,
+                              text=True, timeout=60)
 
     def test_a_stopped_job_ends_with_its_exit_trap_whole_and_before_prepush(self):
         out = self.jobs(r'''
@@ -590,6 +595,27 @@ cat "$TRAPS" "$PREPUSH_LOGS/late.log"''')
         self.assertIn("\nlate head\nprepush stopped before scripts/ci.sh late started\nEXIT 143 ", out)
         self.assertNotRegex(out, r"(?m)^late started$")
         self.assertLess(int(re.search(r"(?m)^prepush_stop returned after (\d+) ms$", out).group(1)), 2500, out)
+
+    def test_prepush_ends_after_its_jobs_when_its_screen_has_gone(self):
+        # a Ctrl-C of "scripts/ci.sh prepush | tee <file>" ends tee too: prepush's exit trap, as
+        # prepush_run sets it, writes to a pipe that no one reads, and still waits for the job's trap
+        read, write = os.pipe()
+        os.close(read)
+        try:
+            done = self.jobs(r'''
+prepush_start screen screen
+says "screen started"
+trap 'PREPUSH_SIGNAL=SIGINT; exit 130' INT
+trap prepush_stop_all EXIT
+kill -INT $(prepush_pids "${PREPUSH_PID[screen]}") $$
+sleep 30''', stdout=write)
+        finally:
+            os.close(write)
+        self.assertEqual(done.returncode, 130, done.stderr)
+        with open(os.path.join(self.tmp, "traps"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "screen started\nscreen ended\n")
+        with open(os.path.join(self.tmp, "summary.txt"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "prepush: SIGINT: waiting up to 120 s for screen to end, cleaning up\n")
 
 
 if __name__ == "__main__":
