@@ -362,6 +362,82 @@ server_parts() { # <stage>
   echo "${out[*]}"
 }
 
+# Runs <command...> in a network namespace of its own, whose loopback is up and which reaches no
+# other network, as this user: in a user namespace inside the one whose root sets the loopback up.
+# The hbbs tests pick their servers' ports with bind(127.0.0.1:0) and let them go for hbbs to bind;
+# in a namespace of their own nothing else can take them in between.
+own_net() { # <command...>
+  unshare -rn sh -c 'u=$1 g=$2; shift 2; ip link set lo up && exec unshare -U --map-user="$u" --map-group="$g" -- "$@"' \
+    own_net "$(id -u)" "$(id -g)" "$@"
+}
+
+# The tests of the cargo package in <dir> as cargo test <options> [-- <test options>] runs them,
+# but each test target (--lib, --bin <name>, --test <name>, and --doc where <options> pick no
+# target) in a cargo test of its own, once cargo test <options> --no-run has built them all: at most
+# <most> at a time, each under <wrapper> (own_net, or env for none), with its output in <log without
+# .log>/<n>.log; where own_net cannot make its namespaces, one after another under env. Only the
+# build shows the compiler's warnings, which every run would show again. Then all of it goes to
+# <log> and stdout in cargo's order, and its skipped lines are counted. Unlike one cargo test, a
+# target that fails stops none of the others: the failure comes at the end.
+cargo_tests() { # <dir> <log> <most> <wrapper> <options...> [-- <test options...>]
+  local pkg=$1 log=$2 most=$3 wrapper=$4 dir=${2%.log} opts=() pick=() args=() targets=() started=() i target status failed=()
+  shift 4
+  # the options that pick targets apart from the others, which every target's run takes
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do
+    case $1 in
+      --lib | --bins | --tests | --examples | --benches | --all-targets | --doc | --bin=* | --test=* | --example=* | --bench=*) pick+=("$1") ;;
+      --bin | --test | --example | --bench) pick+=("$1" "$2"); shift ;;
+      *) opts+=("$1") ;;
+    esac
+    shift
+  done
+  if [ $# -gt 0 ]; then shift; args=("$@"); fi
+  if [ "$wrapper" = own_net ] && ! own_net true 2> /dev/null; then
+    most=1 wrapper=env
+    echo "no unprivileged user and network namespaces here: the test binaries run one after another"
+  fi
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  env -C "$pkg" cargo test "${opts[@]}" "${pick[@]}" --no-run --message-format=json-render-diagnostics > "$dir/build.json" ||
+    return
+  # the test executables it built, by target, in the order cargo test runs them
+  readarray -t targets < <(python3 -I -c 'import json, sys
+kinds = ("lib", "bin", "test", "example", "bench")
+found = set()
+for line in open(sys.argv[1]):
+    m = json.loads(line) if line.startswith("{") else {}
+    if m.get("reason") == "compiler-artifact" and m["profile"]["test"] and m["executable"]:
+        t = m["target"]
+        kind = next((k for k in kinds[1:] if k in t["kind"]), "lib")
+        found.add((kinds.index(kind), t["name"], t.get("doctest", False)))
+for n, name, _ in sorted(found):
+    print("--lib" if n == 0 else "--%s %s" % (kinds[n], name))
+if sys.argv[2] == "0" and any(n == 0 and doctest for n, _, doctest in found):
+    print("--doc")' "$dir/build.json" "${#pick[@]}")
+  [ ${#targets[@]} -gt 0 ] || { echo "no test targets in $pkg"; return 1; }
+  echo "$(IFS=,; echo "${targets[*]}"), at most $most at a time"
+  for i in "${!targets[@]}"; do
+    while [ "$(jobs -pr | wc -l)" -ge "$most" ]; do wait -n || true; done
+    (
+      read -ra target <<< "${targets[$i]}"
+      status=0
+      "$wrapper" env -C "$pkg" CARGO_BUILD_WARNINGS=allow cargo test "${opts[@]}" "${target[@]}" -- "${args[@]}" \
+        > "$dir/$i.log" 2>&1 || status=$?
+      echo "$status" > "$dir/$i.status"
+    ) &
+    started+=($!)
+  done
+  wait "${started[@]}" || true
+  : > "$log"
+  for i in "${!targets[@]}"; do
+    cat "$dir/$i.log" >> "$log"
+    count_skips "$dir/$i.log"
+    [ "$(cat "$dir/$i.status")" = 0 ] || failed+=("${targets[$i]}")
+  done
+  cat "$log"
+  [ ${#failed[@]} -eq 0 ] || { echo "the test targets that failed in $pkg: $(IFS=,; echo "${failed[*]}")"; return 1; }
+}
+
 # The upstream checkout with server/patches in $CI/upstream/rustdesk-server: fetched anew every run,
 # which shows that the pinned commits and the patches still apply, but the checkout there before is
 # kept when it has the new one's patched tree and nothing else (git status, hbb_common's too: only
@@ -418,8 +494,11 @@ server_hbbs() {
   cmp -s "$vectors" "$CI/upstream/rustdesk-server/tests/vectors/access-tickets.json" ||
     fail "server: hbbs's tests/vectors/access-tickets.json (server/patches) is not hjv-api's (server/api/tests/vectors)"
   step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk, access tickets)"
-  (cd "$CI/upstream/rustdesk-server" &&
-    HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
+  # Each test binary in a network namespace of its own, all of them side by side: they mostly wait
+  # (hbbs's ten-second periods, test_insert's 10 000 synced inserts), they name their directories
+  # by process, and no binary's hbbs can take the ports another has picked (own_net)
+  HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo_tests "$CI/upstream/rustdesk-server" \
+    "$CI/hbbs-tests.log" "$(nproc)" own_net --release --locked "${tests[@]}" || fail "server: hbbs and hbbr's tests"
   step "server: hjv-probe and hjv-load"
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
 }
