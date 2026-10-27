@@ -385,6 +385,26 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
         # a unit that is reused takes nothing
         self.assertNotIn("server:hbbs", tree.plan("server:release"))
 
+    def test_prepush_passes_only_on_the_commit_it_began_on(self):
+        # HEAD moves on after prepush began (and its leak stage checked that commit), here in the
+        # preflight, by an edit that no unit reads, so that every unit is reused: the run that
+        # lock_run starts, which a prepush waiting for the lock starts as late, finds another commit,
+        # and a run under its caller's lock, which is not started again, has no job's end to look
+        tree = self.copy("moved")
+        self.record(tree, "server:release", self.pass_log(tree, "server:release"))
+        self.assertEqual(tree.plan("server:release")["server:release"][0], "reuse")
+        move = 'preflight() { echo "an edit" >> docs/privacy.md; git commit -qam "an edit that no unit reads"; }\n'
+        for how, env in (("lock_run", tree.env), ("a caller's lock", dict(tree.env, HJV_CI_LOCK=tree.env["HJV_CI_DIR"]))):
+            head = tree.git("rev-parse", "HEAD").strip()
+            done = tree.source(move + "prepush_run server:release", env=env, check=False)
+            now = tree.git("rev-parse", "HEAD").strip()
+            self.assertNotEqual(head, now)
+            self.assertEqual(done.returncode, 1, f"{how}:\n{done.stdout}\n{done.stderr}")
+            self.assertNotIn("CI passed", done.stdout, how)
+            self.assertIn("FAIL: prepush: " + (
+                f"HEAD moved from {head}, which prepush began on, to {now} before it took the lock" if how == "lock_run" else
+                f"HEAD or the working tree changed since prepush began on {head}, which is what it checked"), done.stderr, how)
+
     def test_the_rules_hold_the_code_that_reads_a_path_they_leave_out(self):
         tree = self.copy("rules")
         out = tree.source('''d=$(mktemp -d)

@@ -3377,9 +3377,10 @@ reuse_lines() { # <unit>
 # the deploy stage within a minute or two; the deploy stage holds systemd units and containers that
 # its cleanup takes down), but the drill, which a failure of the e2e or wol stage stops (its exit
 # trap removes its containers). prepush stopped early (a failure of its own, a signal) stops the jobs
-# that still run, and in either case ends only once their exit traps have (prepush_stop). Named
-# stages run alone: after a fix, those that read what it changed (docs/ci.md), with --drill also the
-# drill.
+# that still run, and in either case ends only once their exit traps have (prepush_stop). It passes
+# only for the commit it began on, which its leak stage checked: HEAD or the tree changed since, also
+# while it waited for the lock, fails it. Named stages run alone: after a fix, those that read what
+# it changed (docs/ci.md), with --drill also the drill.
 prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
   local a plan="" drill="" stages=() units=() s u parts=() head list run=() reused=() n failed=() started=() t
   reuse_rules
@@ -3424,6 +3425,10 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
   [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
     fail "prepush: the working tree is not clean (git status): a push publishes commits, and they are what is checked"
   head=$(git -C "$ROOT" rev-parse HEAD)
+  # (the run under the lock, which lock_run starts, is of the commit that prepush began on and its
+  # leak stage checked: HEAD may have moved while prepush waited for the lock)
+  [ "$head" = "${HJV_CI_PREPUSH_HEAD:-$head}" ] ||
+    fail "prepush: HEAD moved from $HJV_CI_PREPUSH_HEAD, which prepush began on, to $head before it took the lock"
   if [ -z "${HJV_CI_PREPUSH:-}" ]; then
     # What needs no lock: the log folder, the leak stage and the preflight. The leak stage comes
     # first: a hit or a broken rule of the reuse costs seconds, not the run.
@@ -3449,9 +3454,9 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
     fi
     step "prepush: what the stages need of this machine"
     preflight "${units[@]}"
-    [ ${#units[@]} -gt 0 ] || prepush_passed
+    [ ${#units[@]} -gt 0 ] || prepush_passed "$head"
     if [ "${HJV_CI_LOCK:-}" != "$CI" ]; then
-      export HJV_CI_PREPUSH=$PREPUSH_LOGS
+      export HJV_CI_PREPUSH=$PREPUSH_LOGS HJV_CI_PREPUSH_HEAD=$head
       step "prepush: the lock of $CI"
       lock_run prepush "$@"
     fi
@@ -3531,13 +3536,18 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
     prepush_end drill "drill:$drill" "$head" "drill:$drill" || fail "prepush: the $drill drill did not pass ($PREPUSH_LOGS/drill.log)"
   fi
   trap - EXIT INT TERM HUP
-  prepush_passed "${#units[@]}" "${reused[@]}"
+  prepush_passed "$head" "${#units[@]}" "${reused[@]}"
 }
-# The last lines of a prepush run that passed: how long it took since its start, with the units of
-# <count> that it reused, and its pass line, which counts them
-prepush_passed() { # [<count of units> <reused unit>...]
-  local count=${1:-0}
+# The last lines of a prepush run that passed on <commit>, while HEAD is that commit still, on a
+# clean tree (a run that reused all of its units has had no job's end to look): how long it took
+# since its start, with the units of <count> that it reused, and its pass line, which counts them
+prepush_passed() { # <commit> [<count of units> <reused unit>...]
+  local head=$1 count=${2:-0}
+  shift
   shift || true
+  if [ "$(git -C "$ROOT" rev-parse HEAD)" != "$head" ] || [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+    fail "prepush: HEAD or the working tree changed since prepush began on $head, which is what it checked"
+  fi
   echo "prepush: passed, $(($(date +%s) - ${HJV_CI_RUN%%-*})) s, $# of $count units reused${*:+ ($*)}" |
     tee -a "$PREPUSH_LOGS/summary.txt"
   owned_built
