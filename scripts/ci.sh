@@ -928,11 +928,17 @@ CLIENT_DART_TESTS+=" test/hjviewer_settings_split_test.dart"
 # a dropped patch fails (the account screens' tests, design v3 7-5, moved with client patch 0033).
 CLIENT_DART_TESTS_LATER=""
 
-# Ubuntu has no libyuv.pc, which the client's linux-pkg-config build looks up (docs/e2e.md)
+# Ubuntu has no libyuv.pc, which the client's linux-pkg-config build looks up (docs/e2e.md). The
+# client stage and e2e:build run side by side in prepush, each a build that may read it: the file is
+# put in place whole, never emptied under the other's build.
 pkgconfig() {
+  local pc="$CI/pkgconfig/libyuv.pc" text
+  text=$(printf '%s\n' 'libdir=/usr/lib/x86_64-linux-gnu' 'includedir=/usr/include' 'Name: libyuv' \
+    'Description: libyuv' 'Version: 0' 'Libs: -L${libdir} -lyuv' 'Cflags: -I${includedir}')
+  [ "$(cat "$pc" 2> /dev/null)" != "$text" ] || return 0
   mkdir -p "$CI/pkgconfig"
-  printf '%s\n' 'libdir=/usr/lib/x86_64-linux-gnu' 'includedir=/usr/include' 'Name: libyuv' \
-    'Description: libyuv' 'Version: 0' 'Libs: -L${libdir} -lyuv' 'Cflags: -I${includedir}' > "$CI/pkgconfig/libyuv.pc"
+  printf '%s\n' "$text" > "$pc.$$"
+  mv -f "$pc.$$" "$pc"
 }
 
 client_stage() {
