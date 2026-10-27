@@ -3185,15 +3185,17 @@ prepush_start() { # <name> <target> [nice]
   PREPUSH_PID[$name]=$!
 }
 # Waits for the job <name> of prepush_start, keeps the side logs that it wrote, says how it ended
-# (summary.txt), puts its steps' times in times.tsv, and records the passes of <unit...> that its
-# log shows (reuse_record, a server stage's parts also when another failed). Its status is 1 unless
-# the job ended with 0 and its log with the pass line of <target> and no skipped line; then the last
-# lines of its log come too.
+# and how long it took (summary.txt: by its log's EXIT line, since the jobs beside it are waited for
+# one after another), puts its steps' times in times.tsv, and records the passes of <unit...> that
+# its log shows (reuse_record, a server stage's parts also when another failed). Its status is 1
+# unless the job ended with 0 and its log with the pass line of <target> and no skipped line; then
+# the last lines of its log come too.
 prepush_end() { # <name> <target> <commit> [<unit>...]
-  local name=$1 target=$2 head=$3 log="$PREPUSH_LOGS/$1.log" status=0 f u base
+  local name=$1 target=$2 head=$3 log="$PREPUSH_LOGS/$1.log" status=0 f u base ended
   shift 3
   wait "${PREPUSH_PID[$name]}" || status=$?
   unset "PREPUSH_PID[$name]"
+  ended=$(date -d "$(sed -n 's/^EXIT [0-9]* //p' "$log" | tail -n 1)" +%s 2> /dev/null || date +%s)
   base=${target%%:*}
   for f in ${SIDE_LOGS[$base]:-}; do
     if [ "$(stat -c %Y "$CI/$f" 2> /dev/null || echo 0)" -ge "${PREPUSH_START[$name]}" ]; then
@@ -3201,7 +3203,7 @@ prepush_end() { # <name> <target> <commit> [<unit>...]
     fi
   done
   sed -n "/^-- time by step/,/^\$/s/^ *\([0-9][0-9]*\) s  /$name\t\1\t/p" "$log" >> "$PREPUSH_LOGS/times.tsv"
-  echo "prepush: $name: exit $status, $(($(date +%s) - PREPUSH_START[$name])) s, $(grep -c '^skipped:' "$log" || true)" \
+  echo "prepush: $name: exit $status, $((ended - PREPUSH_START[$name])) s, $(grep -c '^skipped:' "$log" || true)" \
     "skipped line(s), log $log" | tee -a "$PREPUSH_LOGS/summary.txt"
   for u in "$@"; do reuse_record "$u" "$log" "$PREPUSH_LOGS/inputs/$u.txt" "$head" | tee -a "$PREPUSH_LOGS/summary.txt"; done
   [ "$(git -C "$ROOT" rev-parse HEAD)" = "$head" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
