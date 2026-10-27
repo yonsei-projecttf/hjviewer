@@ -562,11 +562,11 @@ class StopTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="hjv-stop-")
-        # the run of a job ($SELF <target>), whose exit trap takes a second, as the deploy stage's
-        # cleanup takes its time
+        # the run of a job ($SELF <target>), whose exit trap takes half a second, as the deploy
+        # stage's cleanup takes its time
         self.stage = os.path.join(self.tmp, "stage.sh")
         with open(self.stage, "w", encoding="utf-8") as f:
-            f.write('#!/usr/bin/env bash\ntrap \'sleep 1; echo "$1 ended" >> "$TRAPS"\' EXIT\n'
+            f.write('#!/usr/bin/env bash\ntrap \'sleep 0.5; echo "$1 ended" >> "$TRAPS"\' EXIT\n'
                     'echo "$1 started" >> "$TRAPS"\nsleep "${STAGE_SECONDS:-30}"\n')
         os.chmod(self.stage, 0o755)
 
@@ -617,11 +617,11 @@ echo "jobs left: ${!PREPUSH_PID[*]}"''')
         self.assertTrue(out.endswith("jobs left: \n"), out)
 
     def test_a_job_stopped_before_its_run_has_started_does_not_start_it(self):
-        # a Ctrl-C while the job's subshell is still in the log head (a second long here): the
+        # a Ctrl-C while the job's subshell is still in the log head (half a second long here): the
         # subshell, a job in the background, does not take it, and its run, which would start after
         # it, would not have had it either; nothing would stop that run then
         out = self.jobs(r'''
-log_head() { echo "$1 head" >> "$TRAPS"; sleep 1; }
+log_head() { echo "$1 head" >> "$TRAPS"; sleep 0.5; }
 export STAGE_SECONDS=3
 prepush_start late late
 says "late head"
