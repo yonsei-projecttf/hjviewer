@@ -79,6 +79,14 @@
 # HJV_E2E_HOLD=<seconds> (at most 3600): a run that fails keeps its namespaces, servers and
 # clients up that long, or until $RUN/release exists, before it cleans up, so that the state can
 # be looked at (logs, --hjv-e2e-option through in_ns) without running it again.
+# HJV_E2E_PARTS=<part>[,<part>...] (account, access, minver, policy): a partial run of strict mode
+# for a fix loop, which ends with PARTIAL and is no pass (PARTS below). HJV_E2E_NO_SKIP=1: a run
+# that would skip a part fails before it starts (skips_ahead).
+#
+# In strict mode the base path's controller and the sides ver, rev and pc2 hold a relay that is
+# paired for the client's default WebRTC window (2.5 s), as every 443-only network does; the other
+# controller sides get a window of 0.1 s (relay_window), and the run's last check, relay_held,
+# reads every controller's log for both.
 set -euo pipefail
 
 MODE=${1:-strict}
@@ -200,6 +208,40 @@ conf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(conf)
 print(conf.hash_of(sys.argv[2], os.urandom(16)))' "$ROOT/deploy/guest-conf.py" "$1"
 }
+
+# A partial run for a fix loop (docs/e2e.md): HJV_E2E_PARTS=<part>[,<part>...] runs the base path
+# and only these parts of strict mode: account (S24 to S20), access (A, C, W6 and DEL; without the
+# account part, after alice's PC and controller logged in), minver (V1, V2, V4) and policy (V5-V7,
+# V9). Its line "skipped: ..." names what it leaves out, and it ends with PARTIAL, never with PASS.
+PARTS=${HJV_E2E_PARTS:-}
+if [ -n "$PARTS" ]; then
+  [ "$MODE" = strict ] || { echo "HJV_E2E_PARTS names parts of strict mode" >&2; exit 2; }
+  for p in ${PARTS//,/ }; do
+    case $p in account | access | minver | policy) ;; *) echo "HJV_E2E_PARTS: no part '$p' (account, access, minver, policy)" >&2; exit 2 ;; esac
+  done
+fi
+part() { [ -z "$PARTS" ] || [[ ",$PARTS," == *",$1,"* ]]; } # <part>: this run has it
+# What the run would skip, known before it starts from the conditions its parts test later; with
+# HJV_E2E_NO_SKIP=1 (scripts/ci.sh in strict mode, where a skip fails the stage at its end) the run
+# fails at once, not after twelve minutes
+has_faketime() { [ -n "${FAKETIME_LIB:-}" ] && [ -f "$FAKETIME_LIB" ]; }
+client_has() { grep -aqF -- "$1" "$CLIENT"; } # <text>: one of the client's own (an E2E command's)
+skips_ahead() {
+  if [ "$MODE" = strict ] && [ -n "$ACCOUNT" ] && part account && ! has_faketime; then echo "S27 (no FAKETIME_LIB)"; fi
+  if [ -n "$ACCESS" ] && part access; then
+    [ -n "$POLICY" ] || echo "W6-E2 (no version policy: HJV_RELEASE)"
+    client_has hjv-e2e-support-pc || echo "W6-E4, W6-E4b, W6-E5 (no hjv-e2e-support-pc in $CLIENT)"
+    client_has 'after delete-account' || echo "DEL1-DEL3 (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
+  fi
+  if [ -n "$KEYED" ] && [ -z "$POLICY" ] && part policy; then echo "V5-V7 and V9 (no HJV_RELEASE)"; fi
+  if [ -n "$PARTS" ]; then echo "the strict parts other than $PARTS (HJV_E2E_PARTS)"; fi
+}
+if [ -n "${HJV_E2E_NO_SKIP:-}" ] && AHEAD=$(skips_ahead) && [ -n "$AHEAD" ]; then
+  echo "FAIL: HJV_E2E_NO_SKIP=1, and this run would skip:"
+  sed 's/^/  - /' <<<"$AHEAD"
+  exit 1
+fi
+[ -z "$PARTS" ] || echo "skipped: the strict parts other than $PARTS (HJV_E2E_PARTS: a partial run, which is no pass)"
 
 # <-I|-D>: the host forwards UDP between hjv-pc and hjv-ctl (open mode)
 forward_rules() {
@@ -514,6 +556,7 @@ cat "$RUN/probe.log"
 
 log "controller logs in with the password and forwards 127.0.0.1:9099 to the PC's 127.0.0.1:8099"
 in_ns hjv-ctl ctl "$CLIENT" --hjv-e2e-forward "$ID" "$PASSWORD" 9099 127.0.0.1 8099 >"$RUN/ctl.log" 2>&1 &
+FORWARD=$!
 got=
 for _ in $(seq 30); do
   got=$(in_ns hjv-ctl ctl curl -s --max-time 20 http://127.0.0.1:9099/index.html || true)
@@ -526,8 +569,14 @@ if [ "$got" != "$TOKEN" ]; then
   exit 1
 fi
 echo "page from the PC, fetched through the session: $got"
-# the forward stays up until the end otherwise; the account part opens sessions of its own
+# the forward stays up until the end otherwise; the account part opens sessions of its own, and
+# gives the controller its relay window, which no process of it may still be running for
 sudo ip netns pids hjv-ctl | xargs -r ps -o pid=,args= -p | awk '/--hjv-e2e-forward/ {print $1}' | xargs -r sudo kill 2>/dev/null || true
+for _ in $(seq 50); do
+  [ -e "/proc/$FORWARD" ] || break
+  sleep 0.1
+done
+[ ! -e "/proc/$FORWARD" ] || { echo "FAIL: the forward did not end"; exit 1; }
 
 log "controller opens a remote desktop session and decodes the PC's screen"
 in_ns hjv-ctl ctl "$CLIENT" --hjv-e2e-screenshot "$ID" "$PASSWORD" "$RUN/screen.ppm" >"$RUN/ctl-screen.log" 2>&1 || true
@@ -586,6 +635,72 @@ fail() {
 }
 client_of() { case $1 in pc | pc2) echo "$PC_CLIENT" ;; *) echo "$CLIENT" ;; esac }
 
+# The relay window (E2E-1 of the CI audit, 2026-10-27). Behind strict's firewall a controller's
+# WebRTC offer cannot connect, and the client holds the relay, paired within some 30 ms, for
+# upstream's relay-fallback-delay (RELAY_FALLBACK_DELAY_MS, 2.5 s) before the session starts. That
+# is no security timer, only the time a direct path gets to win. The base path's forward and screen
+# keep the default, the fallback every 443-only network takes; so do ver (the minimum version's
+# refusals), rev (the App Review account's ticket) and pc2 (X4's proof from PC to PC), which run the
+# product's whole hold through those paths, and the PCs, which connect out nowhere else. Every other
+# controller side gets RELAY_WINDOW s (more than 0, which means the default), written to its
+# LocalConfig before its first process starts: a process stores its LocalConfig whole and would put
+# its own copy back. The file relay-window of a side says since when; relay_held checks at the end.
+RELAY_WINDOW=0.1
+RELAY_DEFAULT=" pc pc2 pcb rev ver "
+relay_window() { # <ns> <side> <client>: before each call of a client
+  [ "$MODE" = strict ] && [[ $RELAY_DEFAULT != *" $2 "* ]] && [ ! -e "$RUN/$2/relay-window" ] || return 0
+  mkdir -p "$RUN/$2/home" "$RUN/$2/ipc"
+  in_ns "$1" "$2" "$3" --hjv-e2e-local-option relay-fallback-delay "$RELAY_WINDOW" >/dev/null 2>&1 || true
+  [ "$(local_option "$2" relay-fallback-delay)" = "$RELAY_WINDOW" ] || fail "$2: its relay window did not reach its LocalConfig"
+  date +%s.%N >"$RUN/$2/relay-window"
+}
+# Every controller's log line of a relay connection (client.rs: "<time> used to establish WebSocket
+# connection"): those of a side since its relay window held the paired relay less than 2.4 s, all
+# others at least 2.4 s, the base path's forward and screen among them
+relay_held() {
+  local out
+  out=$(python3 -I -c '
+import datetime, glob, os, re, sys
+run, window = sys.argv[1:3]
+line = re.compile(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ [+-]\d\d:\d\d)\] INFO \[[^]]*\] "
+                  r"([0-9.]+)(ms|s) used to establish WebSocket connection$")
+unit = {"ms": 1e-3, "s": 1.0}
+held, bad = {"default": {}, "window": {}}, []
+for logs in sorted(glob.glob(os.path.join(run, "*", "home", ".local", "share", "logs", "HJViewer", "hjv-e2e"))):
+    side = os.path.relpath(logs, run).split(os.sep)[0]
+    try:
+        since = float(open(os.path.join(run, side, "relay-window")).read())
+    except OSError:
+        since = None
+    for path in sorted(glob.glob(os.path.join(logs, "*.log"))):
+        for text in open(path, encoding="utf-8", errors="replace"):
+            m = line.match(text.rstrip("\n"))
+            if not m:
+                continue
+            at = datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S.%f %z").timestamp()
+            secs = float(m.group(2)) * unit[m.group(3)]
+            kind = "window" if since is not None and at > since else "default"
+            held[kind][side] = held[kind].get(side, 0) + 1
+            if (secs < 2.4) != (kind == "window"):
+                bad.append("%s %.2f s %s" % (side, secs, "in its window" if kind == "window" else "without one"))
+def count(kind):
+    sides = ", ".join("%s %d" % item for item in sorted(held[kind].items()))
+    return "%d (%s)" % (sum(held[kind].values()), sides or "none")
+if bad:
+    print("held the relay as no side should: " + "; ".join(bad))
+elif held["default"].get("ctl", 0) < 2:
+    print("the base path forward and screen are not among the connections that held the default")
+elif glob.glob(os.path.join(run, "*", "relay-window")) and not held["window"]:
+    print("no relay connection in a window that was given")
+else:
+    print("ok %s held the paired relay the default 2.5 s for WebRTC; %s took their side\x27s %s s"
+          % (count("default"), count("window"), window))' "$RUN" "$RELAY_WINDOW")
+  case $out in
+    "ok "*) pass "relay window: ${out#ok }" ;;
+    *) fail "relay window: $out" ;;
+  esac
+}
+
 # <side> [NAME=value...] <args...>: the side's client in its namespace (hjv-<side>). Its standard
 # output is $OUT, its exit code $RC and its run time $MS (ms); both outputs go to $RUN/<side>.out,
 # with the portal passwords masked. Prints the hjv-e2e lines, indented.
@@ -599,6 +714,7 @@ run() {
   for a in "$@"; do
     case "$a" in "$ALICE_PW" | "$BOB_PW" | "$CAROL_PW" | "$WRONG_PW") shown+=("***") ;; *) shown+=("$a") ;; esac
   done
+  relay_window "hjv-$s" "$s" "$(client_of "$s")"
   t0=$(date +%s%N)
   RC=0
   OUT=$(in_ns "hjv-$s" "$s" env "${envs[@]}" "$(client_of "$s")" "$@" 2>"$RUN/$s.err") || RC=$?
@@ -653,6 +769,7 @@ until_ok() { # <seconds> <what> <command...>: retries the command until it succe
 # up, and is ended here (RC 0).
 forward_try() {
   local s=$1 port=$3 fpid
+  relay_window "hjv-$s" "$s" "$(client_of "$s")"
   in_ns "hjv-$s" "$s" "$(client_of "$s")" --hjv-e2e-forward "$PC_ID" "$2" "$port" 127.0.0.1 8099 \
     >"$RUN/$s-forward.out" 2>&1 &
   fpid=$!
@@ -852,11 +969,27 @@ gap() {
 }
 knock() { run pc --hjv-e2e-option hjv-pc-sync "$RANDOM$RANDOM" >/dev/null; } # the PC syncs soon
 ms_since() { echo $((($(date +%s%N) - $1) / 1000000)); }
+# hbbs refuses a PC's registration that comes fourth in a row each less than 7 s after the one
+# before (TOO_FREQUENT, upstream's limit, kept as it is), and the PC then stays offline until its
+# next keep-alive asks again. A binding's change registers the PC anew: a step that changes it
+# twice right after two changes first waits until the PC's last registration (the line keep_alive:
+# of hbbs's answer in its log) is 7.5 s old.
+pc_registered_7s_ago() {
+  pc_log | python3 -I -c '
+import datetime, re, sys, time
+last = 0.0
+for line in sys.stdin:
+    m = re.match(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ [+-]\d\d:\d\d)\] INFO \[[^]]*\] keep_alive: ", line)
+    if m:
+        last = max(last, datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S.%f %z").timestamp())
+sys.exit(0 if time.time() - last >= 7.5 else 1)'
+}
 
 # Client calls in the background (1.9: TV-W5's streams, W6-E3's waiting room, W6-E5's probe):
 # <tag> <ns> <side> <client> [NAME=value...] <args...>; its output goes to $RUN/<tag>.bg, and it
 # ends by itself within BG_LIMIT s. bg_wait <tag> <seconds> waits for it: BG_RC, BG_OUT, BG_MS
-# (ms the wait took); a call still running then fails the run.
+# (ms the wait took); a call still running then fails the run. A stream also ends, as at its
+# seconds, once bg_release has written $RUN/<tag>.until (HJV_E2E_STREAM_UNTIL, client patch 0162).
 declare -A BG_PID=()
 BG_LIMIT=150
 bg_start() {
@@ -867,11 +1000,24 @@ bg_start() {
     shift
   done
   mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
-  in_ns "$ns" "$side" timeout -k 5 "$BG_LIMIT" env "${envs[@]}" "$client" "$@" >"$RUN/$tag.bg" 2>&1 &
+  relay_window "$ns" "$side" "$client"
+  in_ns "$ns" "$side" timeout -k 5 "$BG_LIMIT" env HJV_E2E_STREAM_UNTIL="$RUN/$tag.until" "${envs[@]}" "$client" "$@" \
+    >"$RUN/$tag.bg" 2>&1 &
   BG_PID[$tag]=$!
 }
 # (the subshell's /proc entry: bash reaps its children as they end, as forward_try relies on)
 bg_running() { [ -e "/proc/${BG_PID[$1]}" ]; }
+# <tag> <what it outlasted>: a stream that is still running ends, right after the checks it had to
+# outlast, instead of running on to its seconds
+bg_release() {
+  bg_running "$1" || fail "$1: the stream ended before $2: $(grep '^hjv-e2e:' "$RUN/$1.bg" | tail -n 2 | tr '\n' ' ')"
+  : >"$RUN/$1.until"
+}
+# the last bg_wait's stream ended at its release, with video (exit 0, its frames line)
+bg_released() {
+  [ "$BG_RC" = 0 ] && grep -qx 'hjv-e2e: released' <<<"$BG_OUT" && grep -q '^hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT"
+}
+bg_frames() { sed -n 's/^hjv-e2e: \([0-9]* frames\), .* in \([0-9.]*\)s = .*/\1 in \2 s/p' <<<"$BG_OUT"; } # of the last bg_wait
 bg_has() { grep -qF -- "$2" "$RUN/$1.bg" 2>/dev/null; } # <tag> <text>
 bg_wait() {
   local t0 end
@@ -948,11 +1094,15 @@ account_common() { # hjv-pc and hjv-ctl logged in as alice, the PC bound
   keep_secrets ctl
 }
 
-account_open() {
-  log "account (open): alice's PC and controller, the switch on for everyone"
+account_ready() { # alice's PC and controller logged in, the switch on for everyone, the PC active
   admin passwordless on
   account_common
   until_ok 10 "the PC's binding active" state_is active
+}
+
+account_open() {
+  log "account (open): alice's PC and controller, the switch on for everyone"
+  account_ready
   run ctl --hjv-e2e-devices
   has "device $PC_ID linux pwless=active" || fail "the controller's list has no active PC"
   log "S21: a password-less remote screen over WebRTC P2P (UDP between the peers)"
@@ -1182,12 +1332,11 @@ account_strict() {
   until_ok 20 "S13b: the PC's list again with hjv-api back" state_is active
   # one more sync with the list, which still has the stream's key
   sleep 6
-  bg_running s35 || fail "S35: the stream ended before hjv-api's list came back: $(grep '^hjv-e2e:' "$RUN/s35.bg" | tail -n 2 | tr '\n' ' ')"
-  bg_wait s35 100
-  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
-    fail "S35: the stream did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  bg_release s35 "hjv-api's list came back"
+  bg_wait s35 15
+  bg_released || fail "S35: the stream did not end at its release (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
   [ "$(sessions_ended)" = "$ended" ] || fail "S35: the PC cut a session: $(pc_log | grep -o 'hjv: same-account session #.*' | tail -1)"
-  pass "S35: the password-less stream ran its 85 s through hjv-api stopped, gone past the list's 30 s and back (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT")); no session cut"
+  pass "S35: the password-less stream ran through hjv-api stopped, gone past the list's 30 s and back with one more sync, then ended at its release (exit 0, $(bg_frames)); no session cut"
 
   log "S14: hjv-ctl2 logs out and in as alice (a new key); its first connection right after"
   run ctl2 --hjv-e2e-logout
@@ -1265,7 +1414,7 @@ account_strict() {
   # S33: hjv-ctl's password-less stream; S34: a password stream of a controller that is not logged
   # in (a logged-in controller sends its proof with the password too, and the PC takes the proof)
   bg_start s33 hjv-ctl ctl "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 60
-  bg_start s34 hjv-ctl s34 "$CLIENT" --hjv-e2e-stream "$PC_ID" "$PASSWORD" 25
+  bg_start s34 hjv-ctl s34 "$CLIENT" --hjv-e2e-stream "$PC_ID" "$PASSWORD" 60
   bg_in s33
   bg_in s34
   locks=$(pc_log_count 'hjv: end lock: forced, locked at start true')
@@ -1274,15 +1423,16 @@ account_strict() {
   t0=$(date +%s%N)
   bg_wait s33 15
   cut_by_pc S33 "$CUT_LOGIN" "its key is no longer listed" "$CTL_ID"
+  bg_running s34 || fail "S34: the password stream ended with S33's cut: $(grep '^hjv-e2e:' "$RUN/s34.bg" | tail -n 2 | tr '\n' ' ')"
   until_ok 5 "S33: the PC's lock line of the cut" end_locks_above 'hjv: end lock: forced, locked at start true' "$locks"
   pass "S33: the stream ended $(ms_since "$t0") ms after the revoke (exit 7, 'closed: $CUT_LOGIN'); the PC logged '… from $CTL_ID ended: its key is no longer listed', closed it as 'account key no longer trusted' and locks (forced)"
   until_ok 15 "S17: the revoked key refused" try_rc ctl s17 3
   has 'password required Could not connect without a password' || fail "S17: not the refusal box"
   pass "S17: the revoked key is refused $(ms_since "$t0") ms after the revoke (refresh 5 s); S33: so the controller cut off gets the refusal box, not the session again"
-  bg_wait s34 40
-  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
-    fail "S34: the password stream did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
-  pass "S34: the password stream beside it ran its 25 s (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT")): sessions opened by a password are not held to the list"
+  bg_release s34 "S17's refusal"
+  bg_wait s34 15
+  bg_released || fail "S34: the password stream did not end at its release (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  pass "S34: the password stream beside it ran on through S33's cut and S17's refusal to its release (exit 0, $(bg_frames)): sessions opened by a password are not held to the list"
 
   log "S18: hjv-ctl2 takes the PC out of the list"
   run ctl2 --hjv-e2e-remove "$PC_ID"
@@ -1310,6 +1460,8 @@ account_strict() {
   pass "S19: the PC dropped its binding $WITHIN_MS ms after the logout returned; refused, and hjv-api released it"
 
   log "S19b: the PC's user logs out while hjv-api is gone"
+  # (its login and logout register the PC twice more, right after S19's two)
+  until_ok 10 "S19b: the PC's last registration 7.5 s old (hbbs's limit)" pc_registered_7s_ago
   pc_bound
   bind_s19b=$BIND_REQ
   pwless_ok ctl2 s19c "S19b: the PC bound again"
@@ -1374,20 +1526,24 @@ account_strict() {
   log "S25, S38: [끄기] on the PC with a password-less stream open, the option written again, then a login on the PC"
   pc_bound
   pwless_ok ctl2 s25a "S25: bound"
-  bg_start s38off hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 12
+  bg_start s38off hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 40
   bg_in s38off
   ended=$(sessions_ended)
   run pc --hjv-e2e-option hjv-pwless-off Y
   within_ms 1500 pc_off || fail "S25: the PC did not keep Off within 1.5 s of [끄기]"
   s25_ms=$WITHIN_MS
+  # (from here on: a sync that began before the PC kept Off is no sync after [끄기])
+  ts=$(date +%s.%N)
   pwless_refused ctl2 s25b "S25: after [끄기]"
   # S38's other half (D-6): [끄기] stops new password-less logins; its sync goes on, and the open
-  # session stays
-  bg_wait s38off 30
-  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
-    fail "S38: the stream open at [끄기] did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  # session stays through it
+  until_ok 15 "S38: a sync of the PC after [끄기]" pc_syncs_match "$ts" '[0-9]'
+  bg_release s38off "the PC's sync after [끄기]"
+  bg_wait s38off 15
+  bg_released ||
+    fail "S38: the stream open at [끄기] did not end at its release (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
   [ "$(sessions_ended)" = "$ended" ] || fail "S38: [끄기] cut a session: $(pc_log | grep -o 'hjv: same-account session #.*' | tail -1)"
-  pass "S38: [끄기] on the PC refused new password-less logins and left the open stream to its end (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT"))"
+  pass "S38: [끄기] on the PC refused new password-less logins and left the open stream through the PC's next sync ($(pc_syncs_since "$ts")) to its release (exit 0, $(bg_frames))"
   run pc --hjv-e2e-option hjv-pwless-off N
   sleep 2
   pwless_refused ctl2 s25c "S25: with Config2's request written again"
@@ -1518,7 +1674,7 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   pass "D1: $(grep -o 'device list answered after the logout.*' <<<"$OUT")"
 
   log "S27: the controller's clock 15 minutes ahead"
-  if [ -n "${FAKETIME_LIB:-}" ] && [ -f "$FAKETIME_LIB" ]; then
+  if has_faketime; then
     ft=(LD_PRELOAD="$FAKETIME_LIB" FAKETIME=+15m FAKETIME_DONT_FAKE_MONOTONIC=1)
     tok=$(local_option ctl access_token)
     run ctl "${ft[@]}" --hjv-e2e-devices
@@ -1544,6 +1700,10 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   else
     echo "skipped: S27 (no libfaketime: FAKETIME_LIB)"
   fi
+
+  # (still inside the minute X7b waits out: they restart nothing)
+  account_allowlist
+  account_id_rule
 
   log "X7b: hjv-api asks hbbs again and marks the PC needs-relogin; then a login on the PC"
   # with a knock for the PC's sync: a PC started again has no list yet, so it would wait its
@@ -1585,7 +1745,7 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   asked
   pass "X4: the second PC (alice), not in its own list, connects to the PC without a password"
 
-  account_allowlist
+  account_list_mode
 
   log "S20: the portal passwords, tokens and account keys in $RUN"
   keep_secrets ctl
@@ -1621,15 +1781,10 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
 
 # The open login of 2026-10-14 (server/api/README.md, Admin): an ID the SSO accepts and nobody
 # imported logs in and is registered, a block logs its devices out and refuses its next login
-# after the SSO, unblock lets it in again, and in list mode an ID off the list is refused without
-# an SSO call. Then HJViewer's ID rule of the same day (README.md, hbbs and the SSO): an ID that is
-# not a faculty or staff one gets its own answer without an SSO call, and a person the SSO
-# accepts and HJViewer denies gets its own after it. On hjv-ctl2, free since D1; hjv-api starts
-# again for list mode, after X7b.
+# after the SSO, and unblock lets it in again. On hjv-ctl2, free since D1, inside the minute that
+# X7b waits out (none of them starts anything again).
 account_allowlist() {
   local calls e_wrong blocked_text="이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요."
-  local id_rule_text="연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."
-  local denied_text="이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요."
   log "S28: a portal ID never imported logs in and is registered"
   calls=$(sso_calls)
   run ctl2 --hjv-e2e-login "$CAROL" "$CAROL_PW"
@@ -1673,7 +1828,49 @@ account_allowlist() {
   run ctl2 --hjv-e2e-devices
   want 0 "S30: carol's device list after unblock"
   pass "S30: unblock lets carol in again"
+}
 
+# HJViewer's ID rule of 2026-10-14 (README.md, hbbs and the SSO): an ID that is not a faculty or
+# staff one gets its own answer without an SSO call, and a person the SSO accepts and HJViewer
+# denies gets its own after it. Inside X7b's minute too, on hjv-ctl (alice's): its two denials are
+# first logins of IDs not on the allowlist, which take hjv-api's share of their SSO calls that one
+# address may hold (a quarter of HJV_API_LIMIT_SSO_NEW's 10 an hour). S11's carol took one of
+# hjv-ctl2's (until 2026-10-27 S32 ran on hjv-ctl2 after S31, whose restarts of hjv-api emptied
+# the shares); hjv-ctl's address has taken none.
+account_id_rule() {
+  local calls id_rule_text="연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."
+  local denied_text="이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요."
+  log "S32: HJViewer's ID rule: IDs that are not faculty or staff ones are refused before the SSO; a person the SSO accepts and HJViewer denies is told so after it"
+  calls=$(sso_calls)
+  for id in 1234567890 zatest01 BZTEST01; do
+    run ctl --hjv-e2e-login "$id" "$WRONG_PW"
+    want 1 "S32: $id"
+    has "login failed: HTTP 403: $id_rule_text" || fail "S32: $id did not get the ID rule's text ($(grep 'login failed' <<<"$OUT"))"
+  done
+  [ "$(sso_calls)" = "$calls" ] || fail "S32: an ID outside the rule reached the fake SSO"
+  run ctl --hjv-e2e-login ZZSSO-DENIED "$WRONG_PW"
+  want 1 "S32: a person the SSO's user call refuses"
+  has "login failed: HTTP 403: $denied_text" || fail "S32: not the denial's text ($(grep 'login failed' <<<"$OUT"))"
+  run ctl --hjv-e2e-login ZZSSO-ZA "$WRONG_PW"
+  want 1 "S32: a person whose pcode starts with ZA"
+  has "login failed: HTTP 403: $denied_text" || fail "S32: a ZA pcode did not get the denial's text ($(grep 'login failed' <<<"$OUT"))"
+  [ "$(sso_calls)" = $((calls + 2)) ] || fail "S32: the denied logins did not reach the fake SSO once each"
+  admin report >"$RUN/report.txt"
+  # the denials by reason: the user call refused, a pcode outside the rule
+  grep -q 'login id-rule' "$RUN/report.txt" && grep -q 'login denied-user-refused' "$RUN/report.txt" &&
+    grep -q 'login denied-pcode-rule' "$RUN/report.txt" ||
+    fail "S32: the report does not count the refusals by reason: $(grep -c . "$RUN/report.txt") lines"
+  grep -qiE '1234567890|zatest01|bztest01|zzsso-denied|zzsso-za' "$RUN/hjv-api.log" && fail "S32: an ID typed in hjv-api's log"
+  run ctl --hjv-e2e-devices
+  want 0 "S32: the login of hjv-ctl (alice's) after the refused ones"
+  pass "S32: a student-like number, ZA and B: 403 '$id_rule_text' without an SSO call; the user call refused and a ZA pcode: 403 '$denied_text' after one SSO call each"
+}
+
+# The open login's list mode: an ID off the list is refused without an SSO call. hjv-api starts
+# again for it, which would end X7b's minute early (once a minute per PC is kept in its memory):
+# after X4.
+account_list_mode() {
+  local calls e_wrong
   log "S31: list mode (HJV_API_LOGIN=list): an ID off the list is refused without an SSO call"
   admin user delete "$CAROL" | tee "$RUN/delete.txt" | sed 's/^/    /'
   grep -q '(and its allowlist entry)$' "$RUN/delete.txt" || fail "S31: the deleted account's entry stayed"
@@ -1700,31 +1897,6 @@ account_allowlist() {
   admin report >"$RUN/report.txt"
   sed -n 2p "$RUN/report.txt" | grep -q '^login: open (' || fail "S31: hjv-api is not in open mode again: $(sed -n 2p "$RUN/report.txt")"
   pass "S31: in list mode carol (deleted, off the list) gets the wrong password's failure without an SSO call; bob (imported) logs in; open mode again after"
-
-  log "S32: HJViewer's ID rule: IDs that are not faculty or staff ones are refused before the SSO; a person the SSO accepts and HJViewer denies is told so after it"
-  calls=$(sso_calls)
-  for id in 1234567890 zatest01 BZTEST01; do
-    run ctl2 --hjv-e2e-login "$id" "$WRONG_PW"
-    want 1 "S32: $id"
-    has "login failed: HTTP 403: $id_rule_text" || fail "S32: $id did not get the ID rule's text ($(grep 'login failed' <<<"$OUT"))"
-  done
-  [ "$(sso_calls)" = "$calls" ] || fail "S32: an ID outside the rule reached the fake SSO"
-  run ctl2 --hjv-e2e-login ZZSSO-DENIED "$WRONG_PW"
-  want 1 "S32: a person the SSO's user call refuses"
-  has "login failed: HTTP 403: $denied_text" || fail "S32: not the denial's text ($(grep 'login failed' <<<"$OUT"))"
-  run ctl2 --hjv-e2e-login ZZSSO-ZA "$WRONG_PW"
-  want 1 "S32: a person whose pcode starts with ZA"
-  has "login failed: HTTP 403: $denied_text" || fail "S32: a ZA pcode did not get the denial's text ($(grep 'login failed' <<<"$OUT"))"
-  [ "$(sso_calls)" = $((calls + 2)) ] || fail "S32: the denied logins did not reach the fake SSO once each"
-  admin report >"$RUN/report.txt"
-  # the denials by reason: the user call refused, a pcode outside the rule
-  grep -q 'login id-rule' "$RUN/report.txt" && grep -q 'login denied-user-refused' "$RUN/report.txt" &&
-    grep -q 'login denied-pcode-rule' "$RUN/report.txt" ||
-    fail "S32: the report does not count the refusals by reason: $(grep -c . "$RUN/report.txt") lines"
-  grep -qiE '1234567890|zatest01|bztest01|zzsso-denied|zzsso-za' "$RUN/hjv-api.log" && fail "S32: an ID typed in hjv-api's log"
-  run ctl2 --hjv-e2e-devices
-  want 0 "S32: the login of hjv-ctl2 (bob's) after the refused ones"
-  pass "S32: a student-like number, ZA and B: 403 '$id_rule_text' without an SSO call; the user call refused and a ZA pcode: 403 '$denied_text' after one SSO call each"
 }
 
 # the device list of hjv-ctl (hjv-ctl2) has the PC in state <state>
@@ -1764,6 +1936,7 @@ arun() {
   # (EL4 calls it in the account part, which runs without the access part's passwords too)
   for p in "$PASSWORD" "$ALICE_PW" "${GUEST_PW:-}" "${WRONG_GUEST_PW:-}" "${REVIEW_PW:-}"; do line=${line//"$p"/***}; done
   mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
+  relay_window "$ns" "$side" "$client"
   t0=$(date +%s%N)
   RC=0
   OUT=$(in_ns "$ns" "$side" timeout -k 5 30 env "${envs[@]}" "$client" "$@" 2>"$RUN/$side.err") || RC=$?
@@ -2017,7 +2190,7 @@ support_link_part() {
   # A headless command is a process of its own, and the app keeps its support PCs in its memory
   # only (src/hjviewer_account/support.rs): E4, E4b and E5 need the support PC that E3's process
   # learned in the next ones, which an hjv-e2e build hands on in LocalConfig hjv-e2e-support-pc
-  if grep -aqF hjv-e2e-support-pc "$CLIENT"; then
+  if client_has hjv-e2e-support-pc; then
     log "W6-E4: alice's controller to PC B without a password: the staff mark, and the wait for [수락]"
     cm0=$(pcb_cm_lines)
     marks=$(pcb_log_count "hjv: support mark for $staff_id")
@@ -2342,7 +2515,7 @@ delete_part() {
   [ "$got" = "200 " ] && grep -qF -- "$code" "$RUN/w6.body" || fail "DEL: the code's support link answers '$got'"
   cp "$RUN/w6.body" "$RUN/del-support-page.html"
 
-  if ! grep -aqF 'after delete-account' "$CLIENT"; then
+  if ! client_has 'after delete-account'; then
     echo "skipped: DEL1-DEL3, the account's deletion from the app (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
   else
     log "DEL1: alice deletes her account in the app (POST /api/hjv/account/delete, signed with her account key)"
@@ -2482,6 +2655,7 @@ vrun() {
     if [ "$a" = "$PASSWORD" ]; then shown+=("***"); else shown+=("$a"); fi
   done
   mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
+  relay_window hjv-ctl "$side" "$client"
   t0=$(date +%s%N)
   RC=0
   OUT=$(in_ns hjv-ctl "$side" timeout -k 5 30 "$client" "$@" 2>"$RUN/$side.err") || RC=$?
@@ -2663,23 +2837,40 @@ policy_part() {
 }
 
 if [ -n "$ACCOUNT" ]; then
-  if [ "$MODE" = strict ]; then account_strict; else account_open; fi
+  if [ "$MODE" = open ]; then
+    account_open
+  elif part account; then
+    account_strict
+  elif [ -n "$ACCESS" ] && part access; then
+    log "account (a partial run's access part): alice's PC and controller, the switch on for everyone"
+    account_ready
+    # (the service's environment as the account part leaves it, from S15 on)
+    PC_SERVICE_ENV=(HJV_E2E_LOGON=1)
+  fi
 fi
-if [ -n "$ACCESS" ]; then
+if [ -n "$ACCESS" ] && part access; then
   access_part
   delete_part
 fi
-if [ -n "$MIN_HBBS" ]; then min_controller_part; fi
+if [ -n "$MIN_HBBS" ] && part minver; then min_controller_part; fi
 if [ -n "$POLICY" ]; then
-  policy_part
+  if part policy; then policy_part; fi
 elif [ -n "$KEYED" ]; then
   echo "skipped: V5-V7 and V9, the version policy (no HJV_RELEASE, tools/hjv-release to sign its test policies)"
+fi
+if [ "$MODE" = strict ]; then
+  log "relay window: the relay connections' hold for WebRTC"
+  relay_held
 fi
 
 log "what hbbs saw"
 # (|| true: with pipefail, head leaving early fails the pipeline once the log is long)
 grep -E "update_pk|Punch hole|Tcp connection from 10\.77" "$RUN/hbbs.log" | sed 's/^\[[^]]*\] //' | head -8 || true
 echo
+if [ -n "$PARTS" ]; then
+  echo "PARTIAL ($MODE): the base path and $PARTS; the other parts did not run, so this is no pass"
+  exit 0
+fi
 echo "PASS ($MODE): $(grep -o 'transport: .*' "$RUN/ctl.log" | tail -1)$([ -n "$ACCOUNT" ] && echo ", same-account logins")$(
   [ -n "$ACCESS" ] && echo ", the staff-only gate")$([ -n "$MIN_HBBS" ] && echo ", hbbs's minimum")$(
   [ -n "$POLICY" ] && echo ", the version policy")"

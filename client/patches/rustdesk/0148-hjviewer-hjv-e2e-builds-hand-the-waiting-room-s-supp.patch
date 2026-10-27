@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 10:58:14 +0900
-Subject: [PATCH 148/161] hjviewer: hjv-e2e builds hand the waiting room's
+Subject: [PATCH 148/162] hjviewer: hjv-e2e builds hand the waiting room's
  support PC to the next command
 
 Every headless command is a process of its own, and the app keeps the support PCs

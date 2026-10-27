@@ -60,7 +60,9 @@
 #                          version, and with the update code in the patches (src/hjviewer_update),
 #                          a client with the update test keys and the signed version policy that
 #                          tools/hjv-release signs for it (V1, V2, V4-V7 and V9), and the
-#                          update code's unit tests once more in a build without those keys
+#                          update code's unit tests once more in a build without those keys. With
+#                          HJV_E2E_PARTS=<part>[,<part>...] only those parts of strict mode run, a
+#                          partial run for fix loops that is never a pass (HJV_CI_STRICT=1 refuses it)
 #   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
 #                          this user's own namespaces a PC that sleeps is woken through hjv-api
 #                          and hjv-relay, with the E2E's client, Caddy, hjv-api and fake SSO, and
@@ -106,10 +108,11 @@ CADDY_SHA256=727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b
 # where the E2E installs the PC's client: Linux counts only programs under /usr as installed, and
 # hjv-api adds only installed PCs to an account (design v3 7-4)
 E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
-# The E2E's clients are test builds (feature hjv-e2e) of a fresh checkout, whose crates cargo
-# compiles anew each time. Without link-time optimization and in 16 units the client and its unit
-# tests take under a minute each once their dependencies are built, instead of three and a half
-# minutes each with the release profile as it is.
+# The E2E's clients are test builds (feature hjv-e2e) of a checkout whose crates cargo compiles
+# anew each time client/patches gives another tree (build_e2e_client keeps it otherwise). Without
+# link-time optimization and in 16 units the client takes under a minute once its dependencies are
+# built, instead of three and a half minutes with the release profile as it is. Its unit tests
+# build in the test profile, with rustc's incremental cache, as the client stage's do.
 E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
 # the stages of prepush, in their order
 PREPUSH_STAGES="server client deploy e2e wol leak"
@@ -135,6 +138,8 @@ E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 7))
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 26))
 # strict: and 1.9.1's in-app account deletion (2026-10-26): DEL1 4, DEL2 1, DEL3 2, DEL4 2
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 9))
+# strict: and the relay window's line, the default hold on the base path (2026-10-27)
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 1))
 # by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the staff-only gate's E2E
 # counted it (260, 2026-10-17, the series with src/hjviewer_access); 345 with 1.9.1's series
 # (2026-10-26: 1.9.0's run counted 344, client patch 0160 adds one)
@@ -1887,7 +1892,38 @@ e2e_update_keys() {
   printf '%s\n' "HJV_UPDATE_PUBKEY=1:${pub[0]},2:${pub[1]}" "HJV_UPDATE_ROOT_PUBKEY=101:${pub[2]},102:${pub[3]}" HJV_POLICY_FLOOR=1:0
 }
 
-# The client of the E2E (docs/e2e.md): a fresh upstream checkout with client/patches, built for
+# What a checkout of fetch-upstream.sh holds, whatever its path: the trees of its commits
+# (rustdesk's and hbb_common's), its status (the overlay files over them) and the mode, size and
+# content of every file there that differs from its commit or is not in it, those that git ignores
+# too (an overlay file can be one, as an icon under upstream's *png rule), except the src/version.rs
+# that the client's build writes. A build keeps its checkout while a fresh fetch holds the same, so
+# that cargo, which judges path crates by their files' times, compiles nothing again; another tree
+# replaces it, with new times.
+checkout_state() { # <rustdesk checkout>
+  local dir
+  for dir in "$1" "$1/libs/hbb_common"; do
+    git -C "$dir" rev-parse 'HEAD^{tree}'
+    git -C "$dir" --no-optional-locks status --porcelain --untracked-files=all
+    (cd "$dir" && git ls-files -z -m -o -- . ':!libs/hbb_common' ':!src/version.rs' | sort -z |
+      xargs -0 -r sh -c 'for f; do [ ! -e "$f" ] || echo "$f $(stat -c "%a %s" "$f") $(sha256sum < "$f")"; done' _)
+  done | sha256sum
+}
+
+# Whether a cargo test log's test executable (its "Running unittests src/lib.rs" line) was compiled
+# with the build variable <NAME> set or unset, by rustc's dep-info next to it ("# env-dep:" lines);
+# nothing when it does not read that variable
+test_env() { # <cargo test log> <NAME>
+  local exe
+  exe=$(sed -n 's/^ *Running unittests src\/lib\.rs (\(.*\))$/\1/p' "$1" | head -n 1)
+  [ -n "$exe" ] && [ -f "$exe.d" ] || return 0
+  if grep -q "^# env-dep:$2=" "$exe.d"; then
+    echo set
+  elif grep -qx "# env-dep:$2" "$exe.d"; then
+    echo unset
+  fi
+}
+
+# The client of the E2E (docs/e2e.md): an upstream checkout with client/patches, built for
 # the test server hjv.test with the test feature hjv-e2e. Once the patches have the account code
 # (src/hjviewer_account) and firewall-e2e.sh its account part (HJV_E2E_ACCOUNT), it also pins the
 # E2E's public keys and runs unit tests in that build, when the patched tree has <module>: those
@@ -1938,8 +1974,15 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
   # what a build of the e2e stage leaves for the wol stage of its prepush run: gone until it passes
   rm -f "$CI/target-e2e/e2e-client.stamp"
   step "e2e: upstream checkout with client/patches"
-  rm -rf "$CI/upstream-e2e"
-  UPSTREAM_DIR="$CI/upstream-e2e" "$ROOT/scripts/fetch-upstream.sh" client
+  rm -rf "$CI/upstream-e2e.new"
+  UPSTREAM_DIR="$CI/upstream-e2e.new" "$ROOT/scripts/fetch-upstream.sh" client
+  if [ -d "$src" ] && [ "$(checkout_state "$src")" = "$(checkout_state "$CI/upstream-e2e.new/rustdesk")" ]; then
+    rm -rf "$CI/upstream-e2e.new"
+    echo "the same as the checkout of the last build, which stays with its files' times: cargo has nothing to compile again"
+  else
+    rm -rf "$CI/upstream-e2e"
+    mv "$CI/upstream-e2e.new" "$CI/upstream-e2e"
+  fi
   echo "the patched tree: $(git -C "$src" rev-parse 'HEAD^{tree}') (and the overlay files)"
   E2E_ACCOUNT=
   if [ -d "$src/src/hjviewer_account" ] && grep -q HJV_E2E_ACCOUNT "$ROOT/tools/e2e/firewall-e2e.sh"; then
@@ -1962,25 +2005,36 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
     cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the client build"
   E2E_CLIENT="$CI/target-e2e/release/rustdesk"
   if [ -e "$src/src/$unit" ] || [ -e "$src/src/$unit.rs" ]; then
+    # (the debug side of target-e2e, which only this checkout builds into: cargo hashes another
+    # checkout's path crates alike, and would take their builds as fresh for the kept one)
     step "e2e: the client's unit tests (--lib $filter, output also in build/ci/e2e-unit-$filter.log)"
     with_skips "$CI/e2e-unit-$filter.log" env -C "$src" PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test \
-      HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
-      cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib "$filter" ||
+      HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${keys[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
+      cargo test --locked --features linux-pkg-config,hjv-e2e --lib "$filter" ||
       fail "e2e: the client's unit tests (--lib $filter)"
     at_least "e2e: the client's unit tests that passed (--lib $filter)" "$(passed_tests "$CI/e2e-unit-$filter.log")" \
       "${UNIT_LEAST[$filter]:-1}"
+    if [ -n "$E2E_KEYED" ] && [ "$(test_env "$CI/e2e-unit-$filter.log" HJV_UPDATE_PUBKEY)" != set ]; then
+      fail "e2e: the client's unit tests ran an executable built without the update keys (rustc's dep-info)"
+    fi
     if [ -n "$E2E_KEYED" ] && [[ hjviewer_update == *"$filter"* ]]; then e2e_unit_without_update_keys "$work" "${keys[@]}"; fi
   else
     skip "the client's unit tests of src/$unit (not in the patched tree)"
   fi
+  # The client's build script writes src/version.rs (its version and the minute of the build) in
+  # each target directory's first build of a checkout, which leaves the builds before the last one
+  # older than it: in the next run of the kept checkout cargo would compile the client crate again
+  # for that minute. Back at the checkout's time, the file leaves every build as it is.
+  if [ -e "$src/src/version.rs" ]; then touch -r "$src/Cargo.toml" "$src/src/version.rs"; fi
 }
 
 # The update code's unit tests once more, in a build without the update keys (minimum version
 # design 1-7): such a build takes no part and does what 1.5.1 did, and the tests that pin this
 # return at once in the keyed build. The build variables of build_e2e_client without the update
-# keys, which are taken out of this shell's environment too, in the same target directory: cargo
-# compiles the client crate's tests again (about a minute), which shows that the keys are gone, and
-# leaves the client built there as it is.
+# keys, which are taken out of this shell's environment too, in the test profile and in a target
+# directory of their own: in build_e2e_client's, cargo would compile the client crate's tests
+# twice a run, for the keys going and coming back. That the keys are gone shows in rustc's dep-info
+# of the test executable that ran (test_env), not in what cargo compiled.
 e2e_unit_without_update_keys() { # <work dir> <build variables...>
   local work=$1 v vars=() log="$CI/e2e-unit-hjviewer_update-nokeys.log"
   shift
@@ -1990,11 +2044,13 @@ e2e_unit_without_update_keys() { # <work dir> <build variables...>
   step "e2e: the update code's unit tests without the update keys (--lib hjviewer_update, output also in build/ci/e2e-unit-hjviewer_update-nokeys.log)"
   with_skips "$log" env -C "$CI/upstream-e2e/rustdesk" -u HJV_UPDATE_PUBKEY -u HJV_UPDATE_ROOT_PUBKEY -u HJV_POLICY_FLOOR \
     PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${vars[@]}" \
-    "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
-    cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib hjviewer_update ||
+    CARGO_TARGET_DIR="$CI/target-e2e-nokeys" \
+    cargo test --locked --features linux-pkg-config,hjv-e2e --lib hjviewer_update ||
     fail "e2e: the update code's unit tests without the update keys (--lib hjviewer_update)"
-  grep -q '^ *Compiling rustdesk v' "$log" ||
-    fail "e2e: cargo did not compile the client's tests again without the update keys: they ran with the keys"
+  for v in HJV_UPDATE_PUBKEY HJV_UPDATE_ROOT_PUBKEY HJV_POLICY_FLOOR; do
+    [ "$(test_env "$log" "$v")" = unset ] ||
+      fail "e2e: the update code's tests without the update keys ran an executable built with $v (rustc's dep-info)"
+  done
   at_least "e2e: the update code's unit tests that passed without the update keys" "$(passed_tests "$log")" \
     "${UNIT_LEAST[hjviewer_update-nokeys]}"
 }
@@ -2080,11 +2136,18 @@ e2e_minimum_version() {
 }
 
 e2e_stage() {
-  local work="$CI/e2e" mode extra=()
+  local work="$CI/e2e" mode extra=() modes=(strict open)
   # a client given by hand would go without the build's unit tests and, built without the E2E's
   # keys, without the account E2E
   [ -z "$E2E_CLIENT_GIVEN" ] ||
     fail "e2e: E2E_CLIENT is not taken here: the stage builds the client from client/patches, runs its unit tests and the account E2E with it"
+  # a partial run of strict mode (HJV_E2E_PARTS, docs/e2e.md) is for a fix loop and never a pass
+  if [ -n "${HJV_E2E_PARTS:-}" ]; then
+    [ "${HJV_CI_STRICT:-}" != 1 ] ||
+      fail "e2e: HJV_E2E_PARTS=$HJV_E2E_PARTS runs a part of the E2E, which is never a pass: not with HJV_CI_STRICT=1 (prepush)"
+    modes=(strict)
+    skip "firewall-e2e.sh open (HJV_E2E_PARTS: a partial run of strict mode)"
+  fi
   sudo -n true 2> /dev/null || fail "e2e: needs sudo without a password prompt (network namespaces, iptables)"
   if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
     fail "e2e: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
@@ -2111,14 +2174,26 @@ e2e_stage() {
   extra+=("${E2E_MINVER[@]}")
   e2e_access
   extra+=("${E2E_ACCESS[@]}")
-  for mode in strict open; do
+  # In strict mode a skip fails the stage at its end: what was skipped so far fails it now, and
+  # firewall-e2e.sh fails at its start on what it knows it would skip (HJV_E2E_NO_SKIP), not after
+  # twelve minutes
+  if [ "${HJV_CI_STRICT:-}" = 1 ]; then
+    if [ ${#SKIPPED[@]} -gt 0 ]; then
+      printf '  - %s\n' "${SKIPPED[@]}"
+      fail "e2e: HJV_CI_STRICT=1, and the stage has skipped the ${#SKIPPED[@]} part(s) above before the E2E"
+    fi
+    extra+=(HJV_E2E_NO_SKIP=1)
+  fi
+  for mode in "${modes[@]}"; do
     step "e2e: tools/e2e/firewall-e2e.sh $mode (output also in build/ci/e2e-$mode.log)"
     with_skips "$CI/e2e-$mode.log" env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" \
       HBBR="$CI/target/release/hbbr" PROBE="$PROBE" CLIENT="$E2E_CLIENT" PC_CLIENT="$E2E_PC_DIR/rustdesk" "${extra[@]}" \
       "$ROOT/tools/e2e/firewall-e2e.sh" "$mode" || fail "e2e: firewall-e2e.sh $mode"
   done
   at_least "e2e: PASS lines (strict)" "$(grep -c '^PASS' "$CI/e2e-strict.log" || true)" "$E2E_LEAST_STRICT"
-  at_least "e2e: PASS lines (open)" "$(grep -c '^PASS' "$CI/e2e-open.log" || true)" "$E2E_LEAST_OPEN"
+  if [ ${#modes[@]} = 2 ]; then
+    at_least "e2e: PASS lines (open)" "$(grep -c '^PASS' "$CI/e2e-open.log" || true)" "$E2E_LEAST_OPEN"
+  fi
   cleanup_e2e
   trap - EXIT
 }

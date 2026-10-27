@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 03:22:41 +0900
-Subject: [PATCH 105/161] hjviewer: the PC locks again at a session's end if it
+Subject: [PATCH 105/162] hjviewer: the PC locks again at a session's end if it
  was locked at its start (TV-W3)
 
 TV-W3, PC side and proto (design build/v19/design/w3-w4.md 3-1, 5-1,

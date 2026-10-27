@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:13:40 +0900
-Subject: [PATCH 015/161] mobile: Korean typed on the iPhone keyboard arrives
+Subject: [PATCH 015/162] mobile: Korean typed on the iPhone keyboard arrives
  once, without a stray 1
 
 The iOS Korean keyboard rewrites the hidden field in several steps for one key

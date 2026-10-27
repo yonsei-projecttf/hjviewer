@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 17 Oct 2026 07:36:37 +0900
-Subject: [PATCH 060/161] hjviewer: access tickets: the shared vectors' new
+Subject: [PATCH 060/162] hjviewer: access tickets: the shared vectors' new
  SHA-256
 
 hjviewer's server/api/tests/vectors/access-tickets.json has two

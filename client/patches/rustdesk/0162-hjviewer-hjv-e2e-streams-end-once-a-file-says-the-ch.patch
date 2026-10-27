@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 27 Oct 2026 12:57:55 +0900
+Subject: [PATCH 162/162] hjviewer: hjv-e2e streams end once a file says the
+ checks are done
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The E2E's background streams (TV-W5's S35, S34 and S38's [끄기]) have to
+outlast some checks, and ran for a fixed number of seconds well past them.
+With HJV_E2E_STREAM_UNTIL=<file>, --hjv-e2e-stream also ends as at its
+seconds (the frames line, the close, exit 0) once that file exists, after
+`hjv-e2e: released`. Such a stream waits for its messages 200 ms at a time
+to look for the file between them, and still ends after 30 s without one;
+its seconds stay the cap. Only in builds with the hjv-e2e feature.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_e2e.rs | 36 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 14f24ec..ec30519 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -7,7 +7,9 @@
+ //!     <app> --hjv-e2e-forward <id> <password> <local port> <remote host> <remote port>
+ //!     <app> --hjv-e2e-screenshot <id> <password> <out.ppm>   (first screen of a desktop session)
+ //!     <app> --hjv-e2e-stream <id> <password> <seconds> [record]   (video bitrate of a desktop
+-//!                       session; record: reports a recording from 1 s in until 1 s before the end)
++//!                       session; record: reports a recording from 1 s in until 1 s before the end;
++//!                       with HJV_E2E_STREAM_UNTIL=<file> it also ends, as at <seconds>, once that
++//!                       file exists)
+ //!     <app> --hjv-e2e-wol-report <mac> <ipv4/prefix> <gateway>  (one sync with that wake report)
+ //!     <app> --hjv-e2e-input-probe <id> <n>   (a desktop session without a password that sends n
+ //!                       mouse moves while the PC waits for [수락], and n more once it is in; TV-W6)
+@@ -401,6 +403,7 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+     let mut video: Option<VideoHandler> = None;
+     let (mut frames, mut video_bytes, mut first_frame) = (0u64, 0u64, None);
+     let mut recording = false;
++    let mut last_message = Instant::now();
+     loop {
+         if let (Watch::Stream(secs, true), Some(start)) = (&watch, first_frame) {
+             let elapsed = Instant::now().duration_since(start).as_secs_f64();
+@@ -417,7 +420,7 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+         }
+         if let (Watch::Stream(secs, _), Some(start)) = (&watch, first_frame) {
+             let elapsed = std::time::Instant::now().duration_since(start).as_secs_f64();
+-            if elapsed >= *secs as f64 {
++            if elapsed >= *secs as f64 || released() {
+                 println!(
+                     "hjv-e2e: {frames} frames, {:.2} MB of video in {elapsed:.1}s = {:.2} Mb/s, {:.1} fps",
+                     video_bytes as f64 / 1e6,
+@@ -428,8 +431,13 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+                 return 0;
+             }
+         }
+-        let bytes = match timeout(30_000, stream.next()).await {
+-            Ok(Some(Ok(bytes))) => bytes,
++        let bytes = match timeout(wait_ms(&watch), stream.next()).await {
++            Ok(Some(Ok(bytes))) => {
++                last_message = Instant::now();
++                bytes
++            }
++            // a stream that a file can release looks for it between the messages
++            Err(_) if last_message.elapsed() < Duration::from_secs(30) => continue,
+             _ => {
+                 eprintln!("hjv-e2e: the session ended before a screen arrived");
+                 return 1;
+@@ -529,6 +537,26 @@ async fn close(stream: &mut Stream) {
+     stream.send(&msg).await.ok();
+ }
+ 
++/// `HJV_E2E_STREAM_UNTIL`: once the file it names exists, a stream ends as at its seconds, so that
++/// the E2E ends a background stream right after the checks it has to outlast.
++fn released() -> bool {
++    let released = std::env::var_os("HJV_E2E_STREAM_UNTIL")
++        .is_some_and(|file| std::path::Path::new(&file).exists());
++    if released {
++        println!("hjv-e2e: released");
++    }
++    released
++}
++
++/// How long a session waits for its next message: 30 s, or 200 ms at a time for a stream that a
++/// file can release (`released`).
++fn wait_ms(watch: &Watch) -> u64 {
++    match watch {
++        Watch::Stream(..) if std::env::var_os("HJV_E2E_STREAM_UNTIL").is_some() => 200,
++        _ => 30_000,
++    }
++}
++
+ /// `n` mouse moves along a line from (`from`, `from`), 20 ms apart.
+ async fn send_moves(stream: &mut Stream, n: u32, from: i32) {
+     for i in 0..n as i32 {

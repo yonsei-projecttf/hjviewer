@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Wed, 14 Oct 2026 09:37:51 +0900
-Subject: [PATCH 043/161] hjviewer: operator's view: the users and the PCs of
+Subject: [PATCH 043/162] hjviewer: operator's view: the users and the PCs of
  the service, for its operator
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

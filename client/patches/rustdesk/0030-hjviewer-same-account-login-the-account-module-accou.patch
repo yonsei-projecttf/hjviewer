@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 09:56:33 +0900
-Subject: [PATCH 030/161] hjviewer: same-account login: the account module,
+Subject: [PATCH 030/162] hjviewer: same-account login: the account module,
  account requests and key stores
 
 The base of 1.6.0's same-account logins, on which the PC's side and the

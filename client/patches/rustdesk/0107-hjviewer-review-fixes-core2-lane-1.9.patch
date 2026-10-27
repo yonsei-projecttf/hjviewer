@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 04:19:40 +0900
-Subject: [PATCH 107/161] hjviewer: review fixes, core2 lane (1.9)
+Subject: [PATCH 107/162] hjviewer: review fixes, core2 lane (1.9)
 
 TV-W3 (view-only Yes): the PC still ignores the upstream No that every
 view-only switch sends, but takes the Yes sent on leaving view-only with

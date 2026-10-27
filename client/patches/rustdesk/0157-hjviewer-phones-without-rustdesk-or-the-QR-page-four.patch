@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Mon, 26 Oct 2026 15:34:13 +0900
-Subject: [PATCH 157/161] hjviewer: phones without rustdesk:// or the QR page;
+Subject: [PATCH 157/162] hjviewer: phones without rustdesk:// or the QR page;
  four more types in the privacy manifest
 
 Links (C6, D-13): a pinned build takes hjviewer:// links alone.

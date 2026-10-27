@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 02:02:26 +0900
-Subject: [PATCH 086/161] hjviewer: the PC's connection window marks proven
+Subject: [PATCH 086/162] hjviewer: the PC's connection window marks proven
  logins, shows recording
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

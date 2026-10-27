@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Mon, 26 Oct 2026 15:25:31 +0900
-Subject: [PATCH 153/161] hjviewer: no pilot notice in the app (1.9.1)
+Subject: [PATCH 153/162] hjviewer: no pilot notice in the app (1.9.1)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
