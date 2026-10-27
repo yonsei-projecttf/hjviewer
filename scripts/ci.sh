@@ -3172,12 +3172,15 @@ PREPUSH_LOGS=""
 # Starts <target> of this script as a job of this prepush run, with HJV_CI_STRICT=1 and its log
 # <log folder>/<name>.log: prepush's head first, then PREPUSH_HEAD[<name>], its output, last its
 # exit status. With nice it runs with a lower priority, for CPU and disk, than the jobs beside it.
+# The job ends with the run of <target>, not before it on a signal that ends that run too: so its
+# process is there for prepush_stop to find that run by, until that run's exit traps have ended.
 prepush_start() { # <name> <target> [nice]
   local name=$1 target=$2 pre=()
   [ "${3:-}" != nice ] || pre=(nice -n 10 ionice -c 2 -n 7)
   PREPUSH_START[$name]=$(date +%s)
   (
     trap 'echo "EXIT $? $(date "+%Y-%m-%d %H:%M:%S %z")"' EXIT
+    trap : TERM HUP
     log_head "$target"
     if [ -n "${PREPUSH_HEAD[$name]:-}" ]; then printf '%s\n' "${PREPUSH_HEAD[$name]}"; fi
     env --default-signal=INT,QUIT HJV_CI_STRICT=1 "${pre[@]}" "$SELF" "$target"
@@ -3215,17 +3218,74 @@ prepush_end() { # <name> <target> <commit> [<unit>...]
   tail -n 25 "$log"
   return 1
 }
-# Stops the job <name> while it runs, its processes with it; their exit traps clean up after them
+# The signal that stops prepush (prepush_run's traps), which its jobs may have had too
+PREPUSH_SIGNAL=""
+# Stops the jobs that still run when prepush stops early
 prepush_stop_all() {
-  local name
-  for name in "${!PREPUSH_PID[@]}"; do prepush_stop "$name"; done
+  prepush_stop "${!PREPUSH_PID[@]}"
 }
-prepush_stop() { # <name>
-  [ -n "${PREPUSH_PID[$1]:-}" ] || return 0
-  echo "prepush: stopping $1, which a failure before makes pointless" | tee -a "$PREPUSH_LOGS/summary.txt"
-  end_tree "${PREPUSH_PID[$1]}"
-  wait "${PREPUSH_PID[$1]}" 2> /dev/null || true
-  unset "PREPUSH_PID[$1]"
+# Stops the jobs <name...> while they run, their processes with them, and waits until every one of
+# those processes has ended: their exit traps clean up after them (the deploy stage's systemd units
+# and containers, the E2E's namespaces, the drill's containers), and prepush, which holds the lock,
+# ends after them. A job that had prepush's signal too (Ctrl-C reaches every process of the
+# terminal's group) is ending already, in those traps, which a second signal would cut short: such
+# jobs get two minutes to end on their own before they are stopped.
+prepush_stop() { # <name...>
+  local name names=() pids=() left pid
+  for name in "$@"; do
+    [ -n "${PREPUSH_PID[$name]:-}" ] || continue
+    readarray -t -O "${#pids[@]}" pids < <(prepush_pids "${PREPUSH_PID[$name]}")
+    # (one that has ended, its exit status not yet taken, is waited for below)
+    if [ -n "$(prepush_alive "${PREPUSH_PID[$name]}")" ]; then names+=("$name"); fi
+  done
+  left=$(prepush_alive "${pids[@]}")
+  if [ -n "$left" ] && [ -n "$PREPUSH_SIGNAL" ]; then
+    echo "prepush: $PREPUSH_SIGNAL: waiting up to 120 s for ${names[*]} to end, cleaning up" | tee -a "$PREPUSH_LOGS/summary.txt"
+    # shellcheck disable=SC2086 # (pids)
+    left=$(prepush_wait 120 $left)
+  fi
+  if [ -n "$left" ]; then
+    echo "prepush: stopping ${names[*]}, which a failure before makes pointless" | tee -a "$PREPUSH_LOGS/summary.txt"
+    # the processes as they were found, each before those it started (end_tree)
+    for pid in $left; do kill "$pid" 2> /dev/null || true; done
+    # shellcheck disable=SC2086 # (pids)
+    left=$(prepush_wait 120 $left)
+    [ -z "$left" ] || echo "prepush: processes of ${names[*]} still run after 120 s: $left" | tee -a "$PREPUSH_LOGS/summary.txt"
+  fi
+  for name in "$@"; do
+    [ -n "${PREPUSH_PID[$name]:-}" ] || continue
+    wait "${PREPUSH_PID[$name]}" 2> /dev/null || true
+    unset "PREPUSH_PID[$name]"
+  done
+}
+# <pid> and the processes it started, each before those it started
+prepush_pids() { # <pid>
+  local child
+  echo "$1"
+  for child in $(pgrep -P "$1" || true); do prepush_pids "$child"; done
+}
+# Those of the processes <pid...> that have not ended (a zombie has), on one line
+prepush_alive() { # <pid...>
+  local pid stat left=""
+  for pid in "$@"; do
+    { read -r stat < "/proc/$pid/stat"; } 2> /dev/null || continue
+    stat=${stat##*) }
+    [ "${stat%% *}" = Z ] || left+=" $pid"
+  done
+  echo "${left# }"
+}
+# Waits up to <seconds> for the processes <pid...> to end; prints those that have not
+prepush_wait() { # <seconds> <pid...>
+  local n=$1 left
+  shift
+  left="$*"
+  for _ in $(seq $((n * 5))); do
+    # shellcheck disable=SC2086 # (pids)
+    left=$(prepush_alive $left)
+    [ -n "$left" ] || return 0
+    sleep 0.2
+  done
+  echo "$left"
 }
 # The log of a stage whose units are all reused: prepush's head, the passes it reuses, and a last
 # line "== CI reused: <name> (...)" before the exit status
@@ -3259,8 +3319,10 @@ reuse_lines() { # <unit>
 # A unit that fails stops what has not started; the jobs beside it end as they would (those beside
 # the deploy stage within a minute or two; the deploy stage holds systemd units and containers that
 # its cleanup takes down), but the drill, which a failure of the e2e or wol stage stops (its exit
-# trap removes its containers). Named stages run alone: after a fix, those that read what it changed
-# (docs/ci.md), with --drill also the drill.
+# trap removes its containers). prepush stopped early (a failure of its own, a signal) stops the jobs
+# that still run, and in either case ends only once their exit traps have (prepush_stop). Named
+# stages run alone: after a fix, those that read what it changed (docs/ci.md), with --drill also the
+# drill.
 prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
   local a plan="" drill="" stages=() units=() s u parts=() head list run=() reused=() n failed=() started=() t
   reuse_rules
@@ -3340,7 +3402,11 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
   fi
   PREPUSH_LOGS=$HJV_CI_PREPUSH
   lock_held prepush "$@"
-  # a job still running when prepush stops early (set -e, a signal) is stopped with it
+  # a job still running when prepush stops early (set -e, a failure, a signal) is stopped with it,
+  # and prepush ends once its processes have (prepush_stop)
+  trap 'PREPUSH_SIGNAL=SIGINT; exit 130' INT
+  trap 'PREPUSH_SIGNAL=SIGTERM; exit 143' TERM
+  trap 'PREPUSH_SIGNAL=SIGHUP; exit 129' HUP
   trap prepush_stop_all EXIT
   preflight_ports "${units[@]}"
   step "prepush: the plan (the records of the last ${HJV_CI_REUSE_HOURS:-24} h in $CI/passes)"
@@ -3406,7 +3472,7 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
     step "prepush: the $drill drill"
     prepush_end drill "drill:$drill" "$head" "drill:$drill" || fail "prepush: the $drill drill did not pass ($PREPUSH_LOGS/drill.log)"
   fi
-  trap - EXIT
+  trap - EXIT INT TERM HUP
   prepush_passed "${#units[@]}" "${reused[@]}"
 }
 # The last lines of a prepush run that passed: how long it took since its start, with the units of

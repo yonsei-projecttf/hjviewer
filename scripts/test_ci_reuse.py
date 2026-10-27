@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Tests of scripts/ci.sh's reuse of strict passes (prepush's plan, its inputs, records and the
-evidence they take) and of its lock, on throwaway copies of this tree and CI directories
-(scripts/ci.sh leak runs them):
+evidence they take), of its lock and of how prepush stops its jobs, on throwaway copies of this tree
+and CI directories (scripts/ci.sh leak runs them):
 
     python3 -I -B -m unittest discover -s scripts -p 'test_ci_reuse.py'
 """
@@ -432,6 +432,41 @@ class LockTest(unittest.TestCase):
         # once its process has ended, a holder that does not say who it is
         self.assertRegex(bash('source "$1"; lock_holder', ci, env=env).stdout,
                          r"^a run that does not say who it is \(no live process in .*ci.lock.holder\)\n$")
+
+
+class StopTest(unittest.TestCase):
+    """prepush_stop of scripts/ci.sh: the jobs it stops end with their exit traps, before it returns"""
+
+    def test_a_stopped_job_ends_with_its_exit_trap_whole_and_before_prepush(self):
+        tmp = tempfile.mkdtemp(prefix="hjv-stop-")
+        try:
+            out = bash(r'''source "$1"
+PREPUSH_LOGS=$2 traps=$2/traps
+# a job as prepush_start starts one: a background subshell, under it a run whose exit trap takes a
+# second (as the deploy stage's cleanup takes its time)
+job() {
+  ( env --default-signal=INT bash -c 'trap "sleep 1; echo \"$1 ended\" >> \"$0\"" EXIT; sleep 30' "$traps" "$1" ) &
+  PREPUSH_PID[$1]=$!
+  sleep 0.5
+}
+# stopped after a failure: prepush_stop returns once the trap has ended
+job failure
+prepush_stop failure
+cat "$traps"
+# after a Ctrl-C, which reached the job too: its trap, under way, is not cut short
+job interrupt
+kill -INT $(prepush_pids "${PREPUSH_PID[interrupt]}")
+PREPUSH_SIGNAL=SIGINT
+prepush_stop interrupt
+cat "$traps"
+echo "jobs left: ${!PREPUSH_PID[*]}"''', os.path.join(ROOT, "scripts", "ci.sh"), tmp, env=clean_env(os.path.join(tmp, "ci"))).stdout
+            self.assertIn("prepush: stopping failure, which a failure before makes pointless\nfailure ended\n", out)
+            self.assertIn("prepush: SIGINT: waiting up to 120 s for interrupt to end, cleaning up\n"
+                          "failure ended\ninterrupt ended\n", out)
+            self.assertNotIn("prepush: stopping interrupt", out)
+            self.assertTrue(out.endswith("jobs left: \n"), out)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
