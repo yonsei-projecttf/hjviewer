@@ -9,6 +9,9 @@
 # scripts/package-relay.sh; in the private build repository a draft release gets the package.
 # `check_only` makes a check build: no public key needed, artifacts named -check and kept a day,
 # nothing uploaded to TestFlight or Google Play, no release (design v3 6-4).
+# A build run uploads nothing to TestFlight either: `testflight` with `testflight_run` makes a run
+# that builds nothing and uploads the signed IPA of that finished build run, after the owner has
+# checked its Windows build (docs/ci.md).
 # Every platform job pins the update keys of client/update-keys.env and puts release.json and
 # SHA256SUMS beside its package, for tools/hjv-release (minimum version design 6-4).
 # Variables, signing secrets, run times and billing are documented in docs/ci.md.
@@ -31,9 +34,13 @@ on:
         type: string
         required: false
       testflight:
-        description: "iOS: upload the signed App Store build to TestFlight (private repository, App Store Connect secrets)"
+        description: "iOS, with platforms ios and testflight_run: upload that build run's signed IPA to TestFlight, building nothing (private repository, App Store Connect secrets)"
         type: boolean
         default: false
+      testflight_run:
+        description: "With testflight: the ID of the finished, successful build run (…/actions/runs/<ID>) whose IPA goes to TestFlight"
+        type: string
+        required: false
       play:
         description: "Refused: Google Play uploads are the store run's (store-release.yml, docs/store-release.md)"
         type: boolean
@@ -57,6 +64,10 @@ on:
       testflight:
         type: boolean
         default: false
+      testflight_run:
+        description: With testflight, the build run whose IPA goes to TestFlight
+        type: string
+        default: ""
       play:
         type: boolean
         default: false
@@ -102,8 +113,11 @@ env:
   # check_only: a check build's artifacts carry -check in their names and are kept one day
   BUILD_SUFFIX: ${{ inputs.check_only && '-check' || '' }}
   # Tool versions copied from upstream at RUSTDESK_COMMIT; bump them together with scripts/upstream.env.
+  # The tools of one job alone are in that job's env (Bridge codegen: the bridge generator's,
+  # Android: cargo-ndk's): rust-cache hashes every CARGO_* and RUST* variable into the job's cache
+  # key, so a bump here would leave every Rust job without its cache (GHA-01 of the 2026-10-27
+  # CI audit).
   RUST_VERSION: "1.75" # L22; upstream's Windows job reads SCITER_RUST_VERSION (L21), same value; bridge.yml L11
-  CARGO_NDK_VERSION: "3.1.2" # L24
   LLVM_VERSION: "15.0.6" # L27
   FLUTTER_VERSION: "3.24.5" # L28, Windows and iOS
   ANDROID_FLUTTER_VERSION: "3.24.5" # L29
@@ -112,9 +126,6 @@ env:
   XCODE_VERSION: "26.6"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d" # L39-45, vcpkg 2026.07.29 = vcpkg.json baseline
   NDK_VERSION: "r28c" # L49
-  BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
-  CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
-  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
   # Not upstream: hjv-relay's toolchain, the one scripts/package-relay.sh builds with on the
   # development machine, so that the two builds can be compared
   RELAY_RUST_VERSION: "1.99.0"
@@ -124,42 +135,73 @@ env:
 # (L38), but vcpkg removed the x-gha provider in 2025 (microsoft/vcpkg-tool#1662) and the pinned vcpkg
 # only warns about it, so upstream rebuilds every port on every run. Each vcpkg job here uses a files
 # provider instead, restored and saved with actions/cache, keeping only the packages the run installed.
+# run-vcpkg's own cache of the vcpkg checkout is off (upstream: doNotCache: false): run-vcpkg v11.6,
+# the newest, still calls the retired cache service and failed in every run (restore 400, save an
+# error page), and once that works it would add an entry of hundreds of MB per image to the build
+# repository's 10 GiB (GHA-10 of the 2026-10-27 CI audit).
 
 jobs:
-  # upstream: bridge.yml (generate_bridge, matrix entry L21-27), called from L85-86
-  generate-bridge:
-    name: Bridge codegen
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
-    defaults:
-      run:
-        working-directory: upstream/rustdesk
+  # Not upstream. What every other job needs first: the build plan, the inputs a build refuses, the
+  # server values, the source commit and the pinned public keys. A job of its own, so that the
+  # Windows and Android jobs start beside the Bridge codegen job: they need its files only right
+  # before cargo ("Wait for the bridge files", GHA-11 of the 2026-10-27 CI audit).
+  preflight:
+    name: Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
       build_apps: ${{ steps.plan.outputs.build_apps }}
+      windows: ${{ steps.plan.outputs.windows }}
+      android: ${{ steps.plan.outputs.android }}
+      ios: ${{ steps.plan.outputs.ios }}
+      relay: ${{ steps.plan.outputs.relay }}
+      testflight: ${{ steps.plan.outputs.testflight }}
     steps:
-      # A relay-only run still resolves one source commit for every downstream job, but it has
-      # no Flutter bridge or Dart consumers. Reject impossible upload requests before building.
+      # What each job does; the jobs read it from here. A relay-only run still resolves one
+      # source commit for every downstream job, but it has no Flutter bridge or Dart consumers.
+      # A TestFlight upload builds nothing: it takes the signed IPA of a finished, successful build
+      # run, so that the upload waits for the owner's check of that run's Windows build and the run
+      # with all its jobs, the Dart tests too, has passed. Impossible requests are refused before
+      # anything is built.
       - name: Plan build targets
         id: plan
-        working-directory: ${{ github.workspace }}
         env:
           PLATFORMS: ${{ github.event_name == 'push' && 'all' || inputs.platforms }}
           TESTFLIGHT: ${{ inputs.testflight }}
+          TESTFLIGHT_RUN: ${{ inputs.testflight_run }}
         run: |
+          windows=false android=false ios=false relay=false testflight=false
           case "$PLATFORMS" in
-            windows|android|ios|all) build_apps=true ;;
-            relay) build_apps=false ;;
+            windows) windows=true ;;
+            android) android=true ;;
+            ios) ios=true ;;
+            relay) relay=true ;;
+            all) windows=true android=true ios=true relay=true ;;
             *) echo "::error::platforms must be windows, android, ios, relay or all."; exit 1 ;;
           esac
-          if [ "$TESTFLIGHT" = true ] && [ "$PLATFORMS" != ios ] && [ "$PLATFORMS" != all ]; then
-            echo "::error::testflight uploads the iOS build: run with platforms ios or all."
+          if [ "$TESTFLIGHT" = true ]; then
+            if [ "$PLATFORMS" != ios ] || ! [[ "$TESTFLIGHT_RUN" =~ ^[0-9]{1,20}$ ]]; then
+              echo "::error::testflight uploads the IPA of a finished build run: run with platforms ios and testflight_run=<that run's ID>."
+              exit 1
+            fi
+            ios=false testflight=true
+          elif [ -n "$TESTFLIGHT_RUN" ]; then
+            echo "::error::testflight_run names the build run whose IPA goes to TestFlight: run with testflight=true and platforms ios."
             exit 1
           fi
-          echo "build_apps=$build_apps" >> "$GITHUB_OUTPUT"
+          build_apps=false
+          if [ "$windows" = true ] || [ "$android" = true ] || [ "$ios" = true ]; then build_apps=true; fi
+          {
+            echo "build_apps=$build_apps"
+            echo "windows=$windows"
+            echo "android=$android"
+            echo "ios=$ios"
+            echo "relay=$relay"
+            echo "testflight=$testflight"
+          } | tee -a "$GITHUB_OUTPUT"
 
       - name: Check server variables
-        working-directory: ${{ github.workspace }}
         env:
           CALLED: ${{ inputs.source_ref }}
         run: |
@@ -180,7 +222,6 @@ jobs:
       # fail the run and cost its APK. The store run uploads a bundle of a run the owner checked.
       - name: Check the Google Play input
         if: inputs.play
-        working-directory: ${{ github.workspace }}
         run: |
           echo "::error::play is no longer a build input: build with play=false, then upload the run's -play bundle with the store run (store.yml platform=android action=upload run_id=<this run>; docs/store-release.md)."
           exit 1
@@ -188,7 +229,6 @@ jobs:
       # a check build is never handed out (design v3 6-4)
       - name: Check the check_only input
         if: inputs.check_only && (inputs.testflight || inputs.play)
-        working-directory: ${{ github.workspace }}
         run: |
           echo "::error::check_only builds go nowhere: run without testflight and play."
           exit 1
@@ -203,7 +243,6 @@ jobs:
       # every platform job builds this commit, even if the branch moves during the run
       - name: Record the source commit
         id: source
-        working-directory: ${{ github.workspace }}
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Not upstream. A run of the build repository for version 1.6.0 or later fails without the
@@ -214,20 +253,64 @@ jobs:
       # holds no keys (unless check_only) or a public test key, and every run fails when the file
       # is malformed (minimum version design 6-4).
       - name: Check the pinned public keys
-        working-directory: ${{ github.workspace }}
         env:
           CALLED: ${{ inputs.source_ref }}
           CHECK_ONLY: ${{ inputs.check_only }}
         run: python3 -I scripts/check-build-keys.py --version-file client/version.env --update-keys client/update-keys.env
 
+  # upstream: bridge.yml (generate_bridge, matrix entry L21-27), called from L85-86
+  generate-bridge:
+    name: Bridge codegen
+    needs: preflight
+    if: needs.preflight.outputs.build_apps == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: upstream/rustdesk
+    env:
+      BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
+      CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
+      FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
+    # for the run summary
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
+      bridge_cache: ${{ steps.bridge-out.outputs.cache-hit }}
+    steps:
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          persist-credentials: false
+
+      # Not upstream (GHA-03 of the 2026-10-27 CI audit). The generated files depend only on the
+      # source commit and the generator's tools (build.yml pins this workflow to the source commit
+      # too, docs/ci.md), and every run of a commit made the same bytes: the first run of a commit
+      # saves them under that exact key, without a fallback, and a later one (after a check build,
+      # a run of one more platform) takes them. A miss generates them as upstream does.
+      - name: Restore the generated bridge
+        id: bridge-out
+        uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        with:
+          key: bridge-out-${{ needs.preflight.outputs.source_sha }}-frb${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-expand${{ env.CARGO_EXPAND_VERSION }}-flutter${{ env.BRIDGE_FLUTTER_VERSION }}-rust${{ env.RUST_VERSION }}
+          path: |
+            upstream/rustdesk/src/bridge_generated.rs
+            upstream/rustdesk/src/bridge_generated.io.rs
+            upstream/rustdesk/flutter/lib/generated_bridge.dart
+            upstream/rustdesk/flutter/lib/generated_bridge.freezed.dart
+            upstream/rustdesk/flutter/macos/Runner/bridge_generated.h
+            upstream/rustdesk/flutter/ios/Runner/bridge_generated.h
+
       - name: Fetch upstream and apply hjviewer patches
-        if: steps.plan.outputs.build_apps == 'true'
+        if: steps.bridge-out.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
         run: bash scripts/fetch-upstream.sh client
 
       # bridge.yml L42-59
       - name: Install prerequisites
-        if: steps.plan.outputs.build_apps == 'true'
+        if: steps.bridge-out.outputs.cache-hit != 'true'
         run: |
           sudo apt-get install ca-certificates -y
           sudo apt-get update -y
@@ -246,35 +329,51 @@ jobs:
             pkg-config \
             wget
 
+      # Not upstream. rust-cache hashes `rustc -vV` of every toolchain rustup knows into the cache
+      # key and its fallback, and the image's own stable Rust changes with the image, which GitHub
+      # does not roll out at once (GHA-01 of the 2026-10-27 CI audit: 1.9.1's Windows and Android
+      # builds found no cache). With a rustup directory of the job's own, rustup knows the pinned
+      # toolchain only. The same in every job that builds Rust, which also hands the runner image to
+      # the run summary.
+      - name: Runner image and rustup directory
+        id: image
+        if: steps.bridge-out.outputs.cache-hit != 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+
       # bridge.yml L61-70
       - name: Install Rust toolchain
-        if: steps.plan.outputs.build_apps == 'true'
+        if: steps.bridge-out.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: x86_64-unknown-linux-gnu
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        if: steps.plan.outputs.build_apps == 'true'
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: steps.bridge-out.outputs.cache-hit != 'true'
         with:
           prefix-key: bridge-ubuntu-22.04
           workspaces: upstream/rustdesk -> target
 
       # bridge.yml L72-77 ("Cache Bridge") is dropped: nothing in the job writes /tmp/flutter_rust_bridge.
 
-      # bridge.yml L79-84
+      # bridge.yml L79-84, without its `cache: true`: the SDK and pub caches took about 1 GiB of the
+      # build repository's 10 GiB for at most half a minute per run, and evictions under that limit
+      # took the platforms' vcpkg caches (GHA-02 of the 2026-10-27 CI audit)
       - name: Install flutter
-        if: steps.plan.outputs.build_apps == 'true'
+        if: steps.bridge-out.outputs.cache-hit != 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: "stable"
           flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
-          cache: true
 
       # bridge.yml L86-99, Flutter 3.22.3 branch
       - name: Install flutter rust bridge deps
-        if: steps.plan.outputs.build_apps == 'true'
+        if: steps.bridge-out.outputs.cache-hit != 'true'
         shell: bash
         run: |
           cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
@@ -288,16 +387,28 @@ jobs:
 
       # bridge.yml L101-104
       - name: Run flutter rust bridge
-        if: steps.plan.outputs.build_apps == 'true'
+        if: steps.bridge-out.outputs.cache-hit != 'true'
         run: |
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
           cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      - name: Save the generated bridge
+        if: steps.bridge-out.outputs.cache-hit != 'true'
+        uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        with:
+          key: ${{ steps.bridge-out.outputs.cache-primary-key }}
+          path: |
+            upstream/rustdesk/src/bridge_generated.rs
+            upstream/rustdesk/src/bridge_generated.io.rs
+            upstream/rustdesk/flutter/lib/generated_bridge.dart
+            upstream/rustdesk/flutter/lib/generated_bridge.freezed.dart
+            upstream/rustdesk/flutter/macos/Runner/bridge_generated.h
+            upstream/rustdesk/flutter/ios/Runner/bridge_generated.h
 
       # bridge.yml L106-116. Kept as long as the packages, not upstream's one day: a platform job
       # that "Re-run failed jobs" starts again restores it, and tools/hjv-release takes the
       # packages of a successful run only (docs/ci.md, "릴리스 기록")
       - name: Upload Artifact
-        if: steps.plan.outputs.build_apps == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bridge-artifact
@@ -316,8 +427,8 @@ jobs:
   # failing test shows in the run without holding back the platform builds.
   dart-tests:
     name: Dart tests
-    needs: generate-bridge
-    if: needs.generate-bridge.outputs.build_apps == 'true'
+    needs: [preflight, generate-bridge]
+    if: needs.preflight.outputs.build_apps == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -328,7 +439,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       - name: Fetch upstream and apply hjviewer patches
@@ -415,21 +526,31 @@ jobs:
   # the release upload, and "find Runner.res" (no consumer of libs/portable/Runner.res at this commit).
   windows:
     name: Windows x64
-    needs: generate-bridge
-    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'windows'
+    needs: preflight
+    if: needs.preflight.outputs.windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 180
+    # actions: read for "Wait for the bridge files"
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: upstream/rustdesk
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+    # for the run summary
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
+      vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}
+      vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}
     steps:
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       # The runner's Git checks text files out with CRLF (core.autocrlf=true). Upstream's sources get
@@ -445,7 +566,7 @@ jobs:
 
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
       # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
-      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # and from nowhere else: after the same check as in the Checks job, the file's
       # values go to the steps below, where cargo reads them (minimum version design 6-4).
       - name: Pin the update keys
         shell: bash
@@ -467,13 +588,6 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"; fi
           echo "BUILD_NAME=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_ENV"
 
-      # L150-157
-      - name: Restore bridge files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: bridge-artifact
-          path: upstream/rustdesk
-
       # L159-162
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
@@ -488,10 +602,10 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
-      # L208-218, https://github.com/flutter/flutter/issues/155685
+      # L208-218, https://github.com/flutter/flutter/issues/155685. Without upstream's
+      # `flutter doctor -v`, whose diagnostics nobody read (GHA-15 of the 2026-10-27 CI audit)
       - name: Replace engine with rustdesk custom flutter engine
         run: |
-          flutter doctor -v
           flutter precache --windows
           Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
@@ -507,6 +621,15 @@ jobs:
             git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
           fi
 
+      # Not upstream: as in the Bridge codegen job
+      - name: Runner image and rustup directory
+        id: image
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+
       # L240-249
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -515,7 +638,8 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: windows-2022
           workspaces: upstream/rustdesk -> target
@@ -526,15 +650,34 @@ jobs:
         with:
           vcpkgDirectory: C:\vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+          doNotCache: true # GHA-10, see the top of this file
+
+      # Not upstream (GHA-06 of the 2026-10-27 CI audit). vcpkg hashes the compiler and PowerShell
+      # into every package's ABI: 1.9.1's build ran on an image with a newer Visual Studio
+      # (17.14.37806.7) and PowerShell (7.6.8) and built all 16 packages again (17.8 minutes), and
+      # the prune step below then drops the older image's packages. With both versions in the key,
+      # each image keeps its own entry, and a job that lands on the older image again, as GitHub
+      # serves both for days during a rollout, finds its packages; a new image falls back to the
+      # latest entry.
+      - name: Read the image's compiler and PowerShell versions
+        id: vcpkg-tools
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = if (Test-Path $vswhere) { & $vswhere -latest -property installationVersion } else { 'unknown' }
+          "Visual Studio $vs, PowerShell $($PSVersionTable.PSVersion)"
+          "key=vs$vs-pwsh$($PSVersionTable.PSVersion)" >> $env:GITHUB_OUTPUT
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
         with:
           path: vcpkg-bincache
-          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-
-          restore-keys: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-
+          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-${{ steps.vcpkg-tools.outputs.key }}-
+          restore-keys: |
+            vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-${{ steps.vcpkg-tools.outputs.key }}-
+            vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-
 
       # L258-276
       - name: Install vcpkg dependencies
@@ -542,6 +685,8 @@ jobs:
           VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         run: |
           mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          # Not upstream: the packages the cache gave, which the next step counts
+          find "$GITHUB_WORKSPACE/vcpkg-bincache" -name '*.zip' > "$RUNNER_TEMP/vcpkg-restored.txt"
           if ! "$VCPKG_ROOT/vcpkg" \
             install \
             --triplet x64-windows-static \
@@ -568,6 +713,20 @@ jobs:
             grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
           done
           echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+          # GHA-06 of the 2026-10-27 CI audit: how many packages came from the cache, and what
+          # vcpkg hashed into their ABIs, to compare with another run's log when every package was
+          # built again. What all ports share (triplet_abi with the compiler's hash, cmake and on
+          # Windows powershell) shows in a port of scripts only, e.g. vcpkg-cmake-config.
+          restored=$(sed 's|.*/||; s|\.zip$||' "$RUNNER_TEMP/vcpkg-restored.txt" | grep -cxF "$abis" || true)
+          packages=$(grep -c . <<< "$abis")
+          echo "vcpkg: $restored of $packages packages from the cache"
+          { echo "restored=$restored"; echo "packages=$packages"; } >> "$GITHUB_OUTPUT"
+          echo "::group::What vcpkg hashed into each package's ABI (installed/*/share/*/vcpkg_abi_info.txt)"
+          for f in "$VCPKG_ROOT"/installed/*/share/*/vcpkg_abi_info.txt; do
+            echo "== ${f#"$VCPKG_ROOT"/installed/}"
+            cat "$f"
+          done
+          echo "::endgroup::"
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
@@ -575,6 +734,43 @@ jobs:
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
+
+      # Not upstream (GHA-11 of the 2026-10-27 CI audit). This job starts beside the Bridge codegen
+      # job and needs its files only here, right before cargo: it waits until the run has the
+      # bridge-artifact, and fails when the Bridge codegen job has ended without it. A job that
+      # "Re-run failed jobs" starts again finds the artifact at once.
+      - name: Wait for the bridge files
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 45
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          misses=0 finished=0
+          while :; do
+            if count=$(gh api "$run/artifacts?name=bridge-artifact" --jq .total_count) &&
+              bridge=$(gh api "$run/jobs?per_page=100" --jq '[.jobs[] | select(.name | endswith("Bridge codegen")) | .status + " " + (.conclusion // "")] | first // ""'); then
+              misses=0
+              if [ "$count" -gt 0 ]; then echo "The bridge files are there."; exit 0; fi
+              case $bridge in
+                "completed success") finished=$((finished + 1)) ;;
+                completed*) echo "::error::Bridge codegen ended ($bridge) without the bridge files this job needs."; exit 1 ;;
+              esac
+              if [ "$finished" -ge 4 ]; then echo "::error::Bridge codegen succeeded, but the run has no bridge-artifact."; exit 1; fi
+            else
+              misses=$((misses + 1))
+              if [ "$misses" -ge 10 ]; then echo "::error::The run's artifacts and jobs could not be read ten times in a row."; exit 1; fi
+            fi
+            sleep 15
+          done
+
+      # L150-157
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: upstream/rustdesk
 
       # L285-324, x64 build-args "--vram" (L125)
       - name: Build rustdesk
@@ -855,16 +1051,28 @@ jobs:
   # upload. Without a release keystore the APK keeps upstream's debug signature (L1238-1239).
   android:
     name: Android arm64
-    needs: generate-bridge
-    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'android'
+    needs: preflight
+    if: needs.preflight.outputs.android == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    # actions: read for "Wait for the bridge files"
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: upstream/rustdesk
     env:
       ANDROID_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+      CARGO_NDK_VERSION: "3.1.2" # L24
+    # for the run summary
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
+      vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}
+      vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}
+      disk_free: ${{ steps.disk.outputs.free }}
     steps:
       # Not upstream. The first steps, before any third-party build code (auto-deploy design 2-2):
       # the release record of the repository that runs this (store-releases.txt, design 3-8) must
@@ -875,7 +1083,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           path: release-checks
           sparse-checkout: |
             scripts/store-record.py
@@ -955,12 +1163,12 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
       # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
-      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # and from nowhere else: after the same check as in the Checks job, the file's
       # values go to the steps below, where cargo reads them (minimum version design 6-4).
       - name: Pin the update keys
         shell: bash
@@ -1005,7 +1213,7 @@ jobs:
         with:
           vcpkgDirectory: /opt/artifacts/vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+          doNotCache: true # GHA-10, see the top of this file
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
@@ -1019,6 +1227,8 @@ jobs:
       - name: Install vcpkg dependencies
         run: |
           mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          # Not upstream: the packages the cache gave, which the next step counts
+          find "$GITHUB_WORKSPACE/vcpkg-bincache" -name '*.zip' > "$RUNNER_TEMP/vcpkg-restored.txt"
           ANDROID_TARGET=arm64-v8a
           if ! ./flutter/build_android_deps.sh "${ANDROID_TARGET}"; then
             find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
@@ -1041,6 +1251,20 @@ jobs:
             grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
           done
           echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+          # GHA-06 of the 2026-10-27 CI audit: how many packages came from the cache, and what
+          # vcpkg hashed into their ABIs, to compare with another run's log when every package was
+          # built again. What all ports share (triplet_abi with the compiler's hash, cmake and on
+          # Windows powershell) shows in a port of scripts only, e.g. vcpkg-cmake-config.
+          restored=$(sed 's|.*/||; s|\.zip$||' "$RUNNER_TEMP/vcpkg-restored.txt" | grep -cxF "$abis" || true)
+          packages=$(grep -c . <<< "$abis")
+          echo "vcpkg: $restored of $packages packages from the cache"
+          { echo "restored=$restored"; echo "packages=$packages"; } >> "$GITHUB_OUTPUT"
+          echo "::group::What vcpkg hashed into each package's ABI (installed/*/share/*/vcpkg_abi_info.txt)"
+          for f in "$VCPKG_ROOT"/installed/*/share/*/vcpkg_abi_info.txt; do
+            echo "== ${f#"$VCPKG_ROOT"/installed/}"
+            cat "$f"
+          done
+          echo "::endgroup::"
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
@@ -1049,6 +1273,36 @@ jobs:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
 
+      # Not upstream (GHA-11 of the 2026-10-27 CI audit). This job starts beside the Bridge codegen
+      # job and needs its files only here, right before cargo: it waits until the run has the
+      # bridge-artifact, and fails when the Bridge codegen job has ended without it. A job that
+      # "Re-run failed jobs" starts again finds the artifact at once.
+      - name: Wait for the bridge files
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 45
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          misses=0 finished=0
+          while :; do
+            if count=$(gh api "$run/artifacts?name=bridge-artifact" --jq .total_count) &&
+              bridge=$(gh api "$run/jobs?per_page=100" --jq '[.jobs[] | select(.name | endswith("Bridge codegen")) | .status + " " + (.conclusion // "")] | first // ""'); then
+              misses=0
+              if [ "$count" -gt 0 ]; then echo "The bridge files are there."; exit 0; fi
+              case $bridge in
+                "completed success") finished=$((finished + 1)) ;;
+                completed*) echo "::error::Bridge codegen ended ($bridge) without the bridge files this job needs."; exit 1 ;;
+              esac
+              if [ "$finished" -ge 4 ]; then echo "::error::Bridge codegen succeeded, but the run has no bridge-artifact."; exit 1; fi
+            else
+              misses=$((misses + 1))
+              if [ "$misses" -ge 10 ]; then echo "::error::The run's artifacts and jobs could not be read ten times in a row."; exit 1; fi
+            fi
+            sleep 15
+          done
+
       # L1177-1192
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1056,15 +1310,26 @@ jobs:
           name: bridge-artifact
           path: upstream/rustdesk
 
+      # Not upstream: as in the Bridge codegen job
+      - name: Runner image and rustup directory
+        id: image
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # upstream's prefix-key is rustdesk-lib-cache-android, with "TODO: drop '-android' part after
+      # caches are invalidated": done here, where the rustup directory above gave new keys anyway
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          prefix-key: rustdesk-lib-cache-android # TODO: drop '-android' part after caches are invalidated
+          prefix-key: rustdesk-lib-cache
           key: aarch64-linux-android
           workspaces: upstream/rustdesk -> target
 
@@ -1443,16 +1708,28 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: rm -f "$RUNNER_TEMP/play-upload.keystore" upstream/rustdesk/signed-apk/signingKey.jks
 
+      # Not in upstream (GHA-15 of the 2026-10-27 CI audit): what the job leaves of the disk, for the
+      # run summary. Whether "Free Disk Space" can go shows only over runs, a run that builds the
+      # vcpkg packages again needing the most.
+      - name: Disk space left
+        id: disk
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          df -h /
+          echo "free=$(df -h --output=avail / | tail -n 1 | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
   # upstream: L624-743 (build-rustdesk-ios), matrix entry L633-638. Dropped: the liblibrustdesk.a
   # upload (L715-719). Upstream only builds `flutter build ipa --release --no-codesign` (L721-727);
-  # with the signing secrets this job archives with manual signing and exports an IPA instead, and
-  # with the `testflight` input it uploads that IPA to App Store Connect.
+  # with the signing secrets this job archives with manual signing and exports an IPA instead,
+  # which stays in the run's artifacts: the TestFlight upload job of a later run sends it.
   ios:
     name: iOS
-    # also waits for the Dart tests: TestFlight hands the build out, so it never gets one whose
-    # input tests failed (Windows and Android artifacts stay in the run until someone takes them)
-    needs: [generate-bridge, dart-tests]
-    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'ios'
+    # waits for the bridge files, not for the Dart tests: nothing leaves the run from here (a
+    # waiting macOS runner costs ten times a Linux one, so it does not start beside the Bridge
+    # codegen job either)
+    needs: [preflight, generate-bridge]
+    if: needs.preflight.outputs.ios == 'true'
     runs-on: macos-26
     timeout-minutes: 90
     defaults:
@@ -1464,22 +1741,26 @@ jobs:
       # public repository are public. A public run builds the unsigned IPA.
       IOS_SIGNING: ${{ github.event.repository.private && secrets.IOS_DIST_CERT_P12_BASE64 != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+    # for the run summary
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
+      vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}
+      vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}
     steps:
       # Not upstream. The first steps, before any third-party build code (auto-deploy design 2-2):
-      # the release record must not have this version for the App Store, and with testflight App
-      # Store Connect must not have a build of it (a version goes to TestFlight once; also on
-      # "Re-run failed jobs" after an upload that went through). Read only: GET requests with the
-      # run's token and, in the second step alone, the upload key. A check build skips them.
+      # the release record of the repository that runs this (store-releases.txt, design 3-8) must
+      # not have this version for the App Store already. Read only, with the run's token; a check
+      # build goes nowhere and skips it. Only the two files the check reads are checked out here.
       - name: Check out the release record check
         if: ${{ !inputs.check_only }}
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           path: release-checks
           sparse-checkout: |
             scripts/store-record.py
-            scripts/asc-store.mjs
             client/version.env
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -1494,25 +1775,7 @@ jobs:
           # shellcheck disable=SC1091
           source release-checks/client/version.env
           python3 -I release-checks/scripts/store-record.py check-build --repo "$GITHUB_REPOSITORY" --store appstore --version "$HJV_VERSION"
-
-      - name: Check that TestFlight has no build of this version
-        if: ${{ !inputs.check_only && inputs.testflight && env.IOS_SIGNING == 'true' }}
-        shell: bash
-        working-directory: ${{ github.workspace }}
-        env:
-          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
-        run: |
-          # shellcheck disable=SC1091
-          source release-checks/client/version.env
-          node release-checks/scripts/asc-store.mjs check-new --version "$HJV_VERSION"
-
-      - name: Remove the release record check
-        if: ${{ always() && !inputs.check_only }}
-        working-directory: ${{ github.workspace }}
-        run: rm -rf release-checks
+          rm -rf release-checks
 
       # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (the
       # build repository too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
@@ -1521,13 +1784,6 @@ jobs:
         shell: bash
         working-directory: ${{ github.workspace }}
         run: echo "BUILD_NUMBER=$(date -u +%y%j%H%M)" >> "$GITHUB_ENV"
-
-      - name: Check TestFlight prerequisites
-        if: inputs.testflight && env.IOS_SIGNING != 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          echo "::error::testflight needs a private repository with IOS_DIST_CERT_P12_BASE64 and IOS_PROVISIONING_PROFILE_BASE64 (the caller passes secrets: inherit)."
-          exit 1
 
       # Not in upstream: XCODE_VERSION above says why
       - name: Select Xcode
@@ -1550,12 +1806,12 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
       # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
-      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # and from nowhere else: after the same check as in the Checks job, the file's
       # values go to the steps below, where cargo reads them (minimum version design 6-4).
       - name: Pin the update keys
         shell: bash
@@ -1593,7 +1849,7 @@ jobs:
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+          doNotCache: true # GHA-10, see the top of this file
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
@@ -1607,6 +1863,8 @@ jobs:
       - name: Install vcpkg dependencies
         run: |
           mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          # Not upstream: the packages the cache gave, which the next step counts
+          find "$GITHUB_WORKSPACE/vcpkg-bincache" -name '*.zip' > "$RUNNER_TEMP/vcpkg-restored.txt"
           if ! "$VCPKG_ROOT/vcpkg" \
             install \
             --triplet arm64-ios \
@@ -1632,6 +1890,20 @@ jobs:
             grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
           done
           echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+          # GHA-06 of the 2026-10-27 CI audit: how many packages came from the cache, and what
+          # vcpkg hashed into their ABIs, to compare with another run's log when every package was
+          # built again. What all ports share (triplet_abi with the compiler's hash, cmake and on
+          # Windows powershell) shows in a port of scripts only, e.g. vcpkg-cmake-config.
+          restored=$(sed 's|.*/||; s|\.zip$||' "$RUNNER_TEMP/vcpkg-restored.txt" | grep -cxF "$abis" || true)
+          packages=$(grep -c . <<< "$abis")
+          echo "vcpkg: $restored of $packages packages from the cache"
+          { echo "restored=$restored"; echo "packages=$packages"; } >> "$GITHUB_OUTPUT"
+          echo "::group::What vcpkg hashed into each package's ABI (installed/*/share/*/vcpkg_abi_info.txt)"
+          for f in "$VCPKG_ROOT"/installed/*/share/*/vcpkg_abi_info.txt; do
+            echo "== ${f#"$VCPKG_ROOT"/installed/}"
+            cat "$f"
+          done
+          echo "::endgroup::"
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
@@ -1639,6 +1911,14 @@ jobs:
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
+
+      # Not upstream: as in the Bridge codegen job
+      - name: Runner image and rustup directory
+        id: image
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       # L692-713
       - name: Install Rust toolchain
@@ -1648,7 +1928,8 @@ jobs:
           targets: aarch64-apple-ios
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: rustdesk-lib-cache-ios
           key: aarch64-apple-ios
@@ -1841,37 +2122,153 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      # Not in upstream. Sends the signed App Store IPA to App Store Connect, where TestFlight lists it
-      # once Apple has processed it. Needs the App Store Connect API key (secrets ASC_KEY_ID,
-      # ASC_ISSUER_ID, ASC_PRIVATE_KEY) and the app's numeric Apple ID (ASC_APP_ID), see docs/ci.md.
-      # altool can exit 0 although the upload failed, so its output decides.
-      - name: Upload to TestFlight
-        if: env.IOS_SIGNING == 'true' && inputs.testflight && !inputs.check_only
+      - name: Remove signing keychain and profile
+        if: always() && env.IOS_SIGNING == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/hjviewer-signing.keychain-db" || true
+          if [ -n "${IOS_PROFILE_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision" \
+              "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
+          fi
+
+  # Not in upstream. Sends a signed App Store IPA to App Store Connect, where TestFlight lists it for
+  # the internal testers once Apple has processed it. It builds nothing: the IPA is the one a
+  # finished, successful build run of this repository made (testflight_run), so the upload waits
+  # for the owner's check of that run's Windows build (docs/ci.md, "실행"), and TestFlight never
+  # gets a build of a run with a failed job, its Dart tests included. Needs the App Store Connect
+  # API key (secrets ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY) and the app's numeric Apple ID
+  # (ASC_APP_ID), see docs/ci.md; it holds no signing key.
+  testflight:
+    name: TestFlight upload
+    needs: preflight
+    if: needs.preflight.outputs.testflight == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    # actions: read for the build run, its build.yml and its IPA
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # The first steps, before the IPA is fetched (auto-deploy design 2-2): the release record must
+      # not have this version for the App Store; the build run is a successful run of the build
+      # repository's build.yml on main that called this workflow at the same source commit, with
+      # build.yml in the documented shape, and it kept the IPA (scripts/store-record.py check-run,
+      # tools/hjv-release's provenance rules); App Store Connect has no build of this version yet (a
+      # version goes to TestFlight once; also on "Re-run failed jobs" after an upload that went
+      # through). Read only: GET requests with the run's token and, in the third step alone, the
+      # upload key.
+      - name: Check out the release record check
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          path: release-checks
+          sparse-checkout: |
+            scripts/store-record.py
+            scripts/asc-store.mjs
+            client/version.env
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check the release record and the build run
+        id: build-run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          TESTFLIGHT_RUN: ${{ inputs.testflight_run }}
+        run: |
+          # shellcheck disable=SC1091
+          source release-checks/client/version.env
+          python3 -I release-checks/scripts/store-record.py check-build --repo "$GITHUB_REPOSITORY" --store appstore --version "$HJV_VERSION"
+          python3 -I release-checks/scripts/store-record.py check-run --repo "$GITHUB_REPOSITORY" --store appstore \
+            --version "$HJV_VERSION" --run-id "$TESTFLIGHT_RUN" --source "$SOURCE_SHA"
+          echo "version=$HJV_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check that TestFlight has no build of this version
         shell: bash
         env:
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          VERSION: ${{ steps.build-run.outputs.version }}
+        run: node release-checks/scripts/asc-store.mjs check-new --version "$VERSION"
+
+      - name: Remove the release record check
+        if: always()
+        run: rm -rf release-checks
+
+      - name: Download the IPA
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.build-run.outputs.artifact }}
+          path: ios-out
+          run-id: ${{ inputs.testflight_run }}
+          github-token: ${{ github.token }}
+
+      # The artifact's own record: its SHA256SUMS hold, and its release.json names one IPA of this
+      # version, source commit and build run. TestFlight takes App Store builds only, which the
+      # profile in the IPA tells (as "Set up code signing" of the iOS job chose the export
+      # method). altool can exit 0 although the upload failed, so its output decides.
+      - name: Upload to TestFlight
+        shell: bash
+        working-directory: ios-out
+        env:
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          TESTFLIGHT_RUN: ${{ inputs.testflight_run }}
+          VERSION: ${{ steps.build-run.outputs.version }}
         run: |
           set -euo pipefail
-          if [ "$IOS_EXPORT_METHOD" != app-store-connect ]; then
-            echo "::error::TestFlight takes App Store builds, but the provisioning profile exports with method $IOS_EXPORT_METHOD."
-            exit 1
-          fi
           for v in ASC_APP_ID ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
             if [ -z "${!v}" ]; then
               echo "::error::Secret $v is not set (docs/ci.md)."
               exit 1
             fi
           done
-          ipa="ios-out/$BUILD_NAME-ios.ipa"
+          shasum -a 256 -c SHA256SUMS
+          ipas=(*.ipa)
+          if [ ${#ipas[@]} != 1 ] || [ ! -f "${ipas[0]}" ]; then
+            echo "::error::The build run's artifact holds ${#ipas[@]} IPAs, not one."
+            exit 1
+          fi
+          ipa=${ipas[0]}
+          python3 -I -c '
+          import hashlib, json, os, sys
+          ipa, record = sys.argv[1], json.load(open("release.json"))
+          want = {"platform": "ios", "file": ipa, "version": os.environ["VERSION"], "source_sha": os.environ["SOURCE_SHA"],
+                  "run_id": os.environ["TESTFLIGHT_RUN"], "sha256": hashlib.sha256(open(ipa, "rb").read()).hexdigest()}
+          wrong = [f"{key} {record.get(key)!r}" for key, value in want.items() if str(record.get(key)) != value]
+          if wrong:
+              print("::error::release.json does not name this IPA of build run " + want["run_id"] + ": " + ", ".join(wrong))
+              sys.exit(1)
+          ' "$ipa"
+          # a file of the app inside the IPA
+          entry() { unzip -p "$ipa" "$(unzip -Z1 "$ipa" | grep -E "^Payload/[^/]+\.app/$1\$")"; }
+          profile="$RUNNER_TEMP/embedded.plist"
+          entry embedded.mobileprovision > "$RUNNER_TEMP/embedded.mobileprovision"
+          security cms -D -i "$RUNNER_TEMP/embedded.mobileprovision" > "$profile"
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$profile" 2> /dev/null; }
+          if [ "$(pb ProvisionsAllDevices || true)" = true ] || [ "$(pb Entitlements:get-task-allow || true)" = true ] \
+            || pb ProvisionedDevices > /dev/null; then
+            echo "::error::TestFlight takes App Store builds, but $ipa is not signed with an App Store profile."
+            exit 1
+          fi
           info="$RUNNER_TEMP/Info.plist"
-          unzip -p "$ipa" "$(unzip -Z1 "$ipa" | grep -E '^Payload/[^/]+\.app/Info\.plist$')" > "$info"
+          entry Info.plist > "$info"
           pl() { /usr/libexec/PlistBuddy -c "Print :$1" "$info"; }
           bundle_id=$(pl CFBundleIdentifier)
           version=$(pl CFBundleShortVersionString)
           build=$(pl CFBundleVersion)
+          if [ "$version" != "$VERSION" ]; then
+            echo "::error::$ipa is version $version, not $VERSION."
+            exit 1
+          fi
           # altool reads the key from ~/.appstoreconnect/private_keys/AuthKey_<key ID>.p8
           keydir="$HOME/.appstoreconnect/private_keys"
           mkdir -p "$keydir"
@@ -1887,18 +2284,11 @@ jobs:
             echo "::error::The upload to App Store Connect failed (altool exit status $status); see its output above."
             exit 1
           fi
-          echo "Uploaded $bundle_id $version ($build) to App Store Connect. TestFlight lists it once Apple has processed it." >> "$GITHUB_STEP_SUMMARY"
+          echo "Uploaded $bundle_id $version ($build) of build run $TESTFLIGHT_RUN to App Store Connect. TestFlight lists it once Apple has processed it." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove signing keychain, profile and API key
-        if: always() && env.IOS_SIGNING == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          rm -rf "$HOME/.appstoreconnect/private_keys"
-          security delete-keychain "$RUNNER_TEMP/hjviewer-signing.keychain-db" || true
-          if [ -n "${IOS_PROFILE_UUID:-}" ]; then
-            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision" \
-              "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
-          fi
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$HOME/.appstoreconnect/private_keys"
 
   # Not in upstream. hjv-relay (relay/), the Wake-on-LAN relay for a Synology NAS
   # (docs/relay-dsm.md): a static x86_64 musl binary that scripts/package-relay.sh pins to this
@@ -1908,8 +2298,8 @@ jobs:
   # check_only, it is a test build without the server values, which refuses to run.
   relay:
     name: hjv-relay
-    needs: generate-bridge
-    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'relay'
+    needs: preflight
+    if: needs.preflight.outputs.relay == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -1923,7 +2313,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       # like "Check the pinned public keys"; package-relay.sh checks the key and the server again
@@ -1986,7 +2376,7 @@ jobs:
   # build code. A release of the same version is left alone: rebuilds stay in the artifacts.
   relay-release:
     name: hjv-relay draft release
-    needs: [generate-bridge, relay]
+    needs: [preflight, relay]
     if: github.event.repository.private && !inputs.check_only
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -2003,7 +2393,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.relay.outputs.version }}
-          SOURCE_SHA: ${{ needs.generate-bridge.outputs.source_sha }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
         run: |
           set -euo pipefail
           tag="relay-$VERSION"
@@ -2025,3 +2415,37 @@ jobs:
           gh release create "$tag" -R "$GITHUB_REPOSITORY" --draft --title "hjv-relay $VERSION" \
             --notes-file "$notes" relay/*.tar.gz relay/SHA256SUMS
           echo "Draft release $tag: publish it after the checks (docs/ci.md)." >> "$GITHUB_STEP_SUMMARY"
+
+  # Not in upstream (GHA-09 of the 2026-10-27 CI audit). What the run took and what its caches gave,
+  # on the run's page: every job's and step's minutes from the jobs API, and the runner images and
+  # cache results the jobs hand on as outputs (scripts/run-summary.py, which also reads a finished
+  # run from the development machine). It never fails the run: the release tool takes successful
+  # runs only.
+  summary:
+    name: Run summary
+    needs: [preflight, generate-bridge, dart-tests, windows, android, ios, testflight, relay, relay-release]
+    if: ${{ !cancelled() }}
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out the summary script
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.preflight.outputs.source_sha || inputs.source_ref || github.sha }}
+          sparse-checkout: |
+            scripts/run-summary.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Write the run summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.json"
+          python3 -I scripts/run-summary.py "$RUNNER_TEMP/jobs.json" >> "$GITHUB_STEP_SUMMARY"

@@ -29,6 +29,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -787,10 +788,15 @@ exit 1
     def policy(self, tree, ios_build, *more):
         env = {**os.environ, "PATH": os.path.join(tree.root, "bin") + os.pathsep + os.environ["PATH"],
                "HJV_TEST_GH": os.path.join(tree.root, "gh")}
+        # The documented build.yml passes testflight_run (1.9.2), which an older tool takes only
+        # allowed (tools/hjv-release/README.md): HJV_RELEASE_BIN is the server stage's build, of
+        # another tree until that stage has built this one's. That this tree's tool knows the input
+        # is the tool's own test (src/provenance.rs, the_documented_build_yml).
         return subprocess.run(
             [self.tool, "policy", "--keys", "keys.env", "--allow-test-keys", "--prev", "none", "--server", "hjv.test",
              "--release-dir", "release", "--repo", ".", "--min", "all=1.5.0", "--grace-days", "0",
-             "--auto-after", "windows=none", "--ios-valid", ios_build, "--no-appstore", "--out", "draft.json", *more],
+             "--auto-after", "windows=none", "--ios-valid", ios_build, "--no-appstore", "--out", "draft.json",
+             "--allow-input", "testflight_run", *more],
             cwd=tree.root, env=env, capture_output=True, text=True)
 
     def test_the_tool_makes_a_draft_from_a_runs_artifacts(self):
@@ -858,51 +864,146 @@ class WorkflowTest(unittest.TestCase):
     }
     RECORD = "Write release.json and SHA256SUMS"
 
+    # what each platforms value builds: (windows, android, ios, relay)
+    PLANS = {"windows": (1, 0, 0, 0), "android": (0, 1, 0, 0), "ios": (0, 0, 1, 0), "relay": (0, 0, 0, 1),
+             "all": (1, 1, 1, 1)}
+
+    def plan(self, env):
+        """The plan step's script as the runner runs it: (exit code, output, its outputs or None)."""
+        step = self.step("preflight", "Plan build targets")
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "outputs")
+            done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+                                  cwd=tmp, env={**os.environ, "GITHUB_OUTPUT": output, "TESTFLIGHT_RUN": "", **env},
+                                  capture_output=True, text=True)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "injected")))
+            outputs = None
+            if os.path.exists(output):
+                with open(output) as f:
+                    outputs = dict(line.split("=", 1) for line in f.read().splitlines())
+            return done.returncode, done.stdout + done.stderr, outputs
+
     def test_build_plan_rejects_unknown_platforms_and_uploads_without_ios(self):
-        step = self.step("generate-bridge", "Plan build targets")
+        step = self.step("preflight", "Plan build targets")
         self.assertEqual(step["env"], {
             "PLATFORMS": "${{ github.event_name == 'push' && 'all' || inputs.platforms }}",
             "TESTFLIGHT": "${{ inputs.testflight }}",
+            "TESTFLIGHT_RUN": "${{ inputs.testflight_run }}",
         })
-        self.assertLess(self.index("generate-bridge", "Plan build targets"),
-                        self.index("generate-bridge", "Fetch upstream and apply hjviewer patches"))
+        # first, before anything is checked out
+        self.assertEqual(self.index("preflight", "Plan build targets"), 0)
         triggers = self.wf.get("on", self.wf.get(True))  # PyYAML's YAML 1.1 spelling of `on`
         for trigger in ("workflow_dispatch", "workflow_call"):
             self.assertIs(triggers[trigger]["inputs"]["testflight"]["default"], False)
+            self.assertEqual(triggers[trigger]["inputs"]["testflight_run"]["type"], "string")
         for platform in ("windows", "android", "ios", "relay", "all", "", "unknown", "$(touch injected)"):
-            for testflight in ("false", "true"):
-                with self.subTest(platform=platform, testflight=testflight), tempfile.TemporaryDirectory() as tmp:
-                    output = os.path.join(tmp, "outputs")
-                    done = subprocess.run(
-                        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
-                        cwd=tmp, env={**os.environ, "PLATFORMS": platform, "TESTFLIGHT": testflight,
-                                      "GITHUB_OUTPUT": output}, capture_output=True, text=True)
-                    valid = platform in ("windows", "android", "ios", "relay", "all") and (
-                        testflight == "false" or platform in ("ios", "all"))
-                    self.assertEqual(done.returncode, 0 if valid else 1, done.stdout + done.stderr)
-                    self.assertFalse(os.path.exists(os.path.join(tmp, "injected")))
-                    if valid:
-                        with open(output) as f:
-                            self.assertEqual(f.read(), "build_apps=" + ("false" if platform == "relay" else "true") + "\n")
-                    else:
-                        self.assertFalse(os.path.exists(output))
+            for testflight, run in (("false", ""), ("true", ""), ("true", "40363130281"), ("false", "40363130281"),
+                                    ("true", "4036313028x"), ("true", "$(touch injected)")):
+                with self.subTest(platform=platform, testflight=testflight, run=run):
+                    code, out, outputs = self.plan({"PLATFORMS": platform, "TESTFLIGHT": testflight,
+                                                    "TESTFLIGHT_RUN": run})
+                    upload = testflight == "true"
+                    valid = platform in self.PLANS and (
+                        (not upload and not run) or (upload and platform == "ios" and run.isdigit()))
+                    self.assertEqual(code, 0 if valid else 1, out)
+                    if not valid:
+                        self.assertIsNone(outputs)
+                        continue
+                    # a TestFlight upload builds nothing: it sends a finished build run's IPA
+                    builds = dict(zip(("windows", "android", "ios", "relay"), (0, 0, 0, 0) if upload else self.PLANS[platform]))
+                    want = {job: "true" if on else "false" for job, on in builds.items()}
+                    want["build_apps"] = "false" if upload or platform == "relay" else "true"
+                    want["testflight"] = "true" if upload else "false"
+                    self.assertEqual(outputs, want)
 
-    def test_relay_only_skips_app_build_tools_but_keeps_the_source_commit_gate(self):
-        bridge = self.wf["jobs"]["generate-bridge"]
-        self.assertNotIn("if", bridge)  # relay still needs a successful preflight and a source SHA
-        self.assertEqual(bridge["outputs"]["source_sha"], "${{ steps.source.outputs.sha }}")
-        self.assertEqual(bridge["outputs"]["build_apps"], "${{ steps.plan.outputs.build_apps }}")
+    def test_the_jobs_build_what_the_plan_says_from_one_source_commit(self):
+        preflight = self.wf["jobs"]["preflight"]
+        self.assertNotIn("if", preflight)  # relay still needs a successful preflight and a source SHA
+        self.assertNotIn("needs", preflight)
+        self.assertEqual(preflight["outputs"]["source_sha"], "${{ steps.source.outputs.sha }}")
+        for name in ("build_apps", "windows", "android", "ios", "relay", "testflight"):
+            self.assertEqual(preflight["outputs"][name], f"${{{{ steps.plan.outputs.{name} }}}}")
         for name in ("Check out hjviewer", "Record the source commit", "Check the pinned public keys"):
-            self.assertNotIn("if", self.step("generate-bridge", name), name)
-        at = self.index("generate-bridge", "Fetch upstream and apply hjviewer patches")
-        for step in self.steps("generate-bridge")[at:]:
-            self.assertEqual(step["if"], "steps.plan.outputs.build_apps == 'true'", step.get("name", step.get("uses")))
-        self.assertEqual(self.wf["jobs"]["dart-tests"]["if"], "needs.generate-bridge.outputs.build_apps == 'true'")
-        self.assertEqual(self.wf["jobs"]["relay"]["needs"], "generate-bridge")
+            self.assertNotIn("if", self.step("preflight", name), name)
+        # no job builds before the checks have passed, and each reads its part of the plan
+        conditions = {"generate-bridge": "build_apps", "dart-tests": "build_apps", "windows": "windows",
+                      "android": "android", "ios": "ios", "relay": "relay", "testflight": "testflight"}
+        for job, output in conditions.items():
+            self.assertEqual(self.wf["jobs"][job]["if"], f"needs.preflight.outputs.{output} == 'true'", job)
+            needs = self.wf["jobs"][job]["needs"]
+            self.assertIn("preflight", [needs] if isinstance(needs, str) else needs, job)
+        # a relay-only run needs no bridge
+        self.assertEqual(self.wf["jobs"]["relay"]["needs"], "preflight")
         self.assertNotIn("bridge-artifact", json.dumps(self.wf["jobs"]["relay"]))
-        for job in ("dart-tests", "windows", "android", "ios", "relay"):
+        for job in ("generate-bridge", "dart-tests", "windows", "android", "ios", "relay"):
             self.assertEqual(self.step(job, "Check out hjviewer")["with"]["ref"],
-                             "${{ needs.generate-bridge.outputs.source_sha }}", job)
+                             "${{ needs.preflight.outputs.source_sha }}", job)
+        self.assertNotIn("needs.generate-bridge.outputs", json.dumps(self.wf["jobs"]))
+
+    def test_windows_and_android_wait_for_the_bridge_files_right_before_cargo(self):
+        """GHA-11: they start beside the Bridge codegen job; iOS still waits for it (macOS minutes)."""
+        for job in ("windows", "android"):
+            self.assertEqual(self.wf["jobs"][job]["needs"], "preflight", job)
+            self.assertEqual(self.wf["jobs"][job]["permissions"], {"contents": "read", "actions": "read"}, job)
+            steps = self.steps(job)
+            wait, restore = self.index(job, "Wait for the bridge files"), self.index(job, "Restore bridge files")
+            self.assertEqual(restore, wait + 1, job)
+            # the bridge files are needed by cargo only: nothing before them builds Rust or the app
+            for step in steps[:restore]:
+                for builder in ("cargo", "build.py", "flutter build", "ndk_arm64"):
+                    self.assertNotIn(builder, step.get("run", ""), f"{job}: {step.get('name')}")
+            # and they are, a few steps (the toolchain, the cache) later
+            later = " ".join(step.get("run", "") for step in steps[restore + 1:restore + 5])
+            self.assertTrue(any(builder in later for builder in ("build.py", "ndk_arm64")), job)
+        self.assertEqual(self.step("windows", "Wait for the bridge files"), self.step("android", "Wait for the bridge files"))
+        wait = self.step("windows", "Wait for the bridge files")
+        self.assertEqual(wait["env"], {"GH_TOKEN": "${{ github.token }}"})
+        self.assertEqual(wait["shell"], "bash")
+        self.assertLessEqual(wait["timeout-minutes"], self.wf["jobs"]["generate-bridge"]["timeout-minutes"])
+        for needed in ('artifacts?name=bridge-artifact', 'endswith("Bridge codegen")', "exit 1", "sleep"):
+            self.assertIn(needed, wait["run"])
+        self.assertIn("generate-bridge", self.wf["jobs"]["ios"]["needs"])
+
+    def wait_for_bridge(self, answers):
+        """The wait step's script against a gh that gives <answers> in turn: (exit code, output)."""
+        wait = self.step("windows", "Wait for the bridge files")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "bin"))
+            with open(os.path.join(tmp, "answers"), "w") as f:
+                f.write("".join(line + "\n" for line in answers))
+            gh = os.path.join(tmp, "bin", "gh")
+            with open(gh, "w") as f:
+                # each call takes the next line: "fail" fails, anything else is the --jq result
+                f.write('#!/bin/sh\nn=$(cat "$T/n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$T/n"\n'
+                        'line=$(sed -n "${n}p" "$T/answers")\n[ "$line" != fail ] || exit 1\necho "$line"\n')
+            os.chmod(gh, 0o755)
+            sleep = os.path.join(tmp, "bin", "sleep")
+            with open(sleep, "w") as f:
+                f.write("#!/bin/sh\n:\n")
+            os.chmod(sleep, 0o755)
+            done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", wait["run"]], cwd=tmp,
+                                  env={**os.environ, "PATH": os.path.join(tmp, "bin") + os.pathsep + os.environ["PATH"],
+                                       "T": tmp, "GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "1"},
+                                  capture_output=True, text=True, timeout=60)
+            return done.returncode, done.stdout + done.stderr
+
+    def test_the_wait_ends_with_the_bridge_files_or_with_the_bridge_job(self):
+        # pairs of answers: the artifact count, then the Bridge codegen job's status and conclusion
+        self.assertEqual(self.wait_for_bridge(["0", "queued ", "0", "in_progress ", "1", "completed success"])[0], 0)
+        code, out = self.wait_for_bridge(["0", "in_progress ", "0", "completed failure"])
+        self.assertEqual(code, 1)
+        self.assertIn("::error::Bridge codegen ended (completed failure)", out)
+        self.assertEqual(self.wait_for_bridge(["0", "completed cancelled"])[0], 1)
+        # a moment between the upload and the list is waited out, but not for ever
+        self.assertEqual(self.wait_for_bridge(["0", "completed success", "1", "completed success"])[0], 0)
+        code, out = self.wait_for_bridge(["0", "completed success"] * 4)
+        self.assertEqual(code, 1)
+        self.assertIn("no bridge-artifact", out)
+        # the API failing now and then is waited out, ten times in a row is not
+        self.assertEqual(self.wait_for_bridge(["fail", "fail", "0", "queued ", "1", "in_progress "])[0], 0)
+        code, out = self.wait_for_bridge(["fail"] * 10)
+        self.assertEqual(code, 1)
+        self.assertIn("could not be read ten times", out)
 
     def test_every_app_job_writes_the_record_between_the_notices_and_the_upload(self):
         for job, (directory, uploads) in self.UPLOADS.items():
@@ -933,6 +1034,31 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual((upload["name"], upload["retention-days"]), ("bridge-artifact", "${{ env.ARTIFACT_RETENTION_DAYS }}"))
         for job in ("dart-tests", "windows", "android", "ios"):
             self.assertEqual(self.step(job, "Restore bridge files")["with"]["name"], "bridge-artifact", job)
+
+    def test_the_bridge_files_of_a_commit_are_generated_once(self):
+        """GHA-03: the first run of a commit saves the generated files under an exact key of the
+        commit and the generator's tools; a later run takes them and uploads them all the same."""
+        steps = self.steps("generate-bridge")
+        restore = self.step("generate-bridge", "Restore the generated bridge")
+        save = self.step("generate-bridge", "Save the generated bridge")
+        self.assertTrue(restore["uses"].startswith("actions/cache/restore@"))
+        self.assertTrue(save["uses"].startswith("actions/cache/save@"))
+        self.assertNotIn("restore-keys", restore["with"])
+        key = restore["with"]["key"]
+        for part in ("needs.preflight.outputs.source_sha", "env.FLUTTER_RUST_BRIDGE_VERSION",
+                     "env.CARGO_EXPAND_VERSION", "env.BRIDGE_FLUTTER_VERSION", "env.RUST_VERSION"):
+            self.assertIn(part, key)
+        self.assertEqual(save["with"]["key"], "${{ steps.bridge-out.outputs.cache-primary-key }}")
+        upload = self.step("generate-bridge", "Upload Artifact")["with"]["path"]
+        self.assertEqual(restore["with"]["path"], upload)
+        self.assertEqual(save["with"]["path"], upload)
+        # between the restore and the upload everything is skipped on a hit, and the upload is not
+        first, last = self.index("generate-bridge", "Restore the generated bridge"), self.index("generate-bridge", "Upload Artifact")
+        self.assertEqual(self.index("generate-bridge", "Check out hjviewer"), first - 1)
+        for step in steps[first + 1:last]:
+            self.assertEqual(step.get("if"), "steps.bridge-out.outputs.cache-hit != 'true'", step.get("name", step.get("uses")))
+        self.assertNotIn("if", steps[last])
+        self.assertEqual(last, len(steps) - 1)
 
     def test_artifact_names_and_retention_are_as_before(self):
         """The acceptance of the work package; tools/hjv-release counts on the 7 days."""
@@ -1093,12 +1219,48 @@ class WorkflowTest(unittest.TestCase):
         signed = self.step("ios", "Build rustdesk (signed IPA)")["run"]
         self.assertIn('--dart-define=HJV_IOS_EXPORT="$IOS_EXPORT_METHOD"', signed)
         self.assertEqual(signed.count("flutter build ipa"), 1)
-        # the value is the one the signing step chose and the TestFlight upload compares
-        self.assertIn('echo "IOS_EXPORT_METHOD=$method" >> "$GITHUB_ENV"', self.step("ios", "Set up code signing")["run"])
-        self.assertIn('"$IOS_EXPORT_METHOD" != app-store-connect', self.step("ios", "Upload to TestFlight")["run"])
+        # the value is the one the signing step chose from the profile; the TestFlight upload, a
+        # later run's, reads the profile in the IPA by the same rules
+        signing = self.step("ios", "Set up code signing")["run"]
+        self.assertIn('echo "IOS_EXPORT_METHOD=$method" >> "$GITHUB_ENV"', signing)
+        upload = self.step("testflight", "Upload to TestFlight")["run"]
+        for rule in ("ProvisionsAllDevices", "Entitlements:get-task-allow", "ProvisionedDevices"):
+            self.assertIn(rule, signing)
+            self.assertIn(rule, upload)
         self.assertLess(self.index("ios", "Set up code signing"), self.index("ios", "Build rustdesk (signed IPA)"))
         # an unsigned build is exported by nobody: the app sees no method
         self.assertNotIn("HJV_IOS_EXPORT", self.step("ios", "Build rustdesk (unsigned)")["run"])
+
+    def upload_check(self, out, env):
+        """The release.json check of the TestFlight upload, as the step runs it in the downloaded
+        artifact <out>: (exit code, output)."""
+        run = self.step("testflight", "Upload to TestFlight")["run"]
+        code = re.search(r"python3 -I -c '\n(.*?)\n' \"\$ipa\"", run, re.S).group(1)
+        ipa_name = next(n for n in os.listdir(out) if n.endswith(".ipa"))
+        done = subprocess.run([sys.executable, "-I", "-c", code, ipa_name], cwd=out, capture_output=True, text=True,
+                              env={**os.environ, **env})
+        return done.returncode, done.stdout + done.stderr
+
+    def test_the_upload_takes_the_ipa_its_build_run_recorded(self):
+        """What the iOS job writes (release-info.py) is what the later run's upload checks."""
+        tree = Tree(self)
+        name = "HJViewer-1.6.0-0123abc-ios.ipa"
+        tree.put(name, ipa())
+        code, text, _ = tree.run("--platform", "ios", "--file", name)
+        self.assertEqual(code, 0, text)
+        good = {"VERSION": "1.6.0", "SOURCE_SHA": tree.commit, "TESTFLIGHT_RUN": CALLED["GITHUB_RUN_ID"]}
+        self.assertEqual(self.upload_check(tree.out, good), (0, ""))
+        for change, why in (({"VERSION": "1.6.1"}, "version"), ({"SOURCE_SHA": "3" * 40}, "source_sha"),
+                            ({"TESTFLIGHT_RUN": "4243"}, "run_id")):
+            code, out = self.upload_check(tree.out, {**good, **change})
+            self.assertEqual(code, 1, change)
+            self.assertIn(f"::error::release.json does not name this IPA of build run", out)
+            self.assertIn(why, out)
+        # other bytes under the build's release.json
+        tree.put(name, ipa() + b"!")
+        code, out = self.upload_check(tree.out, good)
+        self.assertEqual(code, 1)
+        self.assertIn("sha256", out)
 
     def required_dart_tests(self):
         """The test files the Dart tests job fails without."""

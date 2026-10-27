@@ -35,10 +35,13 @@ use std::{
 };
 
 /// The inputs `client-build.yml` takes when called (`on.workflow_call.inputs`). Another input
-/// could change what is built, so `build.yml` may pass only these.
-pub const KNOWN_INPUTS: [&str; 5] = [
+/// could change what is built, so `build.yml` may pass only these. `testflight_run` names the
+/// earlier build run whose IPA a run uploads to TestFlight: such a run builds nothing, so it has
+/// no package a policy could name.
+pub const KNOWN_INPUTS: [&str; 6] = [
     "platforms",
     "testflight",
+    "testflight_run",
     "play",
     "play_release",
     "source_ref",
@@ -1393,6 +1396,23 @@ pub(crate) mod tests {
             "    secrets: inherit\n    permissions:\n      contents: read\n",
         ))
         .unwrap();
+        // the file from 1.9.2 on (docs/ci.md): the TestFlight upload's input, and the run's jobs
+        // and artifacts readable for the platform jobs, the upload and the run summary
+        let newer = good
+            .replace(
+                "      testflight: { type: boolean, default: false }\n",
+                "      testflight: { type: boolean, default: false }\n      testflight_run: { type: string, required: false }\n",
+            )
+            .replace(
+                "      testflight: ${{ inputs.testflight }}\n",
+                "      testflight: ${{ inputs.testflight }}\n      testflight_run: ${{ inputs.testflight_run }}\n",
+            )
+            .replace(
+                "    secrets: inherit\n",
+                "    secrets: inherit\n    permissions:\n      contents: write\n      actions: read\n",
+            );
+        assert!(newer.contains("testflight_run: ${{ inputs.testflight_run }}"));
+        yml(&newer).unwrap();
     }
 
     #[test]

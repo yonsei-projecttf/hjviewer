@@ -297,6 +297,7 @@ def build_yml(sha, extra=""):
             "    inputs:\n"
             "      platforms: { type: choice, options: [windows, android, ios, relay, all], default: all }\n"
             "      testflight: { type: boolean, default: false }\n"
+            "      testflight_run: { type: string, required: false }\n"
             "      play: { type: boolean, default: false }\n"
             "      play_release: { type: choice, options: [completed, draft, validate], default: completed }\n"
             "      check_only: { type: boolean, default: false }\n"
@@ -307,10 +308,12 @@ def build_yml(sha, extra=""):
             "    # the reviewed public commit\n"
             "    permissions:\n"
             "      contents: write\n"
+            "      actions: read\n"
             f"    uses: {PUBLIC}/.github/workflows/client-build.yml@{sha}\n"
             "    with:\n"
             "      platforms: ${{ inputs.platforms }}\n"
             "      testflight: ${{ inputs.testflight }}\n"
+            "      testflight_run: ${{ inputs.testflight_run }}\n"
             "      play: ${{ inputs.play }}\n"
             "      play_release: ${{ inputs.play_release }}\n"
             "      check_only: ${{ inputs.check_only }}\n"
@@ -330,7 +333,8 @@ class FakeRuns:
         self.run.update(change)
         self.build_yml = build_yml(B)
         self.artifacts = [{"name": "HJViewer-1.9.1-bbbbbbb-android-aarch64", "expired": False},
-                          {"name": "HJViewer-1.9.1-bbbbbbb-android-aarch64-play", "expired": False}]
+                          {"name": "HJViewer-1.9.1-bbbbbbb-android-aarch64-play", "expired": False},
+                          {"name": "HJViewer-1.9.1-bbbbbbb-ios", "expired": False}]
         self.calls = []
 
     def __call__(self, method, url, headers, data):
@@ -349,10 +353,10 @@ class FakeRuns:
 class CheckRunTest(unittest.TestCase):
     ARGV = ["check-run", "--repo", REPO, "--store", "play", "--version", "1.9.1", "--run-id", RUN, "--source", B]
 
-    def run_script(self, fake, env=ENV):
+    def run_script(self, fake, env=ENV, argv=None):
         out = io.StringIO()
         with mock.patch.object(sr, "send", fake), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            code = sr.main(self.ARGV, env)
+            code = sr.main(argv or self.ARGV, env)
         self.assertNotIn(TOKEN, out.getvalue())
         return code, out.getvalue()
 
@@ -363,6 +367,33 @@ class CheckRunTest(unittest.TestCase):
             self.assertEqual(code, 0, out)
             with open(output, encoding="utf-8") as handle:
                 self.assertEqual(handle.read(), "artifact=HJViewer-1.9.1-bbbbbbb-android-aarch64-play\n")
+
+    def test_testflight_takes_the_ipa_of_the_reviewed_build_run(self):
+        """client-build.yml's TestFlight upload job: the same provenance, for the run's IPA."""
+        argv = [a if a != "play" else "appstore" for a in self.ARGV]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "output")
+            code, out = self.run_script(FakeRuns(), {**ENV, "GITHUB_OUTPUT": output}, argv)
+            self.assertEqual(code, 0, out)
+            with open(output, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "artifact=HJViewer-1.9.1-bbbbbbb-ios\n")
+        self.assertIn("IPA: HJViewer-1.9.1-bbbbbbb-ios of build run 4242", out)
+        # an unsigned IPA (-ios-unsigned), a check build's or an expired one is not that artifact
+        for names, why in [(["HJViewer-1.9.1-bbbbbbb-ios-unsigned"], "has no HJViewer-1.9.1-bbbbbbb-ios:"),
+                           (["HJViewer-1.9.1-bbbbbbb-check-ios"], "has no HJViewer-1.9.1-bbbbbbb-ios:")]:
+            fake = FakeRuns()
+            fake.artifacts = [{"name": n, "expired": False} for n in names]
+            code, out = self.run_script(fake, argv=argv)
+            self.assertEqual(code, 1, names)
+            self.assertIn(why, out)
+        fake = FakeRuns()
+        fake.artifacts[2]["expired"] = True
+        code, out = self.run_script(fake, argv=argv)
+        self.assertEqual((code, "IPAs are kept 7 days" in out), (1, True), out)
+        # and the run is held to the same rules as for a Play upload
+        code, out = self.run_script(FakeRuns(conclusion="failure"), argv=argv)
+        self.assertEqual(code, 1)
+        self.assertIn("conclusion 'failure'", out)
 
     def test_another_run_is_refused(self):
         other = {"path": f"{PUBLIC}/.github/workflows/client-build.yml@{A}", "sha": A, "ref": A}
@@ -418,7 +449,6 @@ class CheckRunTest(unittest.TestCase):
 
     def test_bad_usage(self):
         for argv, why in [
-            (["check-run", "--repo", REPO, "--store", "appstore", "--version", "1.9.1", "--run-id", RUN, "--source", B], "--store play"),
             (["check-run", "--repo", REPO, "--store", "play", "--version", "1.9.1", "--run-id", "12a", "--source", B], "--run-id"),
             (["check-run", "--repo", REPO, "--store", "play", "--version", "1.9.1", "--run-id", RUN, "--source", "abc"], "40-digit"),
             (["check-run", "--file", "x", "--store", "play", "--version", "1.9.1", "--run-id", RUN, "--source", B], "--repo"),

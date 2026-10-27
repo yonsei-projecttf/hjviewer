@@ -243,7 +243,7 @@ hjv-release policy --prev none --server rd.example.com --release-dir build/relea
 
 1. `release.json`의 실행이 빌드 저장소 `build.yml`의, 손으로 시작한, 성공한 실행인지(`gh api repos/<빌드 저장소>/actions/runs/<실행 번호>`). 업로드 같은 잡 하나가 실패해 실행이 성공하지 않았으면 빌드 저장소에서 그 실행을 'Re-run failed jobs'로 다시 돌리고, 성공으로 끝나면 같은 실행 번호로 진행합니다. 그래도 안 되면 같은 태그 커밋으로 새로 실행합니다. 이때 실패한 실행이 TestFlight나 Google Play에 빌드를 하나도 올리지 않았으면 버전을 그대로 두고, 하나라도 올라갔으면 `client/version.env`의 버전을 올려 새로 빌드합니다(`docs/ci.md` "릴리스 기록").
 2. 그 실행이 부른 워크플로가 공개 저장소의 `client-build.yml` 하나이고, `release.json`의 소스 커밋(40자리)과 같은 커밋인지.
-3. 그 실행 커밋의 `build.yml`이 문서(`docs/ci.md`)의 모양 그대로인지: job 하나, `uses:`와 `source_ref`가 같은 커밋으로 고정, 자기 단계 없음, 모르는 입력 없음.
+3. 그 실행 커밋의 `build.yml`이 문서(`docs/ci.md`)의 모양 그대로인지: job 하나, `uses:`와 `source_ref`가 같은 커밋으로 고정, 자기 단계 없음, 모르는 입력 없음. 도구가 아는 입력은 `platforms`, `testflight`, `testflight_run`, `play`, `play_release`, `source_ref`입니다(`src/provenance.rs`의 `KNOWN_INPUTS`). `testflight_run`(1.9.2부터)은 앞 빌드 실행의 IPA를 TestFlight에 올리는 실행을 만듭니다. 그 실행은 아무것도 빌드하지 않으므로 정책에 넣을 패키지가 없습니다. `check_only`는 아직 모르므로 `--allow-input check_only`를 줍니다.
 4. 그 커밋이 이 저장소의 태그 `client-<버전>`과 같은지.
 5. **릴리스 디렉터리의 패키지와 `release.json`이 바로 그 실행의 산출물인지.** 도구가 `gh run download <실행 번호>`로 그 실행의 산출물을 임시 디렉터리(0700, 끝나면 지움)에 직접 받아, SHA-256이 같은 파일이 둘 다 있는지 봅니다. 하나라도 없으면 초안을 만들지 않습니다.
 

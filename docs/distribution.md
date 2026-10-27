@@ -593,7 +593,10 @@ TestFlight 빌드는 올린 지 90일이 지나면 실행되지 않습니다. 1.
 
 정책 만들기, 서명, 서버에 넣기의 명령은 [tools/hjv-release/README.md](../tools/hjv-release/README.md)와 [server-runbook.md](server-runbook.md)에 있습니다. 순서만 적습니다.
 
-1. `client/version.env`를 올립니다. 버전마다 빌드는 하나이고, 새 빌드에는 늘 더 높은 버전을 줍니다. `client/update-keys.env`의 `HJV_POLICY_FLOOR`를 서버에 지금 있는 정책의 위치로 바꿉니다(`hjv-release floor --live <서버에서 받은 정책 파일>`). push하고 비공개 빌드 저장소에서 빌드합니다.
+1. `client/version.env`를 올립니다. 버전마다 빌드는 하나이고, 새 빌드에는 늘 더 높은 버전을 줍니다. `client/update-keys.env`의 `HJV_POLICY_FLOOR`를 서버에 지금 있는 정책의 위치로 바꿉니다(`hjv-release floor --live <서버에서 받은 정책 파일>`). push하고, 비공개 빌드 저장소에서 Windows·Android·iOS를 한 실행으로 함께 빌드합니다(`gh workflow run build.yml -R yonsei-projecttf/hjviewer-private`, `platforms`의 기본값 `all`). 이 빌드 실행은 아무것도 나눠 주지 않습니다. 나눠 주는 일(정책, TestFlight 내부 배포, 스토어 실행)만 소유자의 Windows 확인을 기다립니다(2026-10-27 사용자 결정).
+   - 소유자가 그 실행의 Windows 설치본을 Windows에서 확인합니다(Windows 게이트. 그 실행의 Windows 설치 시험 단계도 성공이어야 함). 같은 실행의 APK도 이때 확인할 수 있습니다.
+   - 게이트를 통과하면 그 실행의 IPA를 TestFlight에 올립니다: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=ios -f testflight=true -f testflight_run=<빌드 실행 ID>`. 이 실행은 빌드하지 않고, 빌드 실행이 성공했는지(Dart 테스트 포함), 같은 커밋인지, IPA가 남아 있는지(7일) 본 뒤 올립니다([ci.md](ci.md)의 "실행").
+   - 게이트를 통과하지 못하면 아무것도 나눠 주지 않습니다. 고친 빌드는 더 높은 버전으로 다시 세 플랫폼을 빌드합니다.
 2. 산출물을 7일 안에 `build/release-<버전>/`에 받습니다(산출물이 7일 뒤 지워짐). 빌드한 커밋(`release.json`의 소스 커밋)에 공개 저장소 태그 `client-<버전>`을 만들고, 태그 메모에 `release.json`의 패키지마다 SHA-256을 적습니다. 3번의 출처 확인이 이 태그를 읽습니다. TestFlight에서 빌드가 VALID이고 내부 그룹에 배포됐는지 봅니다. Play를 쓰면 Play 업로드 실행 요약의 versionCode와 "internal (completed)"를 봅니다.
 3. `hjv-release policy`로 정책 초안을 만듭니다. 도구가 패키지의 출처(그 빌드 실행, 그리고 그 커밋이 태그 `client-<버전>`의 커밋인지)를 확인합니다. 태그가 없으면 초안을 만들지 않습니다. 새 Windows 버전의 무인 설치는 기본으로 초안을 만든 때부터 2일 뒤입니다(게시가 늦어지면 그만큼 짧아지므로, 늦어지면 초안을 다시 만듭니다). `publish-dir`가 서버로 보낼 디렉터리를 모읍니다. 1.9.0부터 앱은 정책의 연락처(`--contact`)를 "HJViewer 관리자: <연락처>"로 업데이트 화면, 정보, PC의 수락 창과 P2·P3에 보이므로, `--contact`에는 관리자 연락처 자체만 씁니다. 그 값은 저장소와 앱에 두지 않고 정책에만 둡니다.
 4. **사용자가** `hjv-release sign`으로 서명합니다(키 비밀번호 입력). 도구가 보여 주는 새 패키지의 SHA-256을 빌드 실행 요약의 값과 눈으로 대조합니다. `hjv-release verify`로 확인합니다. 에이전트는 서명하지 않습니다.

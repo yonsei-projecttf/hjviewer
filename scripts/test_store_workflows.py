@@ -8,14 +8,25 @@ store-release.yml: called only (workflow_call), Linux only, read permissions but
 every checkout of this file's own repository and commit without credentials, the environment
 `store` and the secrets in the play and appstore jobs alone (by name, never inherit), status out
 of the editing jobs' concurrency groups. client-build.yml: no Google Play job, play refused, the
--play bundle kept 30 days, the release checks before any third-party build step.
+-play bundle kept 30 days, the release checks before any third-party build step, and the TestFlight
+upload a job of its own that builds nothing and takes the IPA of a checked, finished build run. The
+run summary (scripts/run-summary.py, RunSummaryTest) never fails a run.
 """
+import importlib.util
+import io
+import json
 import os
 import re
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
+
+_spec = importlib.util.spec_from_file_location("run_summary", os.path.join(ROOT, "scripts", "run-summary.py"))
+rs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(rs)
 SHA_PIN = re.compile(r"uses: [\w./-]+@[0-9a-f]{40}(?: #.*)?$")
 
 
@@ -247,7 +258,7 @@ class ClientBuildWorkflowTest(unittest.TestCase):
             self.assertNotIn(word, self.text)
 
     def test_play_is_refused_before_any_build(self):
-        (step,) = [s for s in steps(self.jobs["generate-bridge"]) if name_of(s) == "Check the Google Play input"]
+        (step,) = [s for s in steps(self.jobs["preflight"]) if name_of(s) == "Check the Google Play input"]
         self.assertIn("        if: inputs.play\n", step)
         self.assertIn("exit 1", step)
         self.assertIn("store.yml", step)
@@ -267,23 +278,29 @@ class ClientBuildWorkflowTest(unittest.TestCase):
     def test_the_release_checks_come_first(self):
         expected = {
             "android": ["Check out the release record check", "Check the release record"],
-            "ios": ["Check out the release record check", "Check the release record",
-                    "Check that TestFlight has no build of this version", "Remove the release record check"],
+            "ios": ["Check out the release record check", "Check the release record"],
+            # the upload: before the IPA is fetched, and in a run that builds nothing (no check build)
+            "testflight": ["Check out the release record check", "Check the release record and the build run",
+                           "Check that TestFlight has no build of this version", "Remove the release record check"],
         }
         for job, names in expected.items():
             found = steps(self.jobs[job])
             self.assertEqual([name_of(s) for s in found[:len(names)]], names, job)
             for s in found[:len(names)]:
-                self.assertIn("!inputs.check_only", s, name_of(s))
+                if job != "testflight":
+                    self.assertIn("!inputs.check_only", s, name_of(s))
                 uses = re.findall(r"uses: ([\w./-]+)@", s)
                 self.assertTrue(set(uses) <= {"actions/checkout"}, uses)
             checkout = found[0]
             self.assertIn("path: release-checks\n", checkout)
             self.assertIn("persist-credentials: false\n", checkout)
             self.assertIn("sparse-checkout-cone-mode: false\n", checkout)
-            store = {"android": "play", "ios": "appstore"}[job]
+            self.assertEqual("scripts/asc-store.mjs" in checkout, job == "testflight", job)
+            store = {"android": "play", "ios": "appstore", "testflight": "appstore"}[job]
             self.assertIn(f"check-build --repo \"$GITHUB_REPOSITORY\" --store {store} --version \"$HJV_VERSION\"", found[1])
             self.assertNotIn("secrets.", found[1])
+            # the checked-out scripts are gone before any build or download
+            self.assertIn("rm -rf release-checks", found[len(names) - 1])
 
     def test_build_names_carry_exactly_seven_digits_of_the_commit(self):
         # the store run looks for HJViewer-<version>-<7 digits>-android-aarch64-play; --short=7
@@ -291,13 +308,145 @@ class ClientBuildWorkflowTest(unittest.TestCase):
         self.assertNotIn("--short", self.text)
         self.assertEqual(self.text.count('name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"'), 3)
 
-    def test_the_upload_key_reaches_two_ios_steps_only(self):
-        holders = [name_of(s) for s in steps(self.jobs["ios"]) if "secrets.ASC_" in s]
+    def test_the_upload_key_reaches_two_steps_of_the_upload_job_only(self):
+        holders = [name_of(s) for s in steps(self.jobs["testflight"]) if "secrets.ASC_" in s]
         self.assertEqual(holders, ["Check that TestFlight has no build of this version", "Upload to TestFlight"])
-        (check,) = [s for s in steps(self.jobs["ios"]) if name_of(s) == holders[0]]
-        self.assertIn("inputs.testflight && env.IOS_SIGNING == 'true'", check)
+        (check,) = [s for s in steps(self.jobs["testflight"]) if name_of(s) == holders[0]]
         self.assertIn("asc-store.mjs check-new --version", check)
-        self.assertNotIn("secrets.ASC_", "\n".join(self.jobs["android"]))
+        for job in set(self.jobs) - {"testflight"}:
+            self.assertNotIn("secrets.ASC_", "\n".join(self.jobs[job]), job)
+        # the job that holds it signs nothing and builds nothing
+        text = "\n".join(self.jobs["testflight"])
+        for word in ("secrets.IOS_", "flutter build", "cargo", "xcodebuild"):
+            self.assertNotIn(word, text)
+
+    def test_testflight_takes_the_ipa_of_a_checked_build_run(self):
+        """The build run uploads nothing; a later run with testflight and testflight_run sends its IPA,
+        after the build run's provenance check (store-record.py check-run, hjv-release's rules)."""
+        job = self.jobs["testflight"]
+        self.assertEqual(key(job, "needs"), "preflight")
+        self.assertEqual(key(job, "if"), "needs.preflight.outputs.testflight == 'true'")
+        self.assertEqual(block(job, "permissions"), ["contents: read", "actions: read"])
+        (check,) = [s for s in steps(job) if name_of(s) == "Check the release record and the build run"]
+        self.assertIn('check-run --repo "$GITHUB_REPOSITORY" --store appstore', check)
+        self.assertIn('--run-id "$TESTFLIGHT_RUN" --source "$SOURCE_SHA"', check)
+        self.assertIn("TESTFLIGHT_RUN: ${{ inputs.testflight_run }}", check)
+        (download,) = [s for s in steps(job) if name_of(s) == "Download the IPA"]
+        self.assertIn("name: ${{ steps.build-run.outputs.artifact }}\n", download)
+        self.assertIn("run-id: ${{ inputs.testflight_run }}\n", download)
+        names = [name_of(s) for s in steps(job)]
+        self.assertEqual(names[-3:], ["Download the IPA", "Upload to TestFlight", "Remove the API key"])
+        (upload,) = [s for s in steps(job) if name_of(s) == "Upload to TestFlight"]
+        for needed in ("shasum -a 256 -c SHA256SUMS", "release.json", "ProvisionedDevices", "get-task-allow",
+                       "ProvisionsAllDevices", "xcrun altool --upload-package", '"product-errors"'):
+            self.assertIn(needed, upload)
+        # the build jobs hand nothing out: no altool, no App Store Connect key
+        for build in ("windows", "android", "ios"):
+            self.assertNotIn("altool", "\n".join(self.jobs[build]), build)
+        self.assertEqual(key(self.jobs["ios"], "needs"), "[preflight, generate-bridge]")
+
+
+    def test_the_run_summary_never_fails_the_run(self):
+        """GHA-09: the release tool takes successful runs only, so the summary may not fail one."""
+        job = self.jobs["summary"]
+        self.assertEqual(key(job, "continue-on-error"), "true")
+        self.assertEqual(key(job, "if"), "${{ !cancelled() }}")
+        self.assertEqual(block(job, "permissions"), ["contents: read", "actions: read"])
+        needs = key(job, "needs").strip("[]").split(", ")
+        self.assertEqual(sorted(needs), sorted(set(self.jobs) - {"summary"}))
+        (write,) = [s for s in steps(job) if name_of(s) == "Write the run summary"]
+        self.assertIn("NEEDS: ${{ toJSON(needs) }}", write)
+        self.assertIn("scripts/run-summary.py", write)
+        self.assertIn(">> \"$GITHUB_STEP_SUMMARY\"", write)
+        # what the summary reads: every Rust job's image and cache, the vcpkg jobs' packages
+        for build in ("generate-bridge", "windows", "android", "ios"):
+            outputs = block(self.jobs[build], "outputs")
+            self.assertIn("image: ${{ steps.image.outputs.image }}", outputs, build)
+            self.assertIn("rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}", outputs, build)
+            if build != "generate-bridge":
+                self.assertIn("vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}", outputs, build)
+                self.assertIn("vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}", outputs, build)
+            (image,) = [s for s in steps(self.jobs[build]) if name_of(s) == "Runner image and rustup directory"]
+            self.assertIn('echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"', image)
+            names = [name_of(s) for s in steps(self.jobs[build])]
+            self.assertEqual(names.index("Install Rust toolchain"), names.index("Runner image and rustup directory") + 1, build)
+
+
+class RunSummaryTest(unittest.TestCase):
+    """scripts/run-summary.py on answers of the jobs API, cut down to the fields it reads."""
+
+    JOBS = [
+        {"name": "client / Checks", "status": "completed", "conclusion": "success", "labels": ["ubuntu-24.04"],
+         "created_at": "2026-10-26T15:03:30Z", "started_at": "2026-10-26T15:03:40Z",
+         "completed_at": "2026-10-26T15:04:10Z",
+         "steps": [{"name": "Set up job", "status": "completed", "conclusion": "success",
+                    "started_at": "2026-10-26T15:03:40Z", "completed_at": "2026-10-26T15:03:43Z"},
+                   {"name": "Check the Google Play input", "status": "completed", "conclusion": "skipped",
+                    "started_at": "2026-10-26T15:03:44Z", "completed_at": "2026-10-26T15:03:44Z"}]},
+        {"name": "client / Windows x64", "status": "completed", "conclusion": "success", "labels": ["windows-2022"],
+         "created_at": "2026-10-26T15:04:12Z", "started_at": "2026-10-26T15:04:18Z",
+         "completed_at": "2026-10-26T15:31:18Z",
+         "steps": [{"name": "Build rustdesk", "status": "completed", "conclusion": "success",
+                    "started_at": "2026-10-26T15:12:00Z", "completed_at": "2026-10-26T15:24:30Z"},
+                   {"name": "Build rustdesk lib | x", "status": "completed", "conclusion": "success",
+                    "started_at": "2026-10-26T15:24:30Z", "completed_at": "2026-10-26T15:25:00Z"}]},
+        {"name": "client / Run summary", "status": "in_progress", "conclusion": None, "labels": ["ubuntu-24.04"],
+         "created_at": "2026-10-26T15:31:20Z", "started_at": "2026-10-26T15:31:25Z", "completed_at": None,
+         "steps": []},
+    ]
+    NEEDS = {
+        "windows": {"result": "success", "outputs": {"image": "win22 20261022.344", "rust_cache": "true",
+                                                     "vcpkg_restored": "16", "vcpkg_packages": "16"}},
+        "generate-bridge": {"result": "success", "outputs": {"image": "", "rust_cache": "", "bridge_cache": "true"}},
+        "android": {"result": "success", "outputs": {"image": "ubuntu24 20261012.334", "rust_cache": "false",
+                                                     "vcpkg_restored": "0", "vcpkg_packages": "26",
+                                                     "disk_free": "21G"}},
+        "relay": {"result": "skipped", "outputs": {}},
+    }
+
+    def summary(self, text, needs=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "jobs.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            out = io.StringIO()
+            env = {} if needs is None else {"NEEDS": json.dumps(needs)}
+            with redirect_stdout(out):
+                code = rs.main([path], env)
+        return code, out.getvalue()
+
+    def test_times_of_the_jobs_and_their_steps(self):
+        # gh --jq prints one job after another; the API's pages work as well
+        for text in ("\n".join(json.dumps(j, indent=1) for j in self.JOBS), json.dumps({"jobs": self.JOBS})):
+            code, out = self.summary(text)
+            self.assertEqual(code, 0)
+            self.assertIn("From the first job's start to the last job's end: 27.8 minutes.", out)
+            self.assertIn("| client / Checks | success | 0.2 | 0.5 | ubuntu-24.04 |", out)
+            self.assertIn("| client / Windows x64 | success | 0.8 | 27.0 | windows-2022 |", out)
+            self.assertIn("| client / Run summary | in progress | 27.9 |  | ubuntu-24.04 |", out)
+            self.assertIn("<details><summary>Steps of client / Windows x64 (27.0 minutes)</summary>", out)
+            self.assertIn("| Build rustdesk | success | 12.5 |", out)
+            # names as they are, never matched by prefix; a separator in one stays in its cell
+            self.assertIn("| Build rustdesk lib \\| x | success | 0.5 |", out)
+            # skipped steps make no line
+            self.assertNotIn("Check the Google Play input", out)
+            self.assertNotIn("Runner images and caches", out)
+
+    def test_images_and_caches_from_the_jobs_outputs(self):
+        code, out = self.summary(json.dumps(self.JOBS[0]), self.NEEDS)
+        self.assertEqual(code, 0)
+        self.assertIn("| windows | win22 20261022.344 | hit | 16 of 16 |  |", out)
+        self.assertIn("| android | ubuntu24 20261012.334 | miss or fallback | 0 of 26 | disk left 21G |", out)
+        self.assertIn("| generate-bridge |  |  |  | bridge files from the cache |", out)
+        self.assertNotIn("| relay |", out)
+
+    def test_what_it_cannot_read_becomes_a_line(self):
+        code, out = self.summary("{not json", {"windows": {"outputs": {"image": "x"}}})
+        self.assertEqual(code, 0)
+        self.assertIn("The run's jobs could not be read", out)
+        self.assertIn("| windows | x |", out)
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            self.assertEqual(rs.main([os.path.join(tmp, "missing.json")], {"NEEDS": "not json"}), 0)
 
 
 if __name__ == "__main__":

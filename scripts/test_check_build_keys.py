@@ -693,7 +693,7 @@ class PinUpdateKeysTest(unittest.TestCase):
             self.assertEqual(r.pinned, "\n".join(lines) + "\n")
             self.assertEqual([line.split("=")[0] for line in lines], list(cbk.UPDATE_NAMES))
             self.assertIn("pinned HJV_POLICY_FLOOR=3:12", r.err)
-            self.assertEqual(r.summary, "")  # the Bridge codegen job writes the summary
+            self.assertEqual(r.summary, "")  # the Checks job writes the summary
 
     def test_a_file_without_keys_pins_empty_values(self):
         """So that nothing else in the job's environment can stand in for them."""
@@ -746,7 +746,7 @@ class PinUpdateKeysTest(unittest.TestCase):
         self.assertNotIn(ROOT, done.stdout + done.stderr)
 
     def test_warnings_are_plain_lines(self):
-        """The Bridge codegen job has given the run's warnings; three more jobs do not repeat them."""
+        """The Checks job has given the run's warnings; three more jobs do not repeat them."""
         for text in (NO_KEYS, TEST_KEYS):
             r = Run(pin=True, update=text, CALLED="", GITHUB_ACTIONS="true")
             self.assertEqual(r.code, 0)
@@ -839,12 +839,13 @@ class WorkflowTest(unittest.TestCase):
             spec = self.on[trigger]["inputs"]["check_only"]
             self.assertEqual(spec["type"], "boolean")
             self.assertIs(spec["default"], False)
-        self.assertIn("!inputs.check_only", self.step("ios", "Upload to TestFlight")["if"])
         # 1.9.1: no Google Play job (the store run uploads, store-release.yml), so nothing to skip
         self.assertNotIn("play", self.wf["jobs"])
         self.assertIn("!inputs.check_only", self.wf["jobs"]["relay-release"]["if"])
-        refuse = self.step("generate-bridge", "Check the check_only input")
-        self.assertIn("inputs.check_only", refuse["if"])
+        # the TestFlight upload runs only where the plan asks for it, and a check build never does
+        self.assertEqual(self.wf["jobs"]["testflight"]["if"], "needs.preflight.outputs.testflight == 'true'")
+        refuse = self.step("preflight", "Check the check_only input")
+        self.assertEqual(refuse["if"], "inputs.check_only && (inputs.testflight || inputs.play)")
         self.assertNotEqual(subprocess.run(["bash", "-c", refuse["run"]], capture_output=True).returncode, 0)
 
     def run_step(self, job, name, version, env, update=None):
@@ -875,25 +876,25 @@ class WorkflowTest(unittest.TestCase):
 
     def test_the_step_fails_a_called_160_run_without_a_key_or_with_a_test_key(self):
         name = "Check the pinned public keys"
-        self.assertEqual(self.step("generate-bridge", name)["env"],
+        self.assertEqual(self.step("preflight", name)["env"],
                          {"CALLED": "${{ inputs.source_ref }}", "CHECK_ONLY": "${{ inputs.check_only }}"})
         keys = account_keys()
-        code, out, _ = self.run_step("generate-bridge", name, "1.6.0", {"CALLED": "main", "CHECK_ONLY": "false", **keys})
+        code, out, _ = self.run_step("preflight", name, "1.6.0", {"CALLED": "main", "CHECK_ONLY": "false", **keys})
         self.assertEqual(code, 0, out)
         self.assertNotIn("::error::", out)
         for missing in ("HJV_LOGIN_SEAL_PUBKEY", "HJV_TRUST_PUBKEYS"):
             env = {"CALLED": "main", "CHECK_ONLY": "false", **keys, missing: ""}
-            code, out, _ = self.run_step("generate-bridge", name, "1.6.0", env)
+            code, out, _ = self.run_step("preflight", name, "1.6.0", env)
             self.assertEqual(code, 1, missing)
             self.assertIn(f"::error::{missing} did not arrive", out)
         env = {"CALLED": "main", "CHECK_ONLY": "false", **keys,
                "HJV_TRUST_PUBKEYS": f"1:{ed(bytes([1]) * 32)},2:{ed(fresh())}"}
-        self.assertEqual(self.run_step("generate-bridge", name, "1.6.0", env)[0], 1)
+        self.assertEqual(self.run_step("preflight", name, "1.6.0", env)[0], 1)
         # check_only: no key needed; a run of this repository (no source_ref): warnings only
         none = {"update": NO_KEYS}
-        self.assertEqual(self.run_step("generate-bridge", name, "1.6.0", {"CALLED": "", "CHECK_ONLY": "false"}, **none)[0], 0)
-        self.assertEqual(self.run_step("generate-bridge", name, "1.6.0", {"CALLED": "main", "CHECK_ONLY": "true"}, **none)[0], 0)
-        self.assertEqual(self.run_step("generate-bridge", name, "1.5.1", {"CALLED": "main", "CHECK_ONLY": "false"}, **none)[0], 0)
+        self.assertEqual(self.run_step("preflight", name, "1.6.0", {"CALLED": "", "CHECK_ONLY": "false"}, **none)[0], 0)
+        self.assertEqual(self.run_step("preflight", name, "1.6.0", {"CALLED": "main", "CHECK_ONLY": "true"}, **none)[0], 0)
+        self.assertEqual(self.run_step("preflight", name, "1.5.1", {"CALLED": "main", "CHECK_ONLY": "false"}, **none)[0], 0)
 
     def test_the_relay_job_checks_its_command_key(self):
         name = "Check the command keys"
@@ -931,34 +932,34 @@ class WorkflowTest(unittest.TestCase):
         """The step as the runner runs it, with a key file in each state (UpdateKeysTest has the
         cases; here the account keys are left out where a run needs none, which is quicker)."""
         name = "Check the pinned public keys"
-        self.assertIn("--update-keys client/update-keys.env", self.step("generate-bridge", name)["run"])
+        self.assertIn("--update-keys client/update-keys.env", self.step("preflight", name)["run"])
         release, check, public = self.KINDS
         # good keys: a release build passes
-        code, out, _ = self.run_step("generate-bridge", name, "1.6.0", {**release, **account_keys()})
+        code, out, _ = self.run_step("preflight", name, "1.6.0", {**release, **account_keys()})
         self.assertEqual(code, 0, out)
         # no keys yet: only a check build, or a run of this repository
-        code, out, _ = self.run_step("generate-bridge", name, "1.6.0", release, update=NO_KEYS)
+        code, out, _ = self.run_step("preflight", name, "1.6.0", release, update=NO_KEYS)
         self.assertEqual(code, 1)
         self.assertIn("::error::client/update-keys.env holds no update keys", out)
-        code, out, _ = self.run_step("generate-bridge", name, "1.6.0", check, update=NO_KEYS)
+        code, out, _ = self.run_step("preflight", name, "1.6.0", check, update=NO_KEYS)
         self.assertEqual(code, 0, out)
         self.assertNotIn("::error::", out)
-        code, out, _ = self.run_step("generate-bridge", name, "1.6.0", public, update=NO_KEYS)
+        code, out, _ = self.run_step("preflight", name, "1.6.0", public, update=NO_KEYS)
         self.assertEqual(code, 0, out)
         self.assertIn("::warning::client/update-keys.env holds no update keys", out)
         # this repository's test keys: never in a run of the build repository
-        code, out, _ = self.run_step("generate-bridge", name, "1.6.0", check, update=TEST_KEYS)
+        code, out, _ = self.run_step("preflight", name, "1.6.0", check, update=TEST_KEYS)
         self.assertEqual(code, 1)
         self.assertIn("::error::HJV_UPDATE_PUBKEY key 1 is a public test key", out)
         self.assertIn("::error::HJV_UPDATE_PUBKEY key 2 is a public test key", out)
         self.assertIn("::error::HJV_UPDATE_ROOT_PUBKEY key 101 is a public test key", out)
-        code, out, _ = self.run_step("generate-bridge", name, "1.6.0", public, update=TEST_KEYS)
+        code, out, _ = self.run_step("preflight", name, "1.6.0", public, update=TEST_KEYS)
         self.assertEqual(code, 0, out)
         self.assertIn("::warning::HJV_UPDATE_PUBKEY key 1 is a public test key", out)
         # a malformed file: never, not even in a check build or a run of this repository
         for text in (False, key_file() + "export A=1\n", key_file(root="")):
             for env in (check, public):
-                code, out, _ = self.run_step("generate-bridge", name, "1.6.0", env, update=text)
+                code, out, _ = self.run_step("preflight", name, "1.6.0", env, update=text)
                 self.assertEqual(code, 1, out)
                 self.assertIn("::error::", out)
 
@@ -975,9 +976,9 @@ class WorkflowTest(unittest.TestCase):
             steps = self.wf["jobs"][job]["steps"]
             names = [s.get("name") for s in steps]
             at = names.index("Pin the update keys")
-            # unconditional, and what the check step of the Bridge codegen job is given
+            # unconditional, and what the check step of the Checks job is given
             self.assertEqual(steps[at], want, job)
-            self.assertEqual(want["env"], self.step("generate-bridge", "Check the pinned public keys")["env"])
+            self.assertEqual(want["env"], self.step("preflight", "Check the pinned public keys")["env"])
             # of this checkout (on Windows the one with LF line endings), before anything is built
             self.assertGreater(at, names.index("Check out hjviewer"), job)
             if job == "windows":
