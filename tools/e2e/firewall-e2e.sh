@@ -79,7 +79,9 @@
 # HJV_E2E_HOLD=<seconds> (at most 3600): a run that fails keeps its namespaces, servers and
 # clients up that long, or until $RUN/release exists, before it cleans up, so that the state can
 # be looked at (logs, --hjv-e2e-option through in_ns) without running it again.
-# HJV_E2E_NO_SKIP=1: a run that would skip a part fails before it starts (skips_ahead).
+# HJV_E2E_PARTS=<part>[,<part>...] (account, access, minver, policy): a partial run of strict mode
+# for a fix loop, which ends with PARTIAL and is no pass (PARTS below). HJV_E2E_NO_SKIP=1: a run
+# that would skip a part fails before it starts (skips_ahead).
 #
 # In strict mode the base path's controller and the sides ver, rev and pc2 hold a relay that is
 # paired for the client's default WebRTC window (2.5 s), as every 443-only network does; the other
@@ -207,25 +209,39 @@ spec.loader.exec_module(conf)
 print(conf.hash_of(sys.argv[2], os.urandom(16)))' "$ROOT/deploy/guest-conf.py" "$1"
 }
 
+# A partial run for a fix loop (docs/e2e.md): HJV_E2E_PARTS=<part>[,<part>...] runs the base path
+# and only these parts of strict mode: account (S24 to S20), access (A, C, W6 and DEL; without the
+# account part, after alice's PC and controller logged in), minver (V1, V2, V4) and policy (V5-V7,
+# V9). Its line "skipped: ..." names what it leaves out, and it ends with PARTIAL, never with PASS.
+PARTS=${HJV_E2E_PARTS:-}
+if [ -n "$PARTS" ]; then
+  [ "$MODE" = strict ] || { echo "HJV_E2E_PARTS names parts of strict mode" >&2; exit 2; }
+  for p in ${PARTS//,/ }; do
+    case $p in account | access | minver | policy) ;; *) echo "HJV_E2E_PARTS: no part '$p' (account, access, minver, policy)" >&2; exit 2 ;; esac
+  done
+fi
+part() { [ -z "$PARTS" ] || [[ ",$PARTS," == *",$1,"* ]]; } # <part>: this run has it
 # What the run would skip, known before it starts from the conditions its parts test later; with
 # HJV_E2E_NO_SKIP=1 (scripts/ci.sh in strict mode, where a skip fails the stage at its end) the run
 # fails at once, not after twelve minutes
 has_faketime() { [ -n "${FAKETIME_LIB:-}" ] && [ -f "$FAKETIME_LIB" ]; }
 client_has() { grep -aqF -- "$1" "$CLIENT"; } # <text>: one of the client's own (an E2E command's)
 skips_ahead() {
-  if [ "$MODE" = strict ] && [ -n "$ACCOUNT" ] && ! has_faketime; then echo "S27 (no FAKETIME_LIB)"; fi
-  if [ -n "$ACCESS" ]; then
+  if [ "$MODE" = strict ] && [ -n "$ACCOUNT" ] && part account && ! has_faketime; then echo "S27 (no FAKETIME_LIB)"; fi
+  if [ -n "$ACCESS" ] && part access; then
     [ -n "$POLICY" ] || echo "W6-E2 (no version policy: HJV_RELEASE)"
     client_has hjv-e2e-support-pc || echo "W6-E4, W6-E4b, W6-E5 (no hjv-e2e-support-pc in $CLIENT)"
     client_has 'after delete-account' || echo "DEL1-DEL3 (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
   fi
-  if [ -n "$KEYED" ] && [ -z "$POLICY" ]; then echo "V5-V7 and V9 (no HJV_RELEASE)"; fi
+  if [ -n "$KEYED" ] && [ -z "$POLICY" ] && part policy; then echo "V5-V7 and V9 (no HJV_RELEASE)"; fi
+  if [ -n "$PARTS" ]; then echo "the strict parts other than $PARTS (HJV_E2E_PARTS)"; fi
 }
 if [ -n "${HJV_E2E_NO_SKIP:-}" ] && AHEAD=$(skips_ahead) && [ -n "$AHEAD" ]; then
   echo "FAIL: HJV_E2E_NO_SKIP=1, and this run would skip:"
   sed 's/^/  - /' <<<"$AHEAD"
   exit 1
 fi
+[ -z "$PARTS" ] || echo "skipped: the strict parts other than $PARTS (HJV_E2E_PARTS: a partial run, which is no pass)"
 
 # <-I|-D>: the host forwards UDP between hjv-pc and hjv-ctl (open mode)
 forward_rules() {
@@ -1063,11 +1079,15 @@ account_common() { # hjv-pc and hjv-ctl logged in as alice, the PC bound
   keep_secrets ctl
 }
 
-account_open() {
-  log "account (open): alice's PC and controller, the switch on for everyone"
+account_ready() { # alice's PC and controller logged in, the switch on for everyone, the PC active
   admin passwordless on
   account_common
   until_ok 10 "the PC's binding active" state_is active
+}
+
+account_open() {
+  log "account (open): alice's PC and controller, the switch on for everyone"
+  account_ready
   run ctl --hjv-e2e-devices
   has "device $PC_ID linux pwless=active" || fail "the controller's list has no active PC"
   log "S21: a password-less remote screen over WebRTC P2P (UDP between the peers)"
@@ -2791,15 +2811,24 @@ policy_part() {
 }
 
 if [ -n "$ACCOUNT" ]; then
-  if [ "$MODE" = strict ]; then account_strict; else account_open; fi
+  if [ "$MODE" = open ]; then
+    account_open
+  elif part account; then
+    account_strict
+  elif [ -n "$ACCESS" ] && part access; then
+    log "account (a partial run's access part): alice's PC and controller, the switch on for everyone"
+    account_ready
+    # (the service's environment as the account part leaves it, from S15 on)
+    PC_SERVICE_ENV=(HJV_E2E_LOGON=1)
+  fi
 fi
-if [ -n "$ACCESS" ]; then
+if [ -n "$ACCESS" ] && part access; then
   access_part
   delete_part
 fi
-if [ -n "$MIN_HBBS" ]; then min_controller_part; fi
+if [ -n "$MIN_HBBS" ] && part minver; then min_controller_part; fi
 if [ -n "$POLICY" ]; then
-  policy_part
+  if part policy; then policy_part; fi
 elif [ -n "$KEYED" ]; then
   echo "skipped: V5-V7 and V9, the version policy (no HJV_RELEASE, tools/hjv-release to sign its test policies)"
 fi
@@ -2812,6 +2841,10 @@ log "what hbbs saw"
 # (|| true: with pipefail, head leaving early fails the pipeline once the log is long)
 grep -E "update_pk|Punch hole|Tcp connection from 10\.77" "$RUN/hbbs.log" | sed 's/^\[[^]]*\] //' | head -8 || true
 echo
+if [ -n "$PARTS" ]; then
+  echo "PARTIAL ($MODE): the base path and $PARTS; the other parts did not run, so this is no pass"
+  exit 0
+fi
 echo "PASS ($MODE): $(grep -o 'transport: .*' "$RUN/ctl.log" | tail -1)$([ -n "$ACCOUNT" ] && echo ", same-account logins")$(
   [ -n "$ACCESS" ] && echo ", the staff-only gate")$([ -n "$MIN_HBBS" ] && echo ", hbbs's minimum")$(
   [ -n "$POLICY" ] && echo ", the version policy")"

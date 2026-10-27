@@ -53,7 +53,9 @@
 #                          version, and with the update code in the patches (src/hjviewer_update),
 #                          a client with the update test keys and the signed version policy that
 #                          tools/hjv-release signs for it (V1, V2, V4-V7 and V9), and the
-#                          update code's unit tests once more in a build without those keys
+#                          update code's unit tests once more in a build without those keys. With
+#                          HJV_E2E_PARTS=<part>[,<part>...] only those parts of strict mode run, a
+#                          partial run for fix loops that is never a pass (HJV_CI_STRICT=1 refuses it)
 #   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
 #                          this user's own namespaces a PC that sleeps is woken through hjv-api
 #                          and hjv-relay, with the E2E's client, Caddy, hjv-api and fake SSO, and
@@ -1596,11 +1598,18 @@ e2e_minimum_version() {
 }
 
 e2e_stage() {
-  local work="$CI/e2e" mode extra=()
+  local work="$CI/e2e" mode extra=() modes=(strict open)
   # a client given by hand would go without the build's unit tests and, built without the E2E's
   # keys, without the account E2E
   [ -z "$E2E_CLIENT_GIVEN" ] ||
     fail "e2e: E2E_CLIENT is not taken here: the stage builds the client from client/patches, runs its unit tests and the account E2E with it"
+  # a partial run of strict mode (HJV_E2E_PARTS, docs/e2e.md) is for a fix loop and never a pass
+  if [ -n "${HJV_E2E_PARTS:-}" ]; then
+    [ "${HJV_CI_STRICT:-}" != 1 ] ||
+      fail "e2e: HJV_E2E_PARTS=$HJV_E2E_PARTS runs a part of the E2E, which is never a pass: not with HJV_CI_STRICT=1 (prepush)"
+    modes=(strict)
+    skip "firewall-e2e.sh open (HJV_E2E_PARTS: a partial run of strict mode)"
+  fi
   sudo -n true 2> /dev/null || fail "e2e: needs sudo without a password prompt (network namespaces, iptables)"
   if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
     fail "e2e: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
@@ -1637,14 +1646,16 @@ e2e_stage() {
     fi
     extra+=(HJV_E2E_NO_SKIP=1)
   fi
-  for mode in strict open; do
+  for mode in "${modes[@]}"; do
     step "e2e: tools/e2e/firewall-e2e.sh $mode (output also in build/ci/e2e-$mode.log)"
     with_skips "$CI/e2e-$mode.log" env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" \
       HBBR="$CI/target/release/hbbr" PROBE="$PROBE" CLIENT="$E2E_CLIENT" PC_CLIENT="$E2E_PC_DIR/rustdesk" "${extra[@]}" \
       "$ROOT/tools/e2e/firewall-e2e.sh" "$mode" || fail "e2e: firewall-e2e.sh $mode"
   done
   at_least "e2e: PASS lines (strict)" "$(grep -c '^PASS' "$CI/e2e-strict.log" || true)" "$E2E_LEAST_STRICT"
-  at_least "e2e: PASS lines (open)" "$(grep -c '^PASS' "$CI/e2e-open.log" || true)" "$E2E_LEAST_OPEN"
+  if [ ${#modes[@]} = 2 ]; then
+    at_least "e2e: PASS lines (open)" "$(grep -c '^PASS' "$CI/e2e-open.log" || true)" "$E2E_LEAST_OPEN"
+  fi
   cleanup_e2e
   trap - EXIT
 }
