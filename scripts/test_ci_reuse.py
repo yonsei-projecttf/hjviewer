@@ -636,6 +636,24 @@ cat "$TRAPS" "$PREPUSH_LOGS/late.log"''')
         self.assertNotRegex(out, r"(?m)^late started$")
         self.assertLess(int(re.search(r"(?m)^prepush_stop returned after (\d+) ms$", out).group(1)), 2500, out)
 
+    def test_a_job_that_a_stop_comes_to_before_its_number_was_taken_is_stopped_too(self):
+        # bash runs prepush's trap right after the fork of a job, before prepush_start has taken the
+        # job's number: the exit trap's stop finds that job among the shell's jobs
+        out = self.jobs(r'''
+log_head() { echo "$1 head" >> "$TRAPS"; sleep 0.5; }
+export STAGE_SECONDS=3
+prepush_start early early
+says "early head"
+# (the job as the trap finds it then)
+unset "PREPUSH_PID[early]"
+PREPUSH_STARTING=early PREPUSH_SIGNAL=SIGINT
+prepush_stop_all
+wait
+cat "$TRAPS" "$PREPUSH_LOGS/early.log"''')
+        self.assertIn("prepush: SIGINT: waiting up to 120 s for early to end, cleaning up\n", out)
+        self.assertIn("\nearly head\nprepush stopped before scripts/ci.sh early started\nEXIT 143 ", out)
+        self.assertNotRegex(out, r"(?m)^early started$")
+
     def test_prepush_ends_after_its_jobs_when_its_screen_has_gone(self):
         # a Ctrl-C of "scripts/ci.sh prepush | tee <file>" ends tee too: prepush's exit trap, as
         # prepush_run sets it, writes to a pipe that no one reads, and still waits for the job's trap

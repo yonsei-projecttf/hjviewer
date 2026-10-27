@@ -3226,6 +3226,8 @@ reuse_check() {
 # its head, and the run's log folder
 declare -A PREPUSH_PID=() PREPUSH_START=() PREPUSH_HEAD=()
 PREPUSH_LOGS=""
+# The job that prepush_start starts, until its process is in PREPUSH_PID (prepush_stop_all)
+PREPUSH_STARTING=""
 # Starts <target> of this script as a job of this prepush run, with HJV_CI_STRICT=1 and its log
 # <log folder>/<name>.log: prepush's head first, then PREPUSH_HEAD[<name>], its output, last its
 # exit status. With nice it runs with a lower priority, for CPU and disk, than the jobs beside it.
@@ -3237,6 +3239,7 @@ prepush_start() { # <name> <target> [nice]
   local name=$1 target=$2 pre=()
   [ "${3:-}" != nice ] || pre=(nice -n 10 ionice -c 2 -n 7)
   PREPUSH_START[$name]=$(date +%s)
+  PREPUSH_STARTING=$name
   (
     stop=""
     trap 'echo "EXIT $? $(date "+%Y-%m-%d %H:%M:%S %z")"' EXIT
@@ -3249,6 +3252,7 @@ prepush_start() { # <name> <target> [nice]
     env --default-signal=INT,QUIT HJV_CI_STRICT=1 "${pre[@]}" "$SELF" "$target"
   ) > "$PREPUSH_LOGS/$name.log" 2>&1 < /dev/null &
   PREPUSH_PID[$name]=$!
+  PREPUSH_STARTING=""
 }
 # Waits for the job <name> of prepush_start, keeps the side logs that it wrote, says how it ended
 # and how long it took (summary.txt: by its log's EXIT line, since the jobs beside it are waited for
@@ -3294,7 +3298,13 @@ PREPUSH_SIGNAL=""
 # a screen that has gone among it (a pipe whose reader the Ctrl-C ended, a terminal that hung up),
 # no longer ends prepush before its jobs have ended
 prepush_stop_all() {
+  local pid
   set +e
+  # (with the job that the signal came to as prepush_start started it: bash runs the trap right
+  # after the fork, before prepush_start has taken the job's number)
+  for pid in $(jobs -p); do
+    [[ " ${PREPUSH_PID[*]} " == *" $pid "* ]] || PREPUSH_PID[${PREPUSH_STARTING:-$pid}]=$pid
+  done
   prepush_stop "${!PREPUSH_PID[@]}"
 }
 # Stops the jobs <name...> while they run, their processes with them, and waits until every one of
