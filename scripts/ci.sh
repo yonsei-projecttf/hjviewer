@@ -9,13 +9,17 @@
 #                          first the commits, the toolchain and the start, last the exit status),
 #                          stopping at the first that fails. With stages named, only those, in this
 #                          order: after a fix, the stages that read what it changed (docs/ci.md).
-#   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
-#                          release (the library's and binaries' unit tests, the signaling, relay,
-#                          protobuf, hbbs hjv-pk, lowest controller version and access ticket tests,
-#                          against hjv-api's shared vectors), hjv-probe and
-#                          hjv-load; hjv-api's tests and release build (server/api); hjv-relay's
-#                          tests (relay/); tools/hjv-release's format, lints, tests (its shared test
-#                          vectors among them) and release build
+#   scripts/ci.sh server   four parts side by side, each with its own log (server:<part>[,<part>]
+#                          runs some of them, also as a stage of prepush): hbbs, a fresh upstream
+#                          checkout with server/patches (the one there before kept when it has the
+#                          same patched tree) and all of its tests in release (the library's and
+#                          binaries' unit tests, the signaling, relay, protobuf, hbbs hjv-pk, lowest
+#                          controller version and access ticket tests, against hjv-api's shared
+#                          vectors), each test binary in a network namespace of its own, hjv-probe
+#                          and hjv-load; api, hjv-api's tests (in namespaces of their own too) and
+#                          release build (server/api); relay, hjv-relay's tests (relay/); release,
+#                          tools/hjv-release's format, lints, tests (its shared test vectors among
+#                          them) and release build
 #   scripts/ci.sh client   the offline tests of the Google Play upload script and of the build-key
 #                          check (scripts/test_*.py, the key files also against hjv-release), the store
 #                          run's: the store texts (scripts/check-store-text.py and its tests), the
@@ -339,14 +343,160 @@ hjv_pk_vector() { # <file>
     sed 's/^DEVICE_PK /PEER_PK /'
 }
 
-server_stage() {
+# The server stage's parts, which server:<part>[,<part>] names, as a target and as a stage of
+# prepush; server alone is all of them, in this order (server_stage)
+SERVER_PARTS="hbbs api relay release"
+# The one test that runs once more when it alone failed (the user's decision of 2026-10-27;
+# docs/ci.md, "알려진 불안정한 시험"), by its package, test target and name: hbbs's signaling over
+# WebSocket right after hbbs listens. Alone means that its test binary came to its end, with
+# libtest's "test result" line of one failure: a binary that crashed or was killed after that test
+# failed is no flake of it. A line "RETRY: ..." says so, and the stage's last lines count the
+# retried runs.
+KNOWN_FLAKY=("$CI/upstream/rustdesk-server" tcp_signaling peer_registered_over_websocket_receives_signaling)
+# the test runs that this run retried (cargo_tests; server_stage adds those of its parts' runs)
+RETRIED=0
+
+# The parts that <stage> names, in the order of SERVER_PARTS: all of them for server, those it lists
+# for server:<part>[,<part>]; nothing, and a failure, for any other name
+server_parts() { # <stage>
+  local want part out=()
+  case $1 in
+    server) want=$SERVER_PARTS ;;
+    server:?*) want=${1#server:}; want=${want//,/ } ;;
+    *) return 1 ;;
+  esac
+  for part in $want; do
+    [[ " $SERVER_PARTS " == *" $part "* ]] || return 1
+  done
+  for part in $SERVER_PARTS; do
+    if [[ " $want " == *" $part "* ]]; then out+=("$part"); fi
+  done
+  echo "${out[*]}"
+}
+
+# Runs <command...> in a network namespace of its own, whose loopback is up and which reaches no
+# other network, as this user: in a user namespace inside the one whose root sets the loopback up.
+# The hbbs tests pick their servers' ports with bind(127.0.0.1:0) and let them go for hbbs to bind;
+# in a namespace of their own nothing else can take them in between.
+own_net() { # <command...>
+  unshare -rn sh -c 'u=$1 g=$2; shift 2; ip link set lo up && exec unshare -U --map-user="$u" --map-group="$g" -- "$@"' \
+    own_net "$(id -u)" "$(id -g)" "$@"
+}
+
+# The tests of the cargo package in <dir> as cargo test <options> [-- <test options>] runs them,
+# but each test target (--lib, --bin <name>, --test <name>, and --doc where <options> pick no
+# target) in a cargo test of its own, once cargo test <options> --no-run has built them all: at most
+# <most> at a time, each under <wrapper> (own_net, or env for none), with its output in <log without
+# .log>/<n>.log; where own_net cannot make its namespaces, one after another under env. Only the
+# build shows the compiler's warnings, which every run would show again. Then all of it goes to
+# <log> and stdout in cargo's order, and its skipped lines are counted. Unlike one cargo test, a
+# target that fails stops none of the others: the failure comes at the end.
+# The known flaky test (KNOWN_FLAKY) runs once more when it alone failed in a run of its binary
+# that came to its end.
+cargo_tests() { # <dir> <log> <most> <wrapper> <options...> [-- <test options...>]
+  local pkg=$1 log=$2 most=$3 wrapper=$4 dir=${2%.log} opts=() pick=() args=() targets=() started=() i target status failed=()
+  shift 4
+  # the options that pick targets apart from the others, which every target's run takes
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do
+    case $1 in
+      --lib | --bins | --tests | --examples | --benches | --all-targets | --doc | --bin=* | --test=* | --example=* | --bench=*) pick+=("$1") ;;
+      --bin | --test | --example | --bench) pick+=("$1" "$2"); shift ;;
+      *) opts+=("$1") ;;
+    esac
+    shift
+  done
+  if [ $# -gt 0 ]; then shift; args=("$@"); fi
+  if [ "$wrapper" = own_net ] && ! own_net true 2> /dev/null; then
+    most=1 wrapper=env
+    echo "no unprivileged user and network namespaces here: the test binaries run one after another"
+  fi
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  env -C "$pkg" cargo test "${opts[@]}" "${pick[@]}" --no-run --message-format=json-render-diagnostics > "$dir/build.json" ||
+    return
+  # the test executables it built, by target, in the order cargo test runs them
+  readarray -t targets < <(python3 -I -c 'import json, sys
+kinds = ("lib", "bin", "test", "example", "bench")
+found = set()
+for line in open(sys.argv[1]):
+    m = json.loads(line) if line.startswith("{") else {}
+    if m.get("reason") == "compiler-artifact" and m["profile"]["test"] and m["executable"]:
+        t = m["target"]
+        kind = next((k for k in kinds[1:] if k in t["kind"]), "lib")
+        found.add((kinds.index(kind), t["name"], t.get("doctest", False)))
+for n, name, _ in sorted(found):
+    print("--lib" if n == 0 else "--%s %s" % (kinds[n], name))
+if sys.argv[2] == "0" and any(n == 0 and doctest for n, _, doctest in found):
+    print("--doc")' "$dir/build.json" "${#pick[@]}")
+  [ ${#targets[@]} -gt 0 ] || { echo "no test targets in $pkg"; return 1; }
+  echo "$(IFS=,; echo "${targets[*]}"), at most $most at a time"
+  for i in "${!targets[@]}"; do
+    while [ "$(jobs -pr | wc -l)" -ge "$most" ]; do wait -n || true; done
+    (
+      read -ra target <<< "${targets[$i]}"
+      status=0
+      "$wrapper" env -C "$pkg" CARGO_BUILD_WARNINGS=allow cargo test "${opts[@]}" "${target[@]}" -- "${args[@]}" \
+        > "$dir/$i.log" 2>&1 || status=$?
+      if [ "$status" != 0 ] && [ "$pkg ${target[*]}" = "${KNOWN_FLAKY[0]} --test ${KNOWN_FLAKY[1]}" ] &&
+        grep -qE '^test result: FAILED\. [0-9]+ passed; 1 failed;' "$dir/$i.log" &&
+        [ "$(sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' "$dir/$i.log")" = "${KNOWN_FLAKY[2]}" ]; then
+        echo "RETRY: ${KNOWN_FLAKY[2]} (tests/${KNOWN_FLAKY[1]}.rs) failed alone; the known flaky test runs once more" \
+          >> "$dir/$i.log"
+        status=0
+        "$wrapper" env -C "$pkg" CARGO_BUILD_WARNINGS=allow cargo test "${opts[@]}" "${target[@]}" -- "${args[@]}" \
+          --exact "${KNOWN_FLAKY[2]}" >> "$dir/$i.log" 2>&1 || status=$?
+      fi
+      echo "$status" > "$dir/$i.status"
+    ) &
+    started+=($!)
+  done
+  wait "${started[@]}" || true
+  : > "$log"
+  for i in "${!targets[@]}"; do
+    cat "$dir/$i.log" >> "$log"
+    count_skips "$dir/$i.log"
+    RETRIED=$((RETRIED + $(grep -c '^RETRY: ' "$dir/$i.log" || true)))
+    [ "$(cat "$dir/$i.status")" = 0 ] || failed+=("${targets[$i]}")
+  done
+  cat "$log"
+  [ ${#failed[@]} -eq 0 ] || { echo "the test targets that failed in $pkg: $(IFS=,; echo "${failed[*]}")"; return 1; }
+}
+
+# The upstream checkout with server/patches in $CI/upstream/rustdesk-server: fetched anew every run,
+# which shows that the pinned commits and the patches still apply, but the checkout there before is
+# kept when it has the new one's patched tree and nothing else (git status, hbb_common's too: only
+# the version file that hbbs's build writes, once the tests' database is gone). Its files keep
+# their modification times, so cargo does not compile hbbs again (fat LTO, a minute or more) for
+# the same sources.
+server_checkout() {
+  local dir="$CI/upstream/rustdesk-server" new="$CI/upstream-new/rustdesk-server" tree left
+  rm -rf "$CI/upstream-new"
+  UPSTREAM_DIR="$CI/upstream-new" "$ROOT/scripts/fetch-upstream.sh" server
+  tree=$(git -C "$new" rev-parse 'HEAD^{tree}')
+  # what the tests leave behind: test_insert's database, whose unique IDs a second run would add again
+  rm -f "$dir/test.sqlite3" "$dir/test.sqlite3-shm" "$dir/test.sqlite3-wal"
+  left=$(git -C "$dir" status --porcelain --ignored --untracked-files=all 2> /dev/null || echo "no checkout")
+  if [ "$(git -C "$dir" rev-parse -q --verify 'HEAD^{tree}' 2> /dev/null)" = "$tree" ] &&
+    { [ -z "$left" ] || [ "$left" = "!! src/version.rs" ]; } &&
+    [ "$(git -C "$dir/libs/hbb_common" rev-parse HEAD 2> /dev/null)" = "$(git -C "$dir" rev-parse HEAD:libs/hbb_common)" ] &&
+    [ -z "$(git -C "$dir/libs/hbb_common" status --porcelain --ignored --untracked-files=all)" ]; then
+    echo "kept $dir of an earlier run: the new checkout has the same patched tree"
+  else
+    rm -rf "$dir"
+    mkdir -p "$CI/upstream"
+    mv "$new" "$dir"
+  fi
+  rm -rf "$CI/upstream-new"
+  echo "the patched tree: $tree"
+}
+
+# hbbs: the upstream checkout with server/patches and all of its tests, hjv-probe and hjv-load
+server_hbbs() {
   # all of the patched server's tests, its upstream unit tests too: patches 0001-0004 change the
   # code they test
-  local tests=(--lib --bins --tests) netns
+  local tests=(--lib --bins --tests)
   step "server: upstream checkout with server/patches"
-  rm -rf "$CI/upstream/rustdesk-server"
-  UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" server
-  echo "the patched tree: $(git -C "$CI/upstream/rustdesk-server" rev-parse 'HEAD^{tree}')"
+  server_checkout
   # hbbs's signed hjv-pk answer for hjv-api (server/patches/0004, design v3 5-7): required, so that
   # a dropped patch fails
   [ -f "$CI/upstream/rustdesk-server/tests/hjv_pk.rs" ] ||
@@ -368,21 +518,43 @@ server_stage() {
   cmp -s "$vectors" "$CI/upstream/rustdesk-server/tests/vectors/access-tickets.json" ||
     fail "server: hbbs's tests/vectors/access-tickets.json (server/patches) is not hjv-api's (server/api/tests/vectors)"
   step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk, access tickets)"
-  (cd "$CI/upstream/rustdesk-server" &&
-    HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
+  # Each test binary in a network namespace of its own, all of them side by side: they mostly wait
+  # (hbbs's ten-second periods, test_insert's 10 000 synced inserts), they name their directories
+  # by process, and no binary's hbbs can take the ports another has picked (own_net)
+  HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo_tests "$CI/upstream/rustdesk-server" \
+    "$CI/hbbs-tests.log" "$(nproc)" own_net --release --locked "${tests[@]}" || fail "server: hbbs and hbbr's tests"
   step "server: hjv-probe and hjv-load"
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
+}
+
+# api: hjv-api's tests and release build (server/api)
+server_api() {
+  local commit
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
     # with the output of the tests that pass: a test that cannot run here (no systemd tools) passes
-    # with a line "skipped: ...", which only then is seen and counted
-    with_skips "$CI/api-tests.log" env -C "$ROOT/server/api" CARGO_TARGET_DIR="$CI/target-api" \
-      cargo test --locked -- --show-output || fail "server: hjv-api tests"
-    (cd "$ROOT/server/api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) \
+    # with a line "skipped: ...", which only then is seen and counted. Four test binaries at a time,
+    # each in a network namespace of its own: update_stream.rs starts hjv-api on a port it picked
+    # with bind(127.0.0.1:0) and let go, which a binary beside it could take meanwhile (own_net).
+    # All at once end barely sooner (support.rs's 20-second long poll is the longest) and slow the
+    # timed requests (login.rs's 700 ms) two- to threefold.
+    CARGO_TARGET_DIR="$CI/target-api" cargo_tests "$ROOT/server/api" "$CI/api-tests.log" 4 own_net --locked -- --show-output ||
+      fail "server: hjv-api tests"
+    # The commit that /api/hjv/source and hjv-api version report: the last one that changed
+    # server/api, the binary's source, which is the same in HEAD. HEAD itself would have cargo
+    # compile hjv-api again for every commit. The binary must report it.
+    commit=$(git -C "$ROOT" log -1 --format=%H -- server/api)
+    (cd "$ROOT/server/api" && HJV_API_COMMIT=$commit \
       CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
+    "$API" version | grep -qF "($commit)" || fail "server: $API does not report the commit of its source, $commit"
   else
     skip "hjv-api (no server/api)"
   fi
+}
+
+# relay: hjv-relay's tests (relay/)
+server_relay() {
+  local netns
   if [ -d "$ROOT/relay" ]; then
     step "server: hjv-relay tests (relay/)"
     # Here the netns test fails instead of skipping when user and network namespaces are missing;
@@ -399,6 +571,10 @@ server_stage() {
   else
     skip "hjv-relay (no relay/)"
   fi
+}
+
+# release: tools/hjv-release's format, lints, tests and release build
+server_release() {
   if [ -d "$ROOT/tools/hjv-release" ]; then
     # the operator's tool of the signed version policy: its tests hold the shared test vectors to
     # the reference model (python3 tests/vectors/generate.py --check) and read every one; the release
@@ -414,6 +590,51 @@ server_stage() {
   else
     skip "hjv-release (no tools/hjv-release)"
   fi
+}
+
+# The server stage: the parts that <stage> names (server_parts). One runs here. Several run side by
+# side, each as a run of this script (server:<part>, under this run's lock) with its output in
+# build/ci/server-<part>.log, shown in their order once it ended: they share no target directory,
+# port or file, as the hbbs and hjv-api tests run in network namespaces of their own
+# (cargo_tests). Side by side, a part that fails stops none of the others: the stage fails once all
+# of them ended. Where this user cannot make those namespaces, the parts run here one after
+# another, and the first that fails ends the stage. Its last lines say which parts ran and how many
+# test runs were retried (KNOWN_FLAKY).
+server_stage() { # <stage>
+  local parts=() part rest=() log status failed=() n
+  local -A pids=() starts=()
+  read -ra parts <<< "$(server_parts "$1")"
+  [ ${#parts[@]} -gt 0 ] || fail "no stage $1: server:<part>[,<part>] names parts of the server stage ($SERVER_PARTS)"
+  if [ ${#parts[@]} -eq 1 ] || ! own_net true 2> /dev/null; then
+    [ ${#parts[@]} -eq 1 ] || echo "no unprivileged user and network namespaces here: the server stage's parts run one after another"
+    for part in "${parts[@]}"; do "server_$part"; done
+  else
+    step "server: ${parts[*]} side by side, the output of each also in build/ci/server-<part>.log"
+    for part in "${parts[@]}"; do
+      # as a job of its own, which gets back SIGINT and SIGQUIT (with_skips)
+      env --default-signal=INT,QUIT "$SELF" "server:$part" < /dev/null > "$CI/server-$part.log" 2>&1 &
+      pids[$part]=$! starts[$part]=$(date +%s)
+    done
+    for part in "${parts[@]}"; do
+      log="$CI/server-$part.log" status=0
+      wait "${pids[$part]}" || status=$?
+      printf '\n---- server:%s (%s)\n' "$part" "$log"
+      cat "$log"
+      count_skips "$log"
+      n=$(grep -c '^RETRY: ' "$log" || true)
+      RETRIED=$((RETRIED + n))
+      if [ "$status" = 0 ] && ! grep -q "^== CI passed: server:$part (" "$log"; then status=1; fi
+      echo "server: $part: exit $status, $(($(stat -c %Y "$log") - ${starts[$part]})) s," \
+        "$(grep -c '^skipped:' "$log" || true) skipped line(s), $n retried test run(s)"
+      [ "$status" = 0 ] || failed+=("$part")
+    done
+    [ ${#failed[@]} -eq 0 ] || fail "server: ${failed[*]} failed (above, and in build/ci/server-<part>.log)"
+  fi
+  for part in $SERVER_PARTS; do
+    if [[ " ${parts[*]} " != *" $part "* ]]; then rest+=("$part"); fi
+  done
+  echo "server: the parts that ran: ${parts[*]}${rest[*]:+ (not ${rest[*]}: $1)}"
+  echo "server: test runs retried: $RETRIED (only the known flaky test, once: the RETRY lines above)"
 }
 
 FLUTTER_VERSION=3.24.5 # client-build.yml FLUTTER_VERSION
@@ -460,7 +681,7 @@ pkgconfig() {
 }
 
 client_stage() {
-  local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=() lint
+  local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=() offline status=0
   local index=https://storage.googleapis.com/flutter_infra_release/releases
   # the server stage's release build of tools/hjv-release, against which the key files and the
   # release records are read too (its tests skip that part without it)
@@ -470,34 +691,12 @@ client_stage() {
     release_bin=""
     skip "the key files and release records against hjv-release (no $CI/target-hjv-release/release/hjv-release: scripts/ci.sh server builds it)"
   fi
-  # no network, no Google credentials (-B: no __pycache__ in scripts/)
-  step "client: Google Play upload script, offline tests"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_play_upload.py' ||
-    fail "client: Google Play upload script tests"
-  # the store run (store-release.yml, docs/store-release.md): no network, no store key
-  step "client: the store texts (scripts/check-store-text.py on store/, and its tests)"
-  python3 -I -B "$ROOT/scripts/check-store-text.py" || fail "client: the store texts"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_store_text.py' ||
-    fail "client: store text check tests"
-  step "client: the release record (scripts/store-record.py) and the workflows' store rules, offline tests"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_record.py' || fail "client: release record tests"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_workflows.py' ||
-    fail "client: the workflows' store rules"
-  step "client: the App Store Connect script (scripts/asc-store.mjs), offline tests with a fake App Store Connect"
-  if command -v node > /dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]; then
-    node --test "$ROOT/scripts/asc-store.test.mjs" || fail "client: App Store Connect script tests"
-  else
-    skip "the App Store Connect script's tests (Node 20 or later is not installed)"
-  fi
-  step "client: the pinned public keys' check (scripts/check-build-keys.py, client-build.yml), offline tests"
-  HJV_RELEASE_BIN="$release_bin" python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
-    fail "client: build-key check tests"
-  step "client: actionlint on .github/workflows"
-  if lint=$(command -v actionlint || ls "$HOME/.local/bin/actionlint" 2> /dev/null); then
-    "$lint" "$ROOT"/.github/workflows/*.yml || fail "client: actionlint"
-  else
-    skip "actionlint is not installed (github.com/rhysd/actionlint)"
-  fi
+  # The offline tests beside the rest, with their output in build/ci/client-offline.log, shown at
+  # the end. A stage that fails before then waits for them, so that nothing of it runs on, and
+  # shows them too, as it did when they ran first.
+  client_offline "$release_bin" > "$CI/client-offline.log" 2>&1 < /dev/null &
+  offline=$!
+  trap 'client_offline_end "$offline" || true' EXIT
   if [ ! -x "$fl/bin/flutter" ]; then
     step "client: Flutter $FLUTTER_VERSION, checked against releases_linux.json"
     curl -fsSL "$index/releases_linux.json" -o "$CI/releases_linux.json"
@@ -575,6 +774,53 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   (cd "$app" && export PUB_CACHE="$CI/pub-cache" FLUTTER_SUPPRESS_ANALYTICS=true &&
     { "$fl/bin/flutter" pub get > "$CI/pub-get.log" 2>&1 || { tail -n 20 "$CI/pub-get.log"; fail "client: flutter pub get"; }; } &&
     "$fl/bin/flutter" test --no-pub "${tests[@]}") || fail "client: Dart tests"
+  trap - EXIT
+  client_offline_end "$offline" || status=$?
+  count_skips "$CI/client-offline.log"
+  [ "$status" = 0 ] || fail "client: the offline tests (above)"
+}
+
+# The client stage's offline tests, which read this tree and the hjv-release build, not the upstream
+# checkout, so client_stage runs them beside its checkout, cargo and Dart steps.
+client_offline() { # <hjv-release's release build, or nothing>
+  local lint
+  # no network, no Google credentials (-B: no __pycache__ in scripts/)
+  step "client: Google Play upload script, offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_play_upload.py' ||
+    fail "client: Google Play upload script tests"
+  # the store run (store-release.yml, docs/store-release.md): no network, no store key
+  step "client: the store texts (scripts/check-store-text.py on store/, and its tests)"
+  python3 -I -B "$ROOT/scripts/check-store-text.py" || fail "client: the store texts"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_store_text.py' ||
+    fail "client: store text check tests"
+  step "client: the release record (scripts/store-record.py) and the workflows' store rules, offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_record.py' || fail "client: release record tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_workflows.py' ||
+    fail "client: the workflows' store rules"
+  step "client: the App Store Connect script (scripts/asc-store.mjs), offline tests with a fake App Store Connect"
+  if command -v node > /dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]; then
+    node --test "$ROOT/scripts/asc-store.test.mjs" || fail "client: App Store Connect script tests"
+  else
+    skip "the App Store Connect script's tests (Node 20 or later is not installed)"
+  fi
+  step "client: the pinned public keys' check (scripts/check-build-keys.py, client-build.yml), offline tests"
+  HJV_RELEASE_BIN="$1" python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
+    fail "client: build-key check tests"
+  step "client: actionlint on .github/workflows"
+  if lint=$(command -v actionlint || ls "$HOME/.local/bin/actionlint" 2> /dev/null); then
+    "$lint" "$ROOT"/.github/workflows/*.yml || fail "client: actionlint"
+  else
+    skip "actionlint is not installed (github.com/rhysd/actionlint)"
+  fi
+}
+
+# Waits for client_offline's job and shows its output; its status is the job's
+client_offline_end() { # <job>
+  local status=0
+  step "client: the offline tests, run beside the steps above (output also in build/ci/client-offline.log)"
+  wait "$1" || status=$?
+  cat "$CI/client-offline.log"
+  return "$status"
 }
 
 # The runbook's checks against one web server: WebSocket upgrades to hbbs and hbbr, the /api/
@@ -1718,12 +1964,18 @@ log_head() { # <stage>
 # this run's lock, with HJV_CI_STRICT=1, each with its own log, stopping at the first that fails.
 # Named stages run alone, in this order: after a fix, those that read what it changed (docs/ci.md).
 prepush() { # [<stage>...]
-  local stages=() s log logs head start status passed list
+  local stages=() s a log logs head start status passed list
   for s in "$@"; do
-    [[ " $PREPUSH_STAGES " == *" $s "* ]] || fail "prepush: no stage $s ($PREPUSH_STAGES)"
+    [[ " $PREPUSH_STAGES " == *" $s "* ]] || [ -n "$(server_parts "$s")" ] ||
+      fail "prepush: no stage $s ($PREPUSH_STAGES; server:<part>[,<part>] of $SERVER_PARTS)"
   done
   for s in $PREPUSH_STAGES; do
-    if [ $# -eq 0 ] || [[ " $* " == *" $s "* ]]; then stages+=("$s"); fi
+    if [ $# -eq 0 ] || [[ " $* " == *" $s "* ]]; then
+      stages+=("$s")
+    else
+      # some of the server stage's parts in its place
+      for a in "$@"; do if [[ $a == "$s":* ]]; then stages+=("$a"); fi; done
+    fi
   done
   [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
     fail "prepush: the working tree is not clean (git status): a push publishes commits, and they are what is checked"
@@ -1773,17 +2025,18 @@ finish() { # <target>
 }
 
 case "$TARGET" in
-  server) server_stage ;;
+  server | server:*) server_stage "$TARGET" ;;
   client) client_stage ;;
   deploy) deploy_stage ;;
   e2e) e2e_stage ;;
   wol) wol_stage ;;
   leak) leak_stage ;;
-  all) server_stage; deploy_stage ;;
+  all) server_stage server; deploy_stage ;;
   prepush) shift; prepush "$@" ;;
   *)
-    echo "usage: $0 [all|prepush [<stage>...]|server|client|deploy|e2e|wol|leak]" >&2
+    echo "usage: $0 [all|prepush [<stage>...]|server[:<part>[,<part>]]|client|deploy|e2e|wol|leak]" >&2
     echo "  all is the server and deploy stages only; prepush runs every stage ($PREPUSH_STAGES) with HJV_CI_STRICT=1" >&2
+    echo "  server:<part>[,<part>] (also a stage of prepush) runs those of the server stage's parts: $SERVER_PARTS" >&2
     exit 2
     ;;
 esac
