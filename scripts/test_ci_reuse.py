@@ -405,6 +405,26 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
                 f"HEAD moved from {head}, which prepush began on, to {now} before it took the lock" if how == "lock_run" else
                 f"HEAD or the working tree changed since prepush began on {head}, which is what it checked"), done.stderr, how)
 
+    def test_prepush_starts_no_unit_after_one_failed(self):
+        # the full drill fails beside e2e, which passes once the drill has ended: wol, which would
+        # start after e2e, does not (the stages are stand-ins that say they start)
+        tree = self.copy("order")
+        stage, runs = os.path.join(self.tmp, "order-stage.sh"), os.path.join(self.tmp, "order-runs.txt")
+        with open(stage, "w", encoding="utf-8") as f:
+            f.write('#!/usr/bin/env bash\n[ "$1" != inputs ] || exec bash "$CI_SH" "$@"\necho "$1" >> "$RUNS"\ncase $1 in\n'
+                    '  drill:full) echo "FAIL: a test"; exit 1 ;;\n'
+                    '  e2e) for _ in $(seq 100); do if grep -q "^EXIT" "$HJV_CI_PREPUSH/drill.log"; then break; fi; sleep 0.05; done ;;\n'
+                    'esac\necho "== CI passed: $1 (0 skipped)"\n')
+        os.chmod(stage, 0o755)
+        env = dict(tree.env, HJV_CI_LOCK=tree.env["HJV_CI_DIR"], HJV_CI_FRESH="1",
+                   CI_SH=os.path.join(tree.dir, "scripts", "ci.sh"), RUNS=runs)
+        done = tree.source('preflight() { :; }\npreflight_ports() { :; }\nSELF=$1\nprepush_run --drill e2e wol', stage,
+                           env=env, check=False)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("FAIL: prepush: the full drill did not pass", done.stderr)
+        with open(runs, encoding="utf-8") as f:
+            self.assertEqual(sorted(f.read().split()), ["drill:build", "drill:full", "e2e", "e2e:build", "server:hbbs"])
+
     def test_the_rules_hold_the_code_that_reads_a_path_they_leave_out(self):
         tree = self.copy("rules")
         out = tree.source('''d=$(mktemp -d)

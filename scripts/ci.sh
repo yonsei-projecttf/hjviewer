@@ -3548,6 +3548,12 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
     prepush_end e2e e2e "$head" e2e || { prepush_stop drill; fail "prepush: e2e did not pass ($PREPUSH_LOGS/e2e.log)"; }
   fi
   if [[ " ${run[*]} " == *" wol "* ]]; then
+    # (a drill that has ended beside e2e is looked at first: one that did not pass stops the run
+    # before wol starts)
+    if [ -n "${PREPUSH_PID[drill]:-}" ] && [ -z "$(prepush_alive "${PREPUSH_PID[drill]}")" ]; then
+      step "prepush: the $drill drill"
+      prepush_end drill "drill:$drill" "$head" "drill:$drill" || fail "prepush: the $drill drill did not pass ($PREPUSH_LOGS/drill.log)"
+    fi
     step "prepush: wol${PREPUSH_PID[drill]:+, while the $drill drill ends}"
     prepush_start wol wol
     prepush_end wol wol "$head" wol || { prepush_stop drill; fail "prepush: wol did not pass ($PREPUSH_LOGS/wol.log)"; }
