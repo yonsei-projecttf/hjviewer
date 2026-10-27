@@ -15,16 +15,12 @@
 # that origin/main does not have and says so.
 # The commit is baked in (HJV_BUILD_COMMIT): hjv-release version and sign, before it asks anything,
 # say which commit's tool it is. The script stops on a commit it cannot resolve, a commit that is not
-# on origin/main (outside a trial) or an export that is not the commit's files. It signs nothing and
-# touches no key.
+# on origin/main (outside a trial) or an export that is not the commit's files, and then says which
+# commit's tool stays in the output folder. It signs nothing and touches no key.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export PATH="$HOME/.cargo/bin:$PATH"
-fail() {
-  echo "build-signer: $*" >&2
-  exit 1
-}
 main="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")"
 out=${HJV_SIGNER_DIR:-$main/build/signer}
 # absolute: cargo runs inside the export
@@ -35,6 +31,32 @@ if [ -n "${HJV_SIGNER_DIR:-}" ]; then
   mkdir -p "$out"
   [ "$out" -ef "$main/build/signer" ] || trial=1
 fi
+# What the output folder holds: a run that stops leaves the tool that was there
+kept() {
+  if [ ! -e "$out/hjv-release" ]; then
+    echo "there is no $out/hjv-release"
+  elif [ -f "$out/hjv-release.record" ]; then
+    echo "$out/hjv-release stays as it was: $(head -n 1 "$out/hjv-release.record")"
+  else
+    echo "$out/hjv-release stays as it was (no record beside it)"
+  fi
+}
+work=
+finish() {
+  local status=$?
+  if [ -n "$work" ]; then rm -rf "$work"; fi
+  rm -f "$out/hjv-release.new" "$out/hjv-release.record.new"
+  if [ "$status" != 0 ]; then echo "build-signer: $(kept)" >&2; fi
+}
+trap finish EXIT
+# a stop by a signal is a failure too (the exit trap sees the status)
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+fail() {
+  echo "build-signer: $*" >&2
+  exit 1
+}
 # Nothing of the caller's environment changes what cargo builds: the compiler, its wrappers and
 # flags, the toolchain, and cargo's build, target and profile settings are unset here (the output
 # names them)
@@ -77,7 +99,6 @@ cache=${XDG_CACHE_HOME:-}
 case $cache in /*) ;; *) cache=$HOME/.cache ;; esac
 mkdir -p "$cache"
 work=$(mktemp -d "$cache/hjv-signer.XXXXXX")
-trap 'rm -rf "$work"' EXIT
 echo "== the files of $commit ($ref)"
 git -C "$ROOT" archive --format=tar "$commit" | tar -x -C "$work"
 # The export holds the commit's files of tools/hjv-release, byte for byte, and no other there (an
@@ -111,10 +132,14 @@ echo "== hjv-release of $commit, in $work"
   fail "cargo build"
 mkdir -p "$out"
 install -m 755 "$work/target/release/hjv-release" "$out/hjv-release.new"
-version=$("$out/hjv-release.new" version)
-[ "$version" = "hjv-release $(sed -n 's/^version = "\(.*\)"$/\1/p' "$work/tools/hjv-release/Cargo.toml" | head -n 1) (commit $commit)" ] ||
-  fail "the build says $version, not its commit $commit"
-mv -f "$out/hjv-release.new" "$out/hjv-release"
+version=$("$out/hjv-release.new" version) || fail "the build does not run: hjv-release version"
+case $version in
+  "hjv-release "*" (commit $commit)") ;;
+  *"(commit "*) fail "the build says \"$version\", not that it is commit $commit's" ;;
+  *) fail "the build says \"$version\", not that it is commit $commit's (a commit before 2b5d294 bakes in none)" ;;
+esac
+sha=$(sha256sum < "$out/hjv-release.new" | cut -d' ' -f1)
+# The record is written beside the tool first, and moved in after it
 {
   echo "commit $commit ($ref)"
   echo "$checked"
@@ -122,8 +147,10 @@ mv -f "$out/hjv-release.new" "$out/hjv-release"
   echo "version $version"
   echo "toolchain $toolchain"
   echo "cargo config ${config:-none from outside the commit}"
-  echo "sha256 $(sha256sum < "$out/hjv-release" | cut -d' ' -f1)"
+  echo "sha256 $sha"
   echo "built $(date '+%Y-%m-%d %H:%M:%S %z') from an export of the commit, by scripts/build-signer.sh"
-} > "$out/hjv-release.record"
+} > "$out/hjv-release.record.new"
+mv -f "$out/hjv-release.new" "$out/hjv-release"
+mv -f "$out/hjv-release.record.new" "$out/hjv-release.record"
 echo "== $out/hjv-release"
 cat "$out/hjv-release.record"
