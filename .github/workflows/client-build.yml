@@ -277,14 +277,15 @@ jobs:
 
       # bridge.yml L72-77 ("Cache Bridge") is dropped: nothing in the job writes /tmp/flutter_rust_bridge.
 
-      # bridge.yml L79-84
+      # bridge.yml L79-84, without its `cache: true`: the SDK and pub caches took about 1 GiB of the
+      # build repository's 10 GiB for at most half a minute per run, and evictions under that limit
+      # took the platforms' vcpkg caches (GHA-02 of the 2026-10-27 CI audit)
       - name: Install flutter
         if: steps.plan.outputs.build_apps == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: "stable"
           flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
-          cache: true
 
       # bridge.yml L86-99, Flutter 3.22.3 branch
       - name: Install flutter rust bridge deps
