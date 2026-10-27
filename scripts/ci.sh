@@ -3328,12 +3328,13 @@ unit_run() { # <target> [nice]
   [ "${2:-}" != nice ] || pre=(nice -n 10 ionice -c 2 -n 7)
   env --default-signal=INT,QUIT HJV_CI_STRICT=1 "${pre[@]}" "$SELF" "$1"
 }
-# Starts <target> of this script as a job of this prepush run (unit_run, nice with nice) with its log
-# <log folder>/<name>.log: prepush's head first, then PREPUSH_HEAD[<name>], its output, last its exit
-# status. The job ends with the run of <target>, not before it on a signal that ends that run too: so
-# its process is there for prepush_stop to find that run by, until that run's exit traps have ended.
-# A TERM or HUP that the job has before that run has started (the signal that stops prepush, or
-# prepush_stop's) keeps the run from starting: it would not have had that signal.
+# Starts <target> of this script as a job of this prepush run (unit_run, with nice at a lower
+# priority) and its log <log folder>/<name>.log: prepush's head first, then PREPUSH_HEAD[<name>],
+# its output, last its exit status. The job ends with the run of <target>, not before it on a signal
+# that ends that run too: so its process is there for prepush_stop to find that run by, until that
+# run's exit traps have ended. A TERM or HUP that the job has before that run has started (the
+# signal that stops prepush, or prepush_stop's) keeps the run from starting: it would not have had
+# that signal.
 prepush_start() { # <name> <target> [nice]
   local name=$1 target=$2 how=${3:-}
   PREPUSH_START[$name]=$(date +%s)
