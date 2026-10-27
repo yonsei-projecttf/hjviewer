@@ -1446,7 +1446,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
 
 ### 8-2. 릴리스마다: 서버 확인, 패키지 먼저, 정책 나중
 
-사용자가 개발 PC에서 `hjv-release publish-dir`로 만든 디렉터리(아래 모양)를 서버의 자기 홈으로 보내고, 네 가지를 알려 줍니다: 버전, 정책의 위치(`sign`이 보관소에 쓴 파일 이름 `policy-e<세대>-s<seq>.json`의 `e<세대>-s<seq>`, 예: `e1-s3`), `sign`이 출력한 정책 파일의 SHA-256, 완화하는 항목(`--relaxes`, 보통 없음).
+사용자는 정책에 개발 PC의 `build/signer/hjv-release`로 서명합니다. `tools/hjv-release`를 바꾼 push 뒤마다 먼저 `scripts/build-signer.sh`가 push한 main에서 그것을 다시 빌드하고, `sign`과 `version`이 그 도구의 커밋을 보여 줍니다([ci.md](ci.md)의 "서명하는 hjv-release"). CI 폴더의 `build/ci/target-hjv-release/release/hjv-release`는 마지막으로 CI를 돌린 트리의 것이라 서명에 쓰지 않습니다. 사용자가 개발 PC에서 `hjv-release publish-dir`로 만든 디렉터리(아래 모양)를 서버의 자기 홈으로 보내고, 네 가지를 알려 줍니다: 버전, 정책의 위치(`sign`이 보관소에 쓴 파일 이름 `policy-e<세대>-s<seq>.json`의 `e<세대>-s<seq>`, 예: `e1-s3`), `sign`이 출력한 정책 파일의 SHA-256, 완화하는 항목(`--relaxes`, 보통 없음).
 
 첫 정책(1.6.1, 위치 `e1-s1`)은 2026-10-14 23:30쯤(KST) 이 절차로 넣었습니다. `/api/hjv/version`이 내주는 파일의 SHA-256은 `91f2f142…5be8db`입니다(7-10). seq 2(1.6.2, 위치 `e1-s2`, iOS 최신 1.6.2만 바뀜, 패키지는 1.6.1 그대로)는 2026-10-15 16:19(KST)에 넣었고 SHA-256은 `6cfea642…8c7c`입니다. seq 3(1.7.0, 위치 `e1-s3`, 세 플랫폼 최신 1.7.0, 최소 1.6.1 그대로, Windows 무인 설치 2026-10-17 22:13(KST)부터)은 2026-10-16 07:31(KST)에 넣었고 SHA-256은 `e13116cc…8c90`입니다. 패키지는 1.7.0의 둘과 `notices-1.7.0/`이고, 직전 버전 1.6.1의 패키지는 `pkg/`에 남겼습니다(6번). 서버의 `update-keys.env`는 이 절의 규칙대로 `client-1.6.1`의 것(하한 1:0)으로 두었습니다. `client-1.6.2`와 `client-1.7.0`의 파일도 키 집합은 같고 하한만 1:1입니다. `client-1.7.0`은 빌드할 때 걸려 있던 seq 2의 위치(1:2)를 하한으로 썼어야 했습니다(도구 README 2장 1번의 `floor --live`를 빠뜨림, 태그 메모). 그래서 새로 설치한 1.7.0은 seq 1도 받지만, seq 1이 1.7.0에 요구하는 것은 없습니다. 다음 빌드는 다시 `floor --live`로 하한을 정합니다.
 
