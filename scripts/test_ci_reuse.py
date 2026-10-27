@@ -320,6 +320,25 @@ echo "functions $(declare -F | wc -l)"
         self.assertEqual(tree.plan("server:release")["server:release"],
                          ("run", f"tools/hjv-release/src/lib.rs changed since its pass of {head} ({when})"))
 
+    def test_a_run_of_the_same_inputs_that_did_not_pass_forgets_the_pass(self):
+        tree = self.copy("forget")
+        self.record(tree, "server:release", self.pass_log(tree, "server:release"))
+        self.assertEqual(tree.plan("server:release")["server:release"][0], "reuse")
+        # prepush's end of a job of server:release that failed on the same inputs (HJV_CI_FRESH=1, or
+        # run as the part that builds what a unit takes): the next plan runs it again
+        out = tree.source('''PREPUSH_LOGS=$1
+"$SELF" inputs "$PREPUSH_LOGS/inputs" server:release
+PREPUSH_START[server]=$(date +%s)
+( log_head server:release; echo "FAIL: a test"; echo "EXIT 1 $(date '+%Y-%m-%d %H:%M:%S %z')"; exit 1 ) \\
+  > "$PREPUSH_LOGS/server.log" &
+PREPUSH_PID[server]=$!
+prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo "server did not pass"''',
+                          tempfile.mkdtemp(dir=self.tmp)).stdout
+        self.assertRegex(out, r"(?m)^prepush: forgot the pass of server:release on these inputs, its strict pass of [0-9a-f]{7} "
+                              r"at .*: this run of them did not pass$")
+        self.assertIn("\nserver did not pass\n", out)
+        self.assertEqual(tree.plan("server:release")["server:release"], ("run", "no pass of it recorded"))
+
     def test_a_unit_that_runs_has_its_binaries_built_from_this_trees_inputs(self):
         tree = self.copy("producer")
         ci = tree.env["HJV_CI_DIR"]

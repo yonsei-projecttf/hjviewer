@@ -3052,6 +3052,19 @@ reuse_record() { # <unit> <log> <inputs file> <commit>
   find "$dir" -type f -mtime +7 -delete
   echo "prepush: recorded the pass of $unit, inputs ${key:0:12} ($dir/$key.pass)"
 }
+# Forgets the recorded pass of <unit> on the inputs <inputs file> after a run on those inputs that
+# did not show its pass: the newest run of the same inputs, a flake or not, says how they fare (the
+# next prepush runs the unit again). The inputs list stays, for what a later plan says changed.
+reuse_forget() { # <unit> <inputs file>
+  local unit=$1 rec name
+  reuse_rules
+  for name in $REUSE_FILES_FROM; do [ -z "${!name:-}" ] || return 0; done
+  [ -f "$2" ] || return 0
+  rec="$CI/passes/$unit/$(sha256sum < "$2" | cut -d' ' -f1).pass"
+  [ -f "$rec" ] || return 0
+  echo "prepush: forgot the pass of $unit on these inputs, $(reuse_said "$rec"): this run of them did not pass"
+  rm -f "$rec"
+}
 # Whether <unit> is reused, by its inputs <inputs file>: "reuse <record>" for its recorded strict pass
 # with the same inputs (key) of the last HJV_CI_REUSE_HOURS hours (24 by default: some tests depend
 # on the date), whose log still shows it; else "run <why>". HJV_CI_FRESH=1 runs every unit, and so
@@ -3208,11 +3221,12 @@ prepush_start() { # <name> <target> [nice]
 # Waits for the job <name> of prepush_start, keeps the side logs that it wrote, says how it ended
 # and how long it took (summary.txt: by its log's EXIT line, since the jobs beside it are waited for
 # one after another), puts its steps' times in times.tsv, and records the passes of <unit...> that
-# its log shows (reuse_record, a server stage's parts also when another failed). Its status is 1
-# unless the job ended with 0 and its log with the pass line of <target> and no skipped line; then
-# the last lines of its log come too.
+# its log shows (reuse_record, a server stage's parts also when another failed); a job that did not
+# pass forgets the recorded passes, on the same inputs, of those of <unit...> whose pass its log does
+# not show (reuse_forget). Its status is 1 unless the job ended with 0 and its log with the pass
+# line of <target> and no skipped line; then the last lines of its log come too.
 prepush_end() { # <name> <target> <commit> [<unit>...]
-  local name=$1 target=$2 head=$3 log="$PREPUSH_LOGS/$1.log" status=0 f u base ended
+  local name=$1 target=$2 head=$3 log="$PREPUSH_LOGS/$1.log" status=0 f u base ended passed=""
   shift 3
   wait "${PREPUSH_PID[$name]}" || status=$?
   unset "PREPUSH_PID[$name]"
@@ -3226,12 +3240,18 @@ prepush_end() { # <name> <target> <commit> [<unit>...]
   sed -n "/^-- time by step/,/^\$/s/^ *\([0-9][0-9]*\) s  /$name\t\1\t/p" "$log" >> "$PREPUSH_LOGS/times.tsv"
   echo "prepush: $name: exit $status, $((ended - PREPUSH_START[$name])) s, $(grep -c '^skipped:' "$log" || true)" \
     "skipped line(s), log $log" | tee -a "$PREPUSH_LOGS/summary.txt"
-  for u in "$@"; do reuse_record "$u" "$log" "$PREPUSH_LOGS/inputs/$u.txt" "$head" | tee -a "$PREPUSH_LOGS/summary.txt"; done
+  if [ "$status" = 0 ] && grep -qx "== CI passed: $target (0 skipped)" "$log" && ! grep -q '^skipped:' "$log"; then
+    passed=1
+  fi
+  for u in "$@"; do
+    reuse_record "$u" "$log" "$PREPUSH_LOGS/inputs/$u.txt" "$head" | tee -a "$PREPUSH_LOGS/summary.txt"
+    if [ -z "$passed" ] && ! reuse_evidence "$u" "$log" "$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"; then
+      reuse_forget "$u" "$PREPUSH_LOGS/inputs/$u.txt" | tee -a "$PREPUSH_LOGS/summary.txt"
+    fi
+  done
   [ "$(git -C "$ROOT" rev-parse HEAD)" = "$head" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
     fail "prepush: the tree changed during $name; its log is not of $head"
-  if [ "$status" = 0 ] && grep -qx "== CI passed: $target (0 skipped)" "$log" && ! grep -q '^skipped:' "$log"; then
-    return 0
-  fi
+  [ -z "$passed" ] || return 0
   echo "prepush: $name did not pass; the end of $log:"
   tail -n 25 "$log"
   return 1
@@ -3466,10 +3486,11 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
   if [ ${#started[@]} -gt 0 ]; then
     step "prepush: ${started[*]} side by side"
     for n in "${started[@]}"; do
+      # (e2e:build and drill:build record no pass of their own; when one fails, its unit's goes)
       case $n in
         deploy | client) prepush_end "$n" "$n" "$head" "$n" || failed+=("$n") ;;
-        e2e-build) prepush_end "$n" e2e:build "$head" || failed+=("$n") ;;
-        drill-build) prepush_end "$n" drill:build "$head" || failed+=("$n") ;;
+        e2e-build) prepush_end "$n" e2e:build "$head" e2e || failed+=("$n") ;;
+        drill-build) prepush_end "$n" drill:build "$head" "drill:$drill" || failed+=("$n") ;;
       esac
     done
     [ ${#failed[@]} -eq 0 ] || fail "prepush: ${failed[*]} did not pass (above, and in $PREPUSH_LOGS)"
