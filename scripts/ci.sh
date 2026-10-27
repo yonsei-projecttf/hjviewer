@@ -37,14 +37,15 @@
 #                          nginx -t, requests through nginx to hjv-api), hjv-api's production
 #                          settings (scripts/check-api-settings.py and its offline tests), and the
 #                          account API's nginx limits (an IPv6 /64 and a dual-stack listener too,
-#                          in an unprivileged network namespace). Then what production does not
-#                          use: Apache (deploy/apache-hjviewer.conf) in front of those units,
-#                          Docker's hbbs/hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml) behind
-#                          that nginx, and path A (Docker and Caddy). Everything listens on
-#                          127.0.0.1; ports 80/443 stay untouched. Beside the checks, hjv-relay's
-#                          packages (scripts/package-relay.sh, relay/tests/package.rs --ignored: a
-#                          static build for x86_64-unknown-linux-musl, which needs that Rust target
-#                          and musl-gcc).
+#                          in an unprivileged network namespace). What production does not use,
+#                          Apache (deploy/apache-hjviewer.conf) in front of those units, Docker's
+#                          hbbs/hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml) and path A
+#                          (Docker and Caddy), runs only when what it reads changed since it last
+#                          passed (deploy_part; HJV_CI_DEPLOY_ALL=1 runs it anyway). Everything
+#                          listens on 127.0.0.1; ports 80/443 stay untouched. Beside the checks,
+#                          hjv-relay's packages (scripts/package-relay.sh, relay/tests/package.rs
+#                          --ignored: a static build for x86_64-unknown-linux-musl, which needs
+#                          that Rust target and musl-gcc).
 #   scripts/ci.sh e2e      tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
 #                          with a client built for its test server, Caddy pinned by SHA-256, and the
 #                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; with the
@@ -1105,10 +1106,108 @@ deploy_offline() {
   fi
 }
 
+# What production does not use, Apache in front of the systemd units, Docker's hbbs and hbbr behind
+# a web server (docker-compose.behind-proxy.yml) and path A (Docker and Caddy), runs only when what
+# it reads changed since it last passed (the user's decision, 2026-10-27; docs/ci.md). <inputs>
+# prints what <run> reads besides the deploy stage's own code: its code, files, packages, images
+# and tools. A pass keeps the SHA-256 of all that in build/ci/stamps/deploy-<part>.stamp, and the
+# next run with the same prints one line instead of running the part again, not a skip: the part
+# passed with exactly that. HJV_CI_DEPLOY_ALL=1 runs every part.
+deploy_part() { # <part> <title> <inputs> <run> [<argument>...]
+  local part=$1 title=$2 inputs=$3 run=$4 stamp="$CI/stamps/deploy-$1.stamp" hash old="" since=""
+  shift 4
+  step "$title"
+  hash=$(part_hash "$inputs" "$@") || fail "deploy: what the part $part reads (above)"
+  read -r old since 2> /dev/null < "$stamp" || true
+  if [ "${HJV_CI_DEPLOY_ALL:-}" = 1 ]; then
+    echo "runs: HJV_CI_DEPLOY_ALL=1"
+  elif [ "$old" = "$hash" ]; then
+    echo "unchanged since $since: $part (build/ci/stamps/deploy-$part.stamp; HJV_CI_DEPLOY_ALL=1 runs it)"
+    return 0
+  elif [ -n "$old" ]; then
+    echo "runs: what it reads changed since its pass of $since"
+  else
+    echo "runs: no pass of it recorded (build/ci/stamps/deploy-$part.stamp)"
+  fi
+  "$run" "$@"
+  # what it read in the end: path A pulls the Caddy image when it is not here
+  hash=$(part_hash "$inputs" "$@") || fail "deploy: what the part $part reads (above)"
+  mkdir -p "$CI/stamps"
+  echo "$hash $(date '+%Y-%m-%d %H:%M') ($(git -C "$ROOT" rev-parse --short HEAD))" > "$stamp"
+}
+part_hash() { # <inputs> [<argument>...]
+  { declare -f deploy_stage; echo "PROJECT=$PROJECT"; "$@"; } | sha256sum | cut -d' ' -f1
+}
+
+# The code of <function...> and of every function it names, as bash read it (without comments)
+code_of() { # <function...>
+  local todo=("$@") seen=" " f w
+  while [ ${#todo[@]} -gt 0 ]; do
+    f=${todo[0]}
+    todo=("${todo[@]:1}")
+    [[ $seen == *" $f "* ]] && continue
+    seen+="$f "
+    declare -f "$f"
+    for w in $(declare -f "$f" | grep -oE '[a-z_][a-z0-9_]*' | sort -u); do
+      if declare -F "$w" > /dev/null; then todo+=("$w"); fi
+    done
+  done
+}
+
+# hjv-probe and hjv-load, and the programs that check_site and the checks around it run
+site_tools() {
+  sha256sum < "$PROBE"
+  sha256sum < "$LOAD"
+  curl --version
+  openssl version
+  python3 --version
+}
+
+# What Apache's part reads: its site file, Ubuntu's packages, and the release package's hbbs and
+# hbbr with their units, which it is in front of
+apache_inputs() { # <unpacked package>
+  code_of deploy_apache
+  (cd "$SRC" && sha256sum deploy/apache-hjviewer.conf)
+  (cd "$PKGS" && sha256sum ./*.deb)
+  (cd "$1" && sha256sum bin/hbbs bin/hbbr systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service \
+    systemd/hjviewer.env.example)
+  site_tools
+}
+
+# What the Docker parts read: the image's build (deploy/Dockerfile and what it copies), <compose
+# file>, Docker's versions, and the images that file names as they are here, layers and settings
+# (the image of hbbs and hbbr as built above, which a new base image changes)
+docker_inputs() { # <compose file>
+  local image
+  (cd "$SRC" && find "deploy/$1" deploy/.env.example deploy/Dockerfile scripts/fetch-upstream.sh scripts/upstream.env \
+    server/patches LICENSE NOTICE -type f -print0 | sort -z | xargs -0 sha256sum)
+  sudo docker version --format '{{.Server.Version}} {{.Client.Version}}'
+  sudo docker compose version --short
+  sudo docker buildx version
+  for image in $(dc -f "$1" config --images | sort -u); do
+    echo "$image $(sudo docker image inspect -f '{{json .RootFS.Layers}} {{json .Config}}' "$image" 2> /dev/null || echo missing)"
+  done
+}
+# and Docker's hbbs and hbbr behind a web server: the nginx in front, as configured for the checks
+# before, with Ubuntu's package
+behind_proxy_inputs() {
+  code_of deploy_behind_proxy
+  docker_inputs docker-compose.behind-proxy.yml
+  (cd "$CI/nginx" && cat ./*.conf snippets/*.conf)
+  (cd "$PKGS" && sha256sum ./nginx_*.deb)
+  site_tools
+}
+# and path A: the Caddyfile
+caddy_inputs() {
+  code_of deploy_caddy
+  docker_inputs docker-compose.yml
+  (cd "$SRC" && sha256sum deploy/Caddyfile)
+  site_tools
+}
+
 # Apache with deploy/apache-hjviewer.conf in front of the release package's systemd units, path B as
-# the runbook has it for Apache (4-3)
+# the runbook has it for Apache (4-3); deploy_part
 deploy_apache() {
-  step "deploy B: Apache with deploy/apache-hjviewer.conf, to the systemd units"
   local ap="$CI/apache" m
   rm -rf "$ap"
   mkdir -p "$ap"
@@ -1161,9 +1260,8 @@ deploy_apache() {
 }
 
 # Docker's hbbs and hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml, the image built before), with
-# the nginx of the checks before in front
+# the nginx of the checks before in front; deploy_part
 deploy_behind_proxy() {
-  step "deploy B: Docker's hbbs and hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml), behind nginx"
   local ng="$CI/nginx"
   dc up -d
   wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
@@ -1183,9 +1281,8 @@ deploy_behind_proxy() {
 }
 
 # Path A: Caddy in front of Docker's hbbs and hbbr (docker-compose.yml, the image built before), on
-# 127.0.0.1:18082/18445
+# 127.0.0.1:18082/18445; deploy_part
 deploy_caddy() {
-  step "deploy A: Caddy (docker-compose.yml) with the same image, on 127.0.0.1:18082/18445"
   cat > "$SRC/deploy/docker-compose.ci.yml" << 'EOF'
 # scripts/ci.sh: Caddy on high ports of 127.0.0.1 instead of 80/443
 services:
@@ -1435,14 +1532,15 @@ EOF
   if grep -E '\[(emerg|alert|crit|error)\]' "$ng/error.log"; then fail "nginx logged errors"; fi
   stop_web
 
-  deploy_apache
+  deploy_part apache "deploy B: Apache with deploy/apache-hjviewer.conf, to the systemd units" apache_inputs deploy_apache "$pkg"
   STACK=docker
   cleanup_systemd
 
   step "deploy: Docker's image (build/ci/build.log)"
   deploy_wait "$CI/build.log" || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
-  deploy_behind_proxy
-  deploy_caddy
+  deploy_part behind-proxy "deploy B: Docker's hbbs and hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml), behind nginx" \
+    behind_proxy_inputs deploy_behind_proxy
+  deploy_part caddy "deploy A: Caddy (docker-compose.yml) with the same image, on 127.0.0.1:18082/18445" caddy_inputs deploy_caddy
 
   if [ ${#api_files[@]} -gt 0 ]; then
     check_api_env "$pkg/systemd/hjviewer-api.env.example" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
