@@ -333,21 +333,30 @@ stamp_binary() { # <binary> <path in this tree...>
     "inputs $(inputs_hash "$@") binary $(sha256sum < "$bin" | cut -d' ' -f1) tree $ROOT" > "$bin.stamp"
   echo "$(basename "$bin").stamp: $(cat "$bin.stamp")"
 }
+# Why <binary> is not built from what this tree has of <path...> (another tree's or commit's files,
+# another toolchain, no stamp, or a binary that changed since), on one line; nothing when it is
+stamp_mismatch() { # <binary> <path in this tree...>
+  local bin=$1 inputs sum
+  shift
+  if [ ! -x "$bin" ]; then
+    echo "it is not built"
+  elif ! read -r _ _ _ _ _ inputs _ sum _ 2> /dev/null < "$bin.stamp"; then
+    echo "it has no stamp ($(basename "$bin").stamp)"
+  elif [ "$sum" != "$(sha256sum < "$bin" | cut -d' ' -f1)" ]; then
+    echo "it changed since its stamp"
+  elif [ "$inputs" != "$(inputs_hash "$@")" ]; then
+    echo "this tree's $* or the toolchain are not what it was built from"
+  fi
+}
 # Says where a binary that another stage built comes from. One that is not built from what this tree
-# has of <path...> (another tree's or commit's files, another toolchain, no stamp, or a binary that
-# changed since) fails the stage with HJV_CI_STRICT=1, and is a skip otherwise.
+# has of <path...> (stamp_mismatch) fails the stage with HJV_CI_STRICT=1, and is a skip otherwise.
 check_stamp() { # <binary> <stage that builds it> <path in this tree...>
-  local bin=$1 stage=$2 name tree="" commit="" changed inputs sum why=""
+  local bin=$1 stage=$2 name tree="" commit="" changed why
   shift 2
   name=$(basename "$bin")
   [ -x "$bin" ] || fail "$name is not built: scripts/ci.sh $stage"
-  if ! read -r _ commit _ changed _ inputs _ sum _ tree 2> /dev/null < "$bin.stamp"; then
-    why="it has no stamp ($name.stamp)"
-  elif [ "$sum" != "$(sha256sum < "$bin" | cut -d' ' -f1)" ]; then
-    why="it changed since its stamp"
-  elif [ "$inputs" != "$(inputs_hash "$@")" ]; then
-    why="this tree's $* or the toolchain are not what it was built from"
-  fi
+  why=$(stamp_mismatch "$bin" "$@")
+  read -r _ commit _ changed _ _ _ _ _ tree 2> /dev/null < "$bin.stamp" || true
   commit=${commit:0:7}
   if [ -z "$why" ]; then
     echo "$name: built from what this tree has of $* (in $tree at $commit, $changed changed files)"
@@ -910,13 +919,22 @@ client_stage() {
   local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=() offline status=0
   local index=https://storage.googleapis.com/flutter_infra_release/releases
   # the server stage's release build of tools/hjv-release, against which the key files and the
-  # release records are read too (its tests skip that part without it)
+  # release records are read too (its tests skip that part without it); built here when it is not
+  # there or not this tree's, so that the stage needs no server stage before it
   local release_bin="$CI/target-hjv-release/release/hjv-release"
-  local vectors="$ROOT/tools/hjv-release/tests/vectors" ran cases
-  if [ ! -x "$release_bin" ]; then
+  local vectors="$ROOT/tools/hjv-release/tests/vectors" ran cases why
+  if [ ! -d "$ROOT/tools/hjv-release" ]; then
     release_bin=""
-    skip "the key files and release records against hjv-release (no $CI/target-hjv-release/release/hjv-release: scripts/ci.sh server builds it)"
+    skip "the key files and release records against hjv-release (no tools/hjv-release)"
   else
+    why=$(stamp_mismatch "$release_bin" "${RELEASE_INPUTS[@]}")
+    if [ -n "$why" ]; then
+      step "client: tools/hjv-release's release build ($why)"
+      own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
+      (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
+        fail "client: hjv-release release build"
+      stamp_binary "$release_bin" "${RELEASE_INPUTS[@]}"
+    fi
     check_stamp "$release_bin" server "${RELEASE_INPUTS[@]}"
   fi
   # The offline tests beside the rest, with their output in build/ci/client-offline.log, shown at
