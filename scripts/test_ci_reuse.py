@@ -314,13 +314,26 @@ echo "functions $(declare -F | wc -l)"
         self.assertRegex(said, r"^its pass with these inputs, of .*, is 25 h old \(HJV_CI_REUSE_HOURS=24\)$")
         self.assertEqual(tree.plan("server:release", env=dict(tree.env, HJV_CI_REUSE_HOURS="48"))["server:release"][0],
                          "reuse")
+        # a record dated after now, of a clock that went back since, is no pass of the last day
+        with open(record, "w", encoding="utf-8") as f:
+            f.write(re.sub(r"(?m)^time \d+$", f"time {int(time.time()) + 3600}", text))
+        how, said = tree.plan("server:release")["server:release"]
+        self.assertEqual(how, "run")
+        self.assertRegex(said, r"^its pass with these inputs is dated .*, after now: this machine's clock went back$")
         with open(record, "w", encoding="utf-8") as f:
             f.write(text)
         # its log is its evidence
         os.rename(log, log + ".gone")
         self.assertEqual(tree.plan("server:release")["server:release"],
                          ("run", f"its pass with these inputs has no log that shows it any more ({log})"))
-        os.rename(log + ".gone", log)
+        # nor one that a run of another tree wrote there since (HJV_CI_LOGS takes a folder again)
+        with open(log + ".gone", encoding="utf-8") as f:
+            shown = f.read()
+        with open(log, "w", encoding="utf-8") as f:
+            f.write(re.sub(r"(?m)^(hjviewer [0-9a-f]{40} tree )[0-9a-f]{40}", r"\g<1>" + "0" * 40, shown))
+        self.assertEqual(tree.plan("server:release")["server:release"],
+                         ("run", f"its pass with these inputs has no log that shows it any more ({log})"))
+        os.replace(log + ".gone", log)
         # a change it reads, and which: the plan names it and the pass it compares with
         tree.write("tools/hjv-release/src/lib.rs", "// an edit\n", "a")
         tree.commit("an edit")

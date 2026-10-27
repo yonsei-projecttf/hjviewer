@@ -3017,16 +3017,16 @@ reuse_inputs() { # <dir> <unit...>
 }
 
 # Whether <log> shows a strict pass of <unit> by prepush on a clean tree, with nothing skipped: its
-# head is prepush's with HJV_CI_STRICT=1 on a tree without changes, it has no skipped line and no
-# partial E2E, it has the unit's pass line of 0 skipped, and it ends with exit status 0; a part of the
-# server stage that ran beside others has instead its own exit status in its stage's log (another
-# part may have failed)
-reuse_evidence() { # <unit> <log>
+# head is prepush's with HJV_CI_STRICT=1 on a tree without changes (<tree>, HEAD's tree of the
+# record), it has no skipped line and no partial E2E, it has the unit's pass line of 0 skipped, and it
+# ends with exit status 0; a part of the server stage that ran beside others has instead its own exit
+# status in its stage's log (another part may have failed)
+reuse_evidence() { # <unit> <log> <tree>
   local target
   [ -f "$2" ] || return 1
   target=$(head -n 1 "$2" | sed -n 's/^LOG scripts\/ci\.sh \([^ ]*\) (prepush, HJV_CI_STRICT=1, .*/\1/p')
   [ -n "$target" ] || return 1
-  sed -n 2p "$2" | grep -q '^hjviewer [0-9a-f]\{40\} tree [0-9a-f]\{40\} status-lines 0 ' || return 1
+  sed -n 2p "$2" | grep -q "^hjviewer [0-9a-f]\{40\} tree $3 status-lines 0 " || return 1
   grep -qx "== CI passed: $1 (0 skipped)" "$2" || return 1
   if grep -q -e '^skipped:' -e '^PARTIAL' "$2"; then return 1; fi
   if [[ $1 == server:* ]] && [ "$target" != "$1" ]; then
@@ -3047,7 +3047,7 @@ reuse_record() { # <unit> <log> <inputs file> <commit>
   local unit=$1 log=$2 inputs=$3 head=$4 key dir="$CI/passes/$1" name
   reuse_rules
   for name in $REUSE_FILES_FROM; do [ -z "${!name:-}" ] || return 0; done
-  reuse_evidence "$unit" "$log" || return 0
+  reuse_evidence "$unit" "$log" "$(git -C "$ROOT" rev-parse 'HEAD^{tree}')" || return 0
   [ "$(git -C "$ROOT" rev-parse HEAD)" = "$head" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] || return 0
   key=$(sha256sum < "$inputs" | cut -d' ' -f1)
   mkdir -p "$dir"
@@ -3074,8 +3074,9 @@ reuse_forget() { # <unit> <inputs file>
 }
 # Whether <unit> is reused, by its inputs <inputs file>: "reuse <record>" for its recorded strict pass
 # with the same inputs (key) of the last HJV_CI_REUSE_HOURS hours (24 by default: some tests depend
-# on the date), whose log still shows it; else "run <why>". HJV_CI_FRESH=1 runs every unit, and so
-# does HJV_CI_DEPLOY_ALL=1, a fresh deploy.
+# on the date; one dated after now, of a clock that went back, is not taken), whose log still shows
+# it; else "run <why>". HJV_CI_FRESH=1 runs every unit, and so does HJV_CI_DEPLOY_ALL=1, a fresh
+# deploy.
 reuse_decide() { # <unit> <inputs file>
   local unit=$1 inputs=$2 key rec hours=${HJV_CI_REUSE_HOURS:-24} age newest name
   reuse_rules
@@ -3089,9 +3090,11 @@ reuse_decide() { # <unit> <inputs file>
   rec="$CI/passes/$unit/$key.pass"
   if [ -f "$rec" ]; then
     age=$(($(date +%s) - $(reuse_field "$rec" time)))
-    if [ "$age" -ge $((hours * 3600)) ]; then
+    if [ "$age" -lt 0 ]; then
+      echo "run its pass with these inputs is dated $(reuse_field "$rec" date | cut -c1-16), after now: this machine's clock went back"
+    elif [ "$age" -ge $((hours * 3600)) ]; then
       echo "run its pass with these inputs, of $(reuse_field "$rec" date | cut -c1-16), is $((age / 3600)) h old (HJV_CI_REUSE_HOURS=$hours)"
-    elif ! reuse_evidence "$unit" "$(reuse_field "$rec" log)"; then
+    elif ! reuse_evidence "$unit" "$(reuse_field "$rec" log)" "$(reuse_field "$rec" tree)"; then
       echo "run its pass with these inputs has no log that shows it any more ($(reuse_field "$rec" log))"
     else
       echo "reuse $rec"
