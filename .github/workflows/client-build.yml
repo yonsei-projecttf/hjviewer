@@ -280,7 +280,9 @@ jobs:
       CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
       FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
     # for the run summary. actions/cache/restore sets cache-hit only when it found an entry (true for
-    # the exact key, which this one alone has), so a miss is 'false' here: the files were generated
+    # the exact key, which this one alone has), so a miss is 'false' here: the files were generated.
+    # A job that failed before or in the generation gives 'false' too; the summary's bridge line is
+    # for a job that succeeded only.
     outputs:
       image: ${{ steps.image.outputs.image }}
       rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}

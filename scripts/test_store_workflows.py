@@ -456,6 +456,19 @@ class RunSummaryTest(unittest.TestCase):
         code, out = self.summary(json.dumps(self.JOBS[0]), missed)
         self.assertEqual(code, 0)
         self.assertIn("| generate-bridge | ubuntu22 20261023.322.3 | hit |  | bridge files generated |", out)
+        # a job that failed (at its checkout, or while it generated) gives 'false' too: it generated
+        # nothing, so the summary says nothing of the bridge files, only what else the job gave
+        for outputs, line in (({"bridge_cache": "false"}, None),
+                              ({"image": "ubuntu22 20261023.322.3", "rust_cache": "true", "bridge_cache": "false"},
+                               "| generate-bridge | ubuntu22 20261023.322.3 | hit |  |  |")):
+            code, out = self.summary(json.dumps(self.JOBS[0]),
+                                     {"generate-bridge": {"result": "failure", "outputs": outputs}})
+            self.assertEqual(code, 0)
+            self.assertNotIn("bridge files", out)
+            if line is None:
+                self.assertNotIn("| generate-bridge |", out)
+            else:
+                self.assertIn(line, out)
 
     def test_what_it_cannot_read_becomes_a_line(self):
         code, out = self.summary("{not json", {"windows": {"outputs": {"image": "x"}}})

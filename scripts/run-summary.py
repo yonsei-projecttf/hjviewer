@@ -23,7 +23,9 @@ import os
 import sys
 
 # what the jobs' cache-hit outputs say: rust-cache's is true for an exact key only (a fallback or
-# nothing gives false), the Bridge codegen job's for its generated files
+# nothing gives false), the Bridge codegen job's for its generated files. That job's output is
+# 'false' also when it failed before or while it generated them, so its line is for a job that
+# succeeded only.
 RUST_CACHE = {"true": "hit", "false": "miss or fallback"}
 BRIDGE_CACHE = {"true": "from the cache", "false": "generated"}
 
@@ -115,7 +117,7 @@ def caches(needs: dict) -> list[str]:
         restored, packages = outputs.get("vcpkg_restored") or "", outputs.get("vcpkg_packages") or ""
         vcpkg = f"{restored} of {packages}" if restored and packages else ""
         other = []
-        if outputs.get("bridge_cache"):
+        if outputs.get("bridge_cache") and entry.get("result") == "success":
             other.append("bridge files " + BRIDGE_CACHE.get(outputs["bridge_cache"], outputs["bridge_cache"]))
         if outputs.get("disk_free"):
             other.append("disk left " + outputs["disk_free"])
