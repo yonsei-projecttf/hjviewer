@@ -213,12 +213,13 @@ class StoreTextTest(unittest.TestCase):
         self.assertEqual(cst.PC_PASSWORD_MAX, 32, "store/README.md and the store run say 32 bytes")
 
         # the variants for a submission by hand (store/README.md), their <...> at the worst case, fit
-        # in the two forms store/README.md names: 1.9.2's, and the longest one once its cut is made
-        # (no Tested on)
+        # in the two forms store/README.md names: 1.9.2's, and the longest two-PC one once its cut is
+        # made (no Tested on)
         tested = " Tested on <devices and OS versions>."
         two_pcs = (("The demo account reaches only the demo Windows PC: ID {{DEMO_PC_ID}}, password {{DEMO_PC_PASSWORD}}.",
                     "The demo account reaches only the demo Windows PCs, both with the password {{DEMO_PC_PASSWORD}}: "
                     "ID {{DEMO_PC_ID}}, or ID <second PC ID> if the first is offline."),
+                   ("stays empty, even for the demo PC.", "stays empty, even for the demo PCs."),
                    ("On the demo PC, please", "On a demo PC, please"),
                    ("type the demo PC's ID", "type a demo PC's ID"))
         no_webcam = (("which we do not give out).", "which we do not give out; the demo PCs have no camera)."),)
@@ -242,12 +243,12 @@ class StoreTextTest(unittest.TestCase):
             return text
 
         # 1.9.2's submission by hand: the one-PC template, the university's permission and the
-        # devices tested on (3907 bytes on 2026-10-28)
+        # devices tested on (3929 bytes on 2026-10-29)
         self.assertLessEqual(self.worst_size(copy, with_permission(hand(notes, tested_on=True))),
                              cst.REVIEW_NOTES_BYTES)
-        # the longest form store/README.md says fits: two PCs without a webcam, the university's
-        # permission and Apple's approval, without Tested on (3995 bytes on 2026-10-28)
-        self.assertLessEqual(self.worst_size(copy, with_both(hand(notes, two_pcs, no_webcam))),
+        # the longest two-PC form store/README.md says fits: two PCs, the university's permission
+        # and Apple's approval, without Tested on (3989 bytes on 2026-10-29)
+        self.assertLessEqual(self.worst_size(copy, with_both(hand(notes, two_pcs))),
                              cst.REVIEW_NOTES_BYTES)
 
     def test_the_review_notes_placeholders(self):
