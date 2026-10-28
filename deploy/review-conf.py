@@ -9,7 +9,8 @@ WSL), not in an agent's session, with FILE outside the repository:
 It asks for the ID, and then for the password twice without showing it, on the terminal only:
 neither comes from the command line, which a shell's history and the process list keep, the
 environment or a standard input that is not a terminal. It writes FILE (0600, never over a file
-that is there) and prints only its path and UNTIL:
+that is there) and prints only its path, UNTIL and the PC= line (without --pc, a note on stderr that
+the file has none):
 
     ID=<the ID as typed>
     HASH=pbkdf2-sha256$600000$<salt, base64>$<key, base64>
@@ -17,8 +18,12 @@ that is there) and prints only its path and UNTIL:
     PC=<the --pc IDs, in their order>
 
 Each --pc names a demo PC, 1 to 3 of them: the only PCs the account's access ticket reaches
-(docs/access-tickets.md 2-4). Without one there is no PC= line, and the account connects to nothing
-once hbbs checks tickets. A PC ID is no secret; it is 1 to 64 letters, digits, '-' and '_'.
+(docs/access-tickets.md 2-4), and from hjv-api 1.9.2 the only PCs the account may hold (each logs
+in with the account and stays bound to it: docs/server-runbook.md 7-17). Name a PC only once
+HJViewer runs on it, so that hbbs knows its key. Without one there is no PC= line, and the account
+connects to nothing once hbbs checks tickets; in place of a file with the line, such a file also
+ends the demo PCs' tickets (they go offline within a day). A PC ID is no secret; it is 1 to 64
+letters, digits, '-' and '_'.
 
 HASH is PBKDF2-HMAC-SHA256 with a random salt of 16 bytes and a key of 32. The ID is 1 to 64
 letters, digits, '.', '_' and '-', and must not pass HJViewer's ID rule (Z or Y and then 1 to 59 of
@@ -141,7 +146,7 @@ def main(argv, stdin=sys.stdin, ask=getpass.getpass, now=None, read=input):
     parser.add_argument("--until", required=True, help="the day it ends at 0:00 KST, YYYY-MM-DD")
     parser.add_argument("--out", required=True, help="the file to write (it must not be there)")
     parser.add_argument("--pc", action="append", default=[], metavar="ID",
-                        help="a demo PC the account connects to (1 to 3 times)")
+                        help="a demo PC the account connects to and may hold (1 to 3 times)")
     args = parser.parse_args(argv)
     try:
         # write_new needs O_NOFOLLOW, which Windows' Python lacks: refuse before anything is asked
@@ -172,6 +177,12 @@ def main(argv, stdin=sys.stdin, ask=getpass.getpass, now=None, read=input):
     print(f"UNTIL={until}")
     if pcs:
         print(f"PC={','.join(pcs)}")
+    else:
+        # a new UNTIL or password made without the --pc of the file in use would end the demo PCs'
+        # tickets (docs/server-runbook.md 7-17, whose block 1 stops on a changed PC= line too)
+        print("review-conf.py: note: no --pc, so no PC= line: the account holds and reaches no demo "
+              "PC, and in place of a file with one it takes the demo PCs offline within a day",
+              file=sys.stderr)
     return 0
 
 

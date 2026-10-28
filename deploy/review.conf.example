@@ -15,8 +15,12 @@
 #   PC=<1 to 3 different PC IDs, comma-separated: the demo PCs; the one line that may be left out>
 #
 # The account's access ticket (docs/access-tickets.md 2-4) reaches the PC= IDs only, until UNTIL:
-# without the line, the account connects to nothing once hbbs checks tickets. An hjv-api from
-# before the access tickets refuses the whole file with the line: put the new hjv-api in first.
+# without the line, the account connects to nothing once hbbs checks tickets. From hjv-api 1.9.2
+# they are also the only PCs the account may hold: each demo PC logs in with the account, stays
+# bound to it, and registers on a ticket of its own until UNTIL (docs/server-runbook.md 7-17). Put
+# an ID here only once HJViewer runs on that PC (hbbs then knows its key), and bind it at once. An
+# hjv-api from before the access tickets refuses the whole file with the line: put the new hjv-api
+# in first.
 #
 # Made-up values, as review-conf.py writes them for the password "correct horse battery staple"
 # and the date 2026-11-30 (the salt is 00 01 … 0f here; the tool takes 16 random bytes):

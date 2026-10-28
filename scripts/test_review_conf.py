@@ -83,7 +83,10 @@ class ReviewConfTest(unittest.TestCase):
     def test_the_file(self):
         code, out, err = self.run_main(self.args(), answers(PASSWORD, PASSWORD),
                                        typed_id=f" {ID} ")
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(code, 0)
+        # without --pc, one line on stderr says the file has no PC= line (runbook 7-17)
+        self.assertEqual(err.count("\n"), 1)
+        self.assertIn("note: no --pc, so no PC= line", err)
         self.assertEqual(self.id_asked, ["App Review ID: "])
         # only the path and UNTIL are printed
         self.assertEqual(out, f"{self.out}\nUNTIL=2026-11-29T15:00:00Z\n")
