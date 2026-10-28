@@ -12,9 +12,10 @@ that builds it, 프로젝트TF, also runs the university's HJViewer server and i
 only to the server it was built for, which that server's operator runs, and to public STUN servers
 (section 2). It opens pages outside the app only when you tap a link or button: this project's pages
 on GitHub (this statement, the source code and its guides) and, to update the app, TestFlight or the
-App Store on an iPhone, or Google Play or the server's download link on Android. A message from or
-about a connected device can also carry a button to a page of RustDesk, the open-source app HJViewer
-is built on (its help on rustdesk.com, or an issue on its GitHub).
+App Store on an iPhone, or Google Play or the server's download link on Android. Up to version
+1.9.1, a message from or about a connected device could also carry a button to a page of RustDesk,
+the open-source app HJViewer is built on (its help on rustdesk.com, or an issue on its GitHub); from
+1.9.2 the app shows no such button.
 
 From version 1.6.0 the server can also have accounts. Faculty and staff whom the Yonsei SSO accepts
 log in with their Yonsei portal ID; they then see their own Windows PCs in the app, connect between
@@ -489,7 +490,7 @@ history of that repository.
 
 ### 1. 요약
 
-HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱에는 분석, 오류 보고, 광고가 없습니다. 앱을 만드는 프로젝트TF가 학교의 HJViewer 서버와 그 계정 서비스도 운영합니다(9절). 그 서버와 계정 서비스가 무엇을 보관하는지는 아래 절에 적었습니다. 앱은 연결하는 기기 말고는 빌드할 때 정해진 서버, 그리고 공개 STUN 서버(2절)하고만 통신합니다. 서버는 그 서버의 운영자가 관리합니다. 앱 밖의 페이지는 링크나 단추를 누를 때만 엽니다. 여는 곳은 GitHub에 있는 이 프로젝트의 페이지(이 문서, 소스 코드와 그 안내 문서), 그리고 앱을 업데이트할 때 iPhone은 TestFlight나 App Store, Android는 Google Play나 서버의 내려받기 링크입니다. 연결한 기기가 보낸 안내나 그 기기에 관한 안내에는 HJViewer의 바탕인 공개 소스 앱 RustDesk의 페이지(rustdesk.com의 도움말, 또는 GitHub의 이슈)로 가는 단추가 붙을 수도 있습니다.
+HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱에는 분석, 오류 보고, 광고가 없습니다. 앱을 만드는 프로젝트TF가 학교의 HJViewer 서버와 그 계정 서비스도 운영합니다(9절). 그 서버와 계정 서비스가 무엇을 보관하는지는 아래 절에 적었습니다. 앱은 연결하는 기기 말고는 빌드할 때 정해진 서버, 그리고 공개 STUN 서버(2절)하고만 통신합니다. 서버는 그 서버의 운영자가 관리합니다. 앱 밖의 페이지는 링크나 단추를 누를 때만 엽니다. 여는 곳은 GitHub에 있는 이 프로젝트의 페이지(이 문서, 소스 코드와 그 안내 문서), 그리고 앱을 업데이트할 때 iPhone은 TestFlight나 App Store, Android는 Google Play나 서버의 내려받기 링크입니다. 1.9.1까지는 연결한 기기가 보낸 안내나 그 기기에 관한 안내에 HJViewer의 바탕인 공개 소스 앱 RustDesk의 페이지(rustdesk.com의 도움말, 또는 GitHub의 이슈)로 가는 단추가 붙을 수도 있었습니다. 1.9.2부터는 그런 단추를 보이지 않습니다.
 
 1.6.0부터 서버에 계정 기능이 생깁니다. 연세 SSO를 통과한 교직원은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고(운영자가 켠 경우), PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와, 앱에서 지우거나 지워 달라고 하는 방법(8절)을 적습니다. 계정에 들어가지 않은 기기에서 로그인하지 않은 앱은 계정 서비스에 2절의 출입 확인만 보내고, 그 밖에는 누가 로그인하거나 이용 비밀번호를, PC에서는 지원 코드를 넣을 때 그것만 보냅니다(3절). 학교의 HJViewer 서버에서 그런 앱은 이용 비밀번호를 넣은 뒤에만 연결하고, 그런 PC는 이용 비밀번호나 지원 코드를 넣은 뒤에만 연결을 받습니다(아래). 계정에 들어간 PC는 다릅니다. 앱이 로그인해 있든 아니든, 그 PC의 HJViewer 서비스는 계정 서비스와 계속 동기화하고, PC는 3절의 "내 PC"와 "출입증"대로 연결을 받습니다. 그 PC의 로그인이 그 PC에서 로그아웃하지 않고 끝나도(다른 기기에서 로그아웃시킴, 기간 만료 등) PC는 계정에 남습니다. 빼려면 내 PC 목록에서 뺍니다(8절).
 
