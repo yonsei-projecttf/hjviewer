@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 22:25:52 +0900
-Subject: [PATCH 041/162] hjviewer: every Android build is controller-only
+Subject: [PATCH 041/167] hjviewer: every Android build is controller-only
 
 A phone or tablet with HJViewer controls PCs and is never controlled
 (decision D1, option B' of the Google Play design 3-3). Without the

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 05:46:00 +0900
-Subject: [PATCH 137/162] hjviewer: one staff verdict for the support code
+Subject: [PATCH 137/167] hjviewer: one staff verdict for the support code
  result
 
 - TV-W6 P6 (cmui's and core3's open point): the core's pc-code result now

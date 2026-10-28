@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 28 Oct 2026 09:12:07 +0900
+Subject: [PATCH 165/167] hjviewer: the portable packer compresses its files on
+ every core
+
+generate.py compressed each file of the Windows app with Brotli at
+quality 11 one after another, which took the Windows job some three
+minutes of one core while the runner's other core waited. It now walks
+the folder as before, printing the same lines in the same order, and then
+compresses the files in worker processes, the largest first so that no
+big file starts last. Each file is still compressed whole by the same
+call, and the table keeps the walk's order, so data.bin (and a --package
+blob) is the same byte for byte. The worker is a top-level function and
+the entry point stays behind its __main__ guard, as Windows' spawned
+workers need. A folder of one file, or a machine with one core, compresses
+in the process as before. The command line does not change.
+
+On a test folder of 12 files (8 MB of binaries, fonts, text, random bytes,
+an empty file, nested folders and a name with a space) the old and the new
+script wrote the same data.bin from the workflow's command line, under
+fork and under spawn, and the same blob with --package --exclude-exe; on
+two cores the new one took 6.2 s for the old one's 11.8 s.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/portable/generate.py | 32 ++++++++++++++++++++++++--------
+ 1 file changed, 24 insertions(+), 8 deletions(-)
+
+diff --git a/libs/portable/generate.py b/libs/portable/generate.py
+index 26d0b37..946e1ac 100755
+--- a/libs/portable/generate.py
++++ b/libs/portable/generate.py
+@@ -3,6 +3,7 @@
+ import os
+ import optparse
+ import subprocess
++from concurrent.futures import ProcessPoolExecutor
+ from hashlib import md5
+ import brotli
+ import datetime
+@@ -22,33 +23,48 @@ def normalize(path: str) -> str:
+     return path.lower()
+ 
+ 
++def compress_file(source: str, level) -> tuple:
++    # Top level, so that the worker processes can import it (Windows spawns them).
++    with open(source, "rb") as f:
++        content = f.read()
++    md5_code = md5(content).hexdigest().encode(encoding=encoding)
++    return (brotli.compress(content, quality=level), md5_code)
++
++
+ def generate_md5_table(folder: str, level, exclude: str = None) -> dict:
+     res: dict = dict()
+     skip = normalize(exclude) if exclude else None
+     excluded = False
++    paths = []
+     # os.curdir is the literal ".", so restoring it left us inside `folder`.
+     curdir = os.getcwd()
+     os.chdir(folder)
+     for root, _, files in os.walk('.'):
+         # remove ./
+         for f in files:
+-            md5_generator = md5()
+             full_path = os.path.join(root, f)
+             if skip and normalize(full_path) == skip:
+                 print(f"Excluding {full_path}...")
+                 excluded = True
+                 continue
+             print(f"Processing {full_path}...")
+-            f = open(full_path, "rb")
+-            content = f.read()
+-            content_compressed = brotli.compress(
+-                content, quality=level)
+-            md5_generator.update(content)
+-            md5_code = md5_generator.hexdigest().encode(encoding=encoding)
+-            res[full_path] = (content_compressed, md5_code)
++            paths.append(full_path)
++    sources = [os.path.abspath(path) for path in paths]
+     os.chdir(curdir)
+     if skip and not excluded:
+         raise ValueError(f"excluded file was not found in {folder}: {exclude}")
++    # Quality 11 takes minutes for the app's files on one core: each file is still compressed
++    # whole, now on every core, the largest first so that none starts last, and the table keeps
++    # the walk's order, so the blob stays the same byte for byte.
++    if len(paths) > 1 and (os.cpu_count() or 1) > 1:
++        largest_first = sorted(range(len(paths)), key=lambda i: -os.path.getsize(sources[i]))
++        with ProcessPoolExecutor() as pool:
++            done = {i: pool.submit(compress_file, sources[i], level) for i in largest_first}
++            for i, path in enumerate(paths):
++                res[path] = done[i].result()
++    else:
++        for path, source in zip(paths, sources):
++            res[path] = compress_file(source, level)
+     return res
+ 
+ 

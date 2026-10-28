@@ -36,7 +36,7 @@ App Store Connect와 Google Play Console에 그대로 보일 글의 원본입니
 | `<언어>/privacy_url.txt` | 앱 정보 → 개인정보 처리방침 URL | https URL |
 
 - **언어**: `ko`(기본)와 `en-GB`. 한국 App Store의 언어는 한국어와 English (U.K.)이므로 영어 글은 영국식 철자(colour, favourites, centred)로 씁니다. 영어 글에 한글은 팀 이름 `프로젝트TF` 하나만 씁니다.
-- **첫 App Store 버전(1.9.1)에는 What's New 칸이 없습니다.** 첫 버전에서는 `whats_new.txt`를 보내지 않습니다. 파일은 다음 버전과 TestFlight 안내를 위해 그 판의 바뀐 것으로 둡니다.
+- **첫 App Store 버전에는 What's New 칸이 없습니다.** 첫 버전에서는 `whats_new.txt`를 보내지 않습니다(스토어 실행이 App Store Connect의 버전 상태로 첫 버전인지 압니다). 파일은 다음 버전과 TestFlight 안내를 위해 그 판의 바뀐 것으로 둡니다.
 - **지원 URL**은 처리방침의 10절(문의와 변경)로 바로 갑니다. 한국어 현지화는 한국어 절(`#10-문의와-변경`, 퍼센트 인코딩), 영어 현지화는 영어 절(`#10-contact-and-changes`)입니다. 심사 지침 1.5가 지원 URL에서 연락 방법을 쉽게 찾을 수 있어야 한다고 하고, 저장소 첫 화면에는 연락처가 없기 때문입니다.
 - **iOS 글에는 Android, Google, Play를 쓰지 않습니다**(심사 지침 2.3.10). 심사 메모도 같습니다.
 - 고객이 읽는 글(이름, 부제목, 프로모션 텍스트, 설명, 키워드, What's New)에는 베타·체험판·데모를 뜻하는 말과 가격을 쓰지 않습니다(지침 2.2, 2.3.7). iOS 글에는 Galaxy나 Samsung 같은 다른 기기 이름도 쓰지 않습니다.
@@ -89,7 +89,7 @@ App Store Connect와 Google Play Console에 그대로 보일 글의 원본입니
 
 `scripts/ci.sh leak`은 이 폴더도 봅니다.
 
-## 이 글이 기대는 1.9.1의 사실
+## 이 글이 기대는 사실 (1.9.1, 1.9.2)
 
 - 앱 안의 계정 삭제: 설정 → 계정 → [계정 삭제](영어 화면 "Delete account"). 확인 창에 '삭제'('delete')를 넣으면 바로 지우고 "계정을 삭제했습니다" 창을 띄웁니다. 내 PC 목록의 PC가 계정에서 빠지고, 모든 기기가 로그아웃되며, 기기 목록·중계 장치 승인·켜기 요청 기록이 지워집니다. 다시 로그인하면 빈 계정으로 시작합니다. 다만 계정을 지우면 명단(allowlist) 항목도 지워지므로, 운영자가 명단에 있는 ID만 받는 동안에는 운영자가 다시 넣어야 로그인됩니다(App Review 계정은 항목이 남음. 클라이언트 0154·0155·0160, hjv-api `POST /api/hjv/account/delete`, `docs/privacy.md` 8절).
 - 설정: 휴대폰의 '고급' 머리가 '고급 설정'(Advanced settings)이고, Android의 하드웨어 코덱과 녹화가 그 아래로 옮겨짐. 계정, 보안(앱 잠금), 설정, 정보는 그대로(0149·0150).
@@ -97,3 +97,4 @@ App Store Connect와 Google Play Console에 그대로 보일 글의 원본입니
 - 휴대폰은 `hjviewer://`만 받고, QR 화면과 카메라·사진 권한이 없음. 원격 PC의 카메라 보기는 그대로(0157·0159).
 - 정보 화면의 '개인정보 처리방침'과 소스 코드 링크는 앱 밖의 브라우저에서 열림. 터미널 메뉴에 베타 표시 없음(0158).
 - iOS 13.0 이상, iPhone과 iPad.
+- 1.9.2: '로그인이 풀렸습니다'(영어 화면 "You were logged out") 안내가 "보안 키는 로그인한 기기에만 남고, 백업이나 복원으로도 다른 기기로 옮겨지지 않습니다."라고 알림(0163). 고정 서버 빌드는 RustDesk의 페이지로 가는 단추를 보이지 않음: 연결한 PC가 보낸 안내나 그 PC에 관한 안내 창의 링크 단추(rustdesk.com의 도움말), Wayland 키보드 안내의 'Why this happens', Windows 상태 줄의 setup_server_tip(0164, 0167). iOS의 최소 판은 13.0 그대로(1.9.2에서 15.0으로 올리지 않음).

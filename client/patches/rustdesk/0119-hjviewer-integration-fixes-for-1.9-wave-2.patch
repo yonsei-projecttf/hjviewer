@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 04:25:42 +0900
-Subject: [PATCH 119/162] hjviewer: integration fixes for 1.9 wave 2
+Subject: [PATCH 119/167] hjviewer: integration fixes for 1.9 wave 2
 
 UX-S2 (U50, style2's hand-off to lane C): P2 (_pcPasswordDialog) and P3
 (_pcCodeDialog) take HjvDialogWidth.md like the other gate dialogs; S2

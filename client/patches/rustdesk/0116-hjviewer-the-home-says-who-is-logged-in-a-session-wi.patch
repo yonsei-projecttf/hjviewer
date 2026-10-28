@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 03:08:05 +0900
-Subject: [PATCH 116/162] hjviewer: the home says who is logged in, a session
+Subject: [PATCH 116/167] hjviewer: the home says who is logged in, a session
  window's login points at the main window (UX-H1)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

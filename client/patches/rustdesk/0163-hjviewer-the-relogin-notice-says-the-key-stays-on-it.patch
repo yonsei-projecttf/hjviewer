@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 28 Oct 2026 08:55:45 +0900
+Subject: [PATCH 163/167] hjviewer: the relogin notice says the key stays on
+ its device
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+"로그인이 풀렸습니다" told the user that a device restored from a backup
+does not get the security key. On an iPhone the key is a ThisDeviceOnly
+Keychain item: an encrypted backup carries it, and a restore to the same
+iPhone brings it back; only a backup restored to another device brings the
+token without the key, the case drop_login sees (Android keeps the app's
+files out of backups and transfers, Windows keeps the key out of the
+roaming profile). The notice now says what the privacy statement says:
+the security key stays on the device where the user logged in and does not
+move to another device, even through a backup or restore. The comments in
+the account code that read "a restored iPhone" now say a backup restored
+to another device, and a test pins the two texts.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart       |  6 +++---
+ flutter/lib/common/hjviewer_account_texts.dart |  4 ++--
+ flutter/test/hjviewer_account_test.dart        |  8 ++++++++
+ src/hjviewer_account/api.rs                    | 17 +++++++++++------
+ src/hjviewer_account/keystore.rs               |  6 +++---
+ src/hjviewer_account/support.rs                |  3 ++-
+ 6 files changed, 29 insertions(+), 15 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 623d0c5..4ab72c6 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -1855,9 +1855,9 @@ void hjvLoginEnded() {
+   _loginEnded = true;
+ }
+ 
+-/// The login was dropped because this device has no account key for it (a restored iPhone,
+-/// design v3 §1-1), or hjv-api ended it (hjvLoginEnded): told once, the flag cleared when the
+-/// notice was closed.
++/// The login was dropped because this device has no account key for it (an iPhone restored
++/// from another device's backup, design v3 §1-1), or hjv-api ended it (hjvLoginEnded): told
++/// once, the flag cleared when the notice was closed.
+ void _announceRelogin() {
+   if (_reloginShown) return;
+   final restored = _commonSync('hjv-relogin') == 'Y';
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 4cdbf3d..2ba0265 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -282,8 +282,8 @@ class HjvTexts {
+   // a login dropped for want of its account key (§1-1)
+   String get reloginTitle => _t('로그인이 풀렸습니다', 'You were logged out');
+   String get reloginBody => _t(
+-      '이 기기에서 다시 로그인해 주세요. 백업에서 복원한 기기에는 보안 키가 옮겨지지 않습니다.',
+-      'Please log in again on this device. A device restored from a backup does not get the security key.');
++      '이 기기에서 다시 로그인해 주세요. 보안 키는 로그인한 기기에만 남고, 백업이나 복원으로도 다른 기기로 옮겨지지 않습니다.',
++      'Please log in again on this device. The security key stays on the device where you logged in and does not move to another device, even through a backup or restore.');
+ 
+   // a login that hjv-api ended (a 401: logged out from elsewhere, the account deleted, expired)
+   String get loginEndedTitle =>
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 4e75fc7..b515f9c 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -1579,6 +1579,14 @@ void main() {
+     expect(ko.loginEndedGate, '이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다.');
+   });
+ 
++  test('the relogin notice: the key stays on its device, a backup restored elsewhere brings none',
++      () {
++    expect(ko.reloginBody,
++        '이 기기에서 다시 로그인해 주세요. 보안 키는 로그인한 기기에만 남고, 백업이나 복원으로도 다른 기기로 옮겨지지 않습니다.');
++    expect(en.reloginBody,
++        'Please log in again on this device. The security key stays on the device where you logged in and does not move to another device, even through a backup or restore.');
++  });
++
+   test('no text holds braces, which translate() takes for placeholders', () {
+     for (final t in [ko, en]) {
+       final texts = [
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+index bcbceb3..d1cf162 100644
+--- a/src/hjviewer_account/api.rs
++++ b/src/hjviewer_account/api.rs
+@@ -391,7 +391,8 @@ fn with_token(
+                 return Some(Value::Object(headers).to_string());
+             }
+             Err(Unavailable) => return None,
+-            // no account key (a restored iPhone): the token is no use any more
++            // no account key (an iPhone restored from another device's backup): the token is no
++            // use any more
+             Ok(None) if !logout && !env.local("access_token").is_empty() => drop_login(env),
+             Ok(None) => {}
+         }
+@@ -605,8 +606,9 @@ fn unbind_this_pc(env: &impl Env) {
+     env.set_local(PC_BINDING, "");
+ }
+ 
+-/// A token without its account key (a restored iPhone, whose Keychain kept no key) can do
+-/// nothing: the login is forgotten and the user asked to log in again (§1-1, §4-2).
++/// A token without its account key (an iPhone restored from another device's backup, which
++/// brings the token but no key) can do nothing: the login is forgotten and the user asked to log
++/// in again (§1-1, §4-2).
+ fn drop_login(env: &impl Env) {
+     for (key, value) in [("access_token", ""), ("user_info", ""), (RELOGIN, "Y")] {
+         env.set_local(key, value);
+@@ -619,7 +621,8 @@ fn drop_login(env: &impl Env) {
+ 
+ /// hjv-api deleted the login's account at its request: this device logs out as an explicit logout
+ /// does, and the token and the user go too, so that a request of the screens that follows goes
+-/// without a token, not with one whose key is gone (which drop_login takes for a restored device).
++/// without a token, not with one whose key is gone (which drop_login takes for a device restored
++/// from another one's backup).
+ fn account_deleted(env: &impl Env) {
+     for key in ["access_token", "user_info"] {
+         env.set_local(key, "");
+@@ -1331,7 +1334,8 @@ mod tests {
+             None
+         );
+         assert_eq!(fake.local("access_token"), REQ_TOKEN);
+-        // no key (a restored iPhone): the token stays home, and the user is asked to log in again
++        // no key (an iPhone restored from another device's backup): the token stays home, and the
++        // user is asked to log in again
+         *fake.stored.borrow_mut() = Ok(None);
+         fake.set_local("user_info", r#"{"name":"2026000001"}"#);
+         let (_, header) = prepare(&fake, &url(API_PEERS), "get", None, auth).unwrap();
+@@ -1630,7 +1634,8 @@ mod tests {
+         assert_eq!(service.get(UNBIND_REQ), Some(&request));
+         assert!(service.get(KNOCK).is_some_and(|k| !k.is_empty()));
+ 
+-        // the screens' next request goes without a token, not as a restored device's
++        // the screens' next request goes without a token, not as that of a device restored from
++        // another one's backup
+         let peers = prepare(&fake, &url(API_PEERS), "get", None, token_header(""));
+         assert!(!headers(&peers.unwrap().1).contains_key(PROOF_HEADER));
+         assert_eq!(fake.local(RELOGIN), "");
+diff --git a/src/hjviewer_account/keystore.rs b/src/hjviewer_account/keystore.rs
+index ad171f4..90e1bab 100644
+--- a/src/hjviewer_account/keystore.rs
++++ b/src/hjviewer_account/keystore.rs
+@@ -1,5 +1,5 @@
+ //! Where the account key lives, one per device user: on the iPhone the Keychain (this device
+-//! only, while unlocked; a backup restored on a phone brings no key back), on Windows a file
++//! only, while unlocked; a backup restored to another device brings no key), on Windows a file
+ //! wrapped with DPAPI for this Windows user in %LOCALAPPDATA%\HJViewer-account (not roaming, and
+ //! outside %LOCALAPPDATA%\hjviewer, which the portable packer clears for every new version),
+ //! elsewhere the user's LocalConfig, `hjv-ctl-key` (Android keeps the app's files out of cloud
+@@ -20,8 +20,8 @@ const KEY_DIR: &str = "HJViewer-account";
+ #[cfg(any(target_os = "windows", test))]
+ const KEY_FILE: &str = "account-key.bin";
+ 
+-/// This device user's account key; Ok(None) when there is none (logged out, or a restored iPhone,
+-/// whose Keychain keeps no key from the backup).
++/// This device user's account key; Ok(None) when there is none (logged out, or an iPhone restored
++/// from another device's backup, whose Keychain got no key from it).
+ pub(crate) fn load() -> Result<Option<AccountKey>, Unavailable> {
+     store_impl::load()
+ }
+diff --git a/src/hjviewer_account/support.rs b/src/hjviewer_account/support.rs
+index d027d6b..9ba8a70 100644
+--- a/src/hjviewer_account/support.rs
++++ b/src/hjviewer_account/support.rs
+@@ -129,7 +129,8 @@ fn make() -> Value {
+     let url = format!("https://{server}{PATH}");
+     let mut again = true;
+     loop {
+-        // no proof: no account key that can be used now (a locked iPhone, a restored one)
++        // no proof: no account key that can be used now (a locked iPhone, one restored from
++        // another device's backup)
+         let Some(proof) = super::proof_header("POST", PATH, BODY.as_bytes(), &token) else {
+             return failed("config", 0);
+         };

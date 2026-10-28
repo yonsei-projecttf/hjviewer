@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Thu, 15 Oct 2026 20:01:01 +0900
-Subject: [PATCH 051/162] hjviewer: ui: peer-tabs: pill tabs, one search field,
+Subject: [PATCH 051/167] hjviewer: ui: peer-tabs: pill tabs, one search field,
  calm empty states
 
 The bar above the peer list and the panes under it in the app's look

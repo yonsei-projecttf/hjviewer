@@ -30,7 +30,7 @@ class FakeAsc {
     this.calls = [];
     this.lose = new Set(); // "METHOD path": apply the change, then lose the answer
     this.fail = new Map(); // "METHOD path" -> [status, body] answered once each
-    this.builds = [{ id: 'b-191', build: '263120249', pre: '1.9.1', state: 'VALID', expired: false, expirationDate: '2027-01-20T00:00:00Z' }];
+    this.builds = [{ id: 'b-192', build: '263120249', pre: '1.9.2', state: 'VALID', expired: false, expirationDate: '2027-01-20T00:00:00Z' }];
     this.versions = [];
     this.infos = [{ id: 'info-1', state: 'PREPARE_FOR_SUBMISSION', locs: [] }];
     this.submissions = [];
@@ -168,19 +168,19 @@ async function asc(fake, argv, env = ENV) {
   return { code, out };
 }
 
-const PREPARE = ['prepare', '--version', '1.9.1', '--build', '263120249'];
-const SUBMIT = ['submit', '--version', '1.9.1', '--build', '263120249'];
+const PREPARE = ['prepare', '--version', '1.9.2', '--build', '263120249'];
+const SUBMIT = ['submit', '--version', '1.9.2', '--build', '263120249'];
 
 test('prepare on an app with no App Store version yet creates it and sends no What\'s New', async () => {
   const fake = new FakeAsc();
   const { code, out } = await asc(fake, PREPARE);
   assert.equal(code, 0, out);
   const [v] = fake.versions;
-  assert.equal(v.versionString, '1.9.1');
-  assert.equal(v.buildId, 'b-191');
+  assert.equal(v.versionString, '1.9.2');
+  assert.equal(v.buildId, 'b-192');
   assert.equal(v.releaseType, 'MANUAL');
   assert.equal(v.copyright, readFileSync(join(STORE, 'copyright.txt'), 'utf8').trim());
-  const store = readStore(STORE, '1.9.1');
+  const store = readStore(STORE, '1.9.2');
   assert.deepEqual(v.locs.map((l) => l.attrs.locale), store.locales);
   for (const l of v.locs) {
     assert.equal('whatsNew' in l.attrs, false, 'the first App Store version got a What\'s New');
@@ -204,17 +204,17 @@ test('prepare renumbers the editable version App Store Connect made with the app
   const { code, out } = await asc(fake, PREPARE);
   assert.equal(code, 0, out);
   assert.equal(fake.versions.length, 1);
-  assert.equal(v.versionString, '1.9.1');
+  assert.equal(v.versionString, '1.9.2');
   assert.match(out, /renumber the editable version 1\.0/);
 });
 
 test('a version that is not editable stops prepare before any write', async () => {
   for (const state of ['WAITING_FOR_REVIEW', 'IN_REVIEW', 'PENDING_DEVELOPER_RELEASE', 'READY_FOR_DISTRIBUTION']) {
     const fake = new FakeAsc();
-    fake.version({ versionString: '1.9.1', appVersionState: state });
+    fake.version({ versionString: '1.9.2', appVersionState: state });
     const { code, out } = await asc(fake, PREPARE);
     assert.equal(code, 1, out);
-    assert.match(out, new RegExp(`1\\.9\\.1 is ${state}`));
+    assert.match(out, new RegExp(`1\\.9\\.2 is ${state}`));
     assert.deepEqual(fake.writes, []);
   }
   // another version still with App Review: no new version can be made
@@ -228,16 +228,16 @@ test('a version that is not editable stops prepare before any write', async () =
 
 test('a later version gets What\'s New, the release type and the phased release', async () => {
   const fake = new FakeAsc();
-  fake.version({ versionString: '1.9.1', appVersionState: 'READY_FOR_DISTRIBUTION' });
-  fake.builds.push({ id: 'b-192', build: '263200000', pre: '1.9.2', state: 'VALID', expired: false, expirationDate: '2027-02-01T00:00:00Z' });
+  fake.version({ versionString: '1.9.2', appVersionState: 'READY_FOR_DISTRIBUTION' });
+  fake.builds.push({ id: 'b-193', build: '263200000', pre: '1.9.3', state: 'VALID', expired: false, expirationDate: '2027-02-01T00:00:00Z' });
   const store = mkdtempSync(join(tmpdir(), 'hjv-asc-'));
   try {
     cpSync(STORE, store, { recursive: true });
-    writeFileSync(join(store, 'version.txt'), '1.9.2\n');
-    const { code, out } = await asc(fake, ['prepare', '--version', '1.9.2', '--build', '263200000', '--release-type', 'after-approval', '--phased', '--store', store]);
+    writeFileSync(join(store, 'version.txt'), '1.9.3\n');
+    const { code, out } = await asc(fake, ['prepare', '--version', '1.9.3', '--build', '263200000', '--release-type', 'after-approval', '--phased', '--store', store]);
     assert.equal(code, 0, out);
   } finally { rmSync(store, { recursive: true, force: true }); }
-  const v = fake.versions.find((x) => x.versionString === '1.9.2');
+  const v = fake.versions.find((x) => x.versionString === '1.9.3');
   assert.equal(v.releaseType, 'AFTER_APPROVAL');
   assert.ok(v.locs.every((l) => typeof l.attrs.whatsNew === 'string' && l.attrs.whatsNew.length > 0));
   assert.deepEqual(v.phased?.state, 'INACTIVE');
@@ -256,7 +256,7 @@ test('prepare again changes nothing', async () => {
 test('the store version must be the run\'s version', async () => {
   const { code, out } = await asc(new FakeAsc(), ['prepare', '--version', '1.9.9', '--build', '263120249']);
   assert.equal(code, 2);
-  assert.match(out, /version\.txt is 1\.9\.1, the run's version is 1\.9\.9/);
+  assert.match(out, /version\.txt is 1\.9\.2, the run's version is 1\.9\.9/);
 });
 
 test('prepare waits for the build\'s processing, and gives up', async () => {
@@ -275,7 +275,7 @@ test('prepare waits for the build\'s processing, and gives up', async () => {
   none.builds = [];
   const r = await asc(none, PREPARE, { ...ENV, ASC_WAIT_MINUTES: '2' });
   assert.equal(r.code, 1);
-  assert.match(r.out, /has no iOS 1\.9\.1 build 263120249/);
+  assert.match(r.out, /has no iOS 1\.9\.2 build 263120249/);
   assert.match(r.out, /waited 2 minutes/);
   const failed = new FakeAsc();
   failed.builds[0].state = 'INVALID';
@@ -301,7 +301,7 @@ test('submit without an open submission makes one and submits the version', asyn
   const [s] = fake.submissions;
   assert.equal(s.state, 'WAITING_FOR_REVIEW');
   assert.deepEqual(s.items.map((i) => i.versionId), [fake.versions[0].id]);
-  assert.match(out, /Submitted App Store version 1\.9\.1 \(build 263120249\) for App Review \(manual release\)/);
+  assert.match(out, /Submitted App Store version 1\.9\.2 \(build 263120249\) for App Review \(manual release\)/);
   assert.match(out, /unlisted app request/);
   // run again (an answer lost, a re-run): nothing is written
   const before = fake.writes.length;
@@ -344,7 +344,7 @@ test('submit after an unanswered submitted=true ends as success', async () => {
 
 test('an UNRESOLVED_ISSUES submission of this version is fixed and sent again', async () => {
   const fake = new FakeAsc();
-  const v = fake.version({ versionString: '1.9.1', appVersionState: 'METADATA_REJECTED', buildId: 'b-191' });
+  const v = fake.version({ versionString: '1.9.2', appVersionState: 'METADATA_REJECTED', buildId: 'b-192' });
   fake.submissions.push({ id: 'rs-old', state: 'UNRESOLVED_ISSUES', items: [{ id: 'item-old', versionId: v.id }] });
   const { code, out } = await asc(fake, SUBMIT);
   assert.equal(code, 0, out);
@@ -366,50 +366,50 @@ test('an open submission with other items stops submit before any write', async 
 
 test('release is done once and then reports success', async () => {
   const fake = new FakeAsc();
-  const v = fake.version({ versionString: '1.9.1', appVersionState: 'PENDING_DEVELOPER_RELEASE', buildId: 'b-191' });
-  const wrong = await asc(fake, ['release', '--version', '1.9.1', '--build', '1']);
+  const v = fake.version({ versionString: '1.9.2', appVersionState: 'PENDING_DEVELOPER_RELEASE', buildId: 'b-192' });
+  const wrong = await asc(fake, ['release', '--version', '1.9.2', '--build', '1']);
   assert.equal(wrong.code, 1);
   assert.match(wrong.out, /has build 263120249, not 1/);
-  const { code, out } = await asc(fake, ['release', '--version', '1.9.1', '--build', '263120249']);
+  const { code, out } = await asc(fake, ['release', '--version', '1.9.2', '--build', '263120249']);
   assert.equal(code, 0, out);
   assert.equal(v.appVersionState, 'PROCESSING_FOR_DISTRIBUTION');
-  const again = await asc(fake, ['release', '--version', '1.9.1']);
+  const again = await asc(fake, ['release', '--version', '1.9.2']);
   assert.equal(again.code, 0);
   assert.match(again.out, /released already; nothing to do/);
   assert.equal(fake.writes.length, 1);
   v.appVersionState = 'WAITING_FOR_REVIEW';
-  const early = await asc(fake, ['release', '--version', '1.9.1']);
+  const early = await asc(fake, ['release', '--version', '1.9.2']);
   assert.equal(early.code, 1);
   assert.match(early.out, /only an approved version of manual release/);
 });
 
 test('check-new fails when the version has a build already', async () => {
   const fake = new FakeAsc();
-  const r = await asc(fake, ['check-new', '--version', '1.9.1'], KEY);
+  const r = await asc(fake, ['check-new', '--version', '1.9.2'], KEY);
   assert.equal(r.code, 1);
-  assert.match(r.out, /has iOS 1\.9\.1 already \(build 263120249, VALID\)/);
+  assert.match(r.out, /has iOS 1\.9\.2 already \(build 263120249, VALID\)/);
   assert.match(r.out, /raise client\/version\.env/);
-  const ok = await asc(fake, ['check-new', '--version', '1.9.2'], KEY);
+  const ok = await asc(fake, ['check-new', '--version', '1.9.3'], KEY);
   assert.equal(ok.code, 0, ok.out);
   assert.ok(fake.calls.every(([m]) => m === 'GET'));
 });
 
 test('status gives one line and a JSON file, with GET requests only', async () => {
   const fake = new FakeAsc();
-  const v = fake.version({ versionString: '1.9.1', appVersionState: 'WAITING_FOR_REVIEW', buildId: 'b-191' });
+  const v = fake.version({ versionString: '1.9.2', appVersionState: 'WAITING_FOR_REVIEW', buildId: 'b-192' });
   fake.version({ versionString: '1.9.0', appVersionState: 'READY_FOR_DISTRIBUTION' });
   v.phased = { id: 'ph-1', state: 'INACTIVE' };
   fake.submissions.push({ id: 'rs-1', state: 'WAITING_FOR_REVIEW', items: [{ id: 'i', versionId: v.id }] });
   const dir = mkdtempSync(join(tmpdir(), 'hjv-asc-'));
   try {
     const file = join(dir, 'status.json');
-    const { code, out } = await asc(fake, ['status', '--version', '1.9.1', '--json', file], KEY);
+    const { code, out } = await asc(fake, ['status', '--version', '1.9.2', '--json', file], KEY);
     assert.equal(code, 0, out);
-    assert.match(out, /App Store: on the App Store 1\.9\.0; in review 1\.9\.1; 1\.9\.1 WAITING_FOR_REVIEW, phased INACTIVE; TestFlight 1\.9\.1 \(263120249\) VALID/);
+    assert.match(out, /App Store: on the App Store 1\.9\.0; in review 1\.9\.2; 1\.9\.2 WAITING_FOR_REVIEW, phased INACTIVE; TestFlight 1\.9\.2 \(263120249\) VALID/);
     const report = JSON.parse(readFileSync(file, 'utf8'));
-    assert.deepEqual(report.in_review, ['1.9.1']);
+    assert.deepEqual(report.in_review, ['1.9.2']);
     assert.equal(report.on_app_store, '1.9.0');
-    assert.deepEqual(report.open_submissions, [{ id: 'rs-1', state: 'WAITING_FOR_REVIEW', versions: ['1.9.1'] }]);
+    assert.deepEqual(report.open_submissions, [{ id: 'rs-1', state: 'WAITING_FOR_REVIEW', versions: ['1.9.2'] }]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   assert.deepEqual(fake.writes, []);
   // without a version, and with no phased release (404)
@@ -430,8 +430,8 @@ test('a dry run with the key reads only and prints the writes without secret val
 });
 
 test('a dry run without the key needs no network', async () => {
-  for (const argv of [[...PREPARE, '--dry-run'], [...SUBMIT, '--dry-run', '--phased'], ['release', '--version', '1.9.1', '--dry-run'],
-    ['check-new', '--version', '1.9.1', '--dry-run'], ['status', '--dry-run']]) {
+  for (const argv of [[...PREPARE, '--dry-run'], [...SUBMIT, '--dry-run', '--phased'], ['release', '--version', '1.9.2', '--dry-run'],
+    ['check-new', '--version', '1.9.2', '--dry-run'], ['status', '--dry-run']]) {
     const { code, out } = await asc(null, argv, {});
     assert.equal(code, 0, out);
     assert.match(out, /no network/);
@@ -442,7 +442,7 @@ test('a dry run without the key needs no network', async () => {
 });
 
 test('the filled notes keep check-store-text.py\'s limits and never show the values', () => {
-  const template = readStore(STORE, '1.9.1').notes;
+  const template = readStore(STORE, '1.9.2').notes;
   const filled = fillNotes(template, REVIEW);
   assert.ok(filled.bytes <= NOTES_BYTES);
   for (const [env, why] of [
@@ -472,7 +472,7 @@ test('Apple\'s errors are shown with the secret values masked, and GET requests 
   assert.equal(fake.calls.filter(([m, p]) => p.endsWith('/appStoreVersions') && m === 'GET').length, 3);
   const denied = new FakeAsc();
   denied.fail.set('GET /v1/builds', [[401, { errors: [{ code: 'NOT_AUTHORIZED' }] }]]);
-  const r = await asc(denied, ['check-new', '--version', '1.9.2'], KEY);
+  const r = await asc(denied, ['check-new', '--version', '1.9.3'], KEY);
   assert.equal(r.code, 1);
   assert.match(r.out, /a revoked key answers 401/);
 });
@@ -480,7 +480,7 @@ test('Apple\'s errors are shown with the secret values masked, and GET requests 
 test('bad usage and bad keys exit 2', async () => {
   for (const [argv, env, why] of [
     [['publish'], KEY, /the command is one of/],
-    [['prepare', '--version', '1.9.1'], KEY, /needs --build/],
+    [['prepare', '--version', '1.9.2'], KEY, /needs --build/],
     [['submit', '--version', '1.9', '--build', '1'], KEY, /not a version/],
     [['release'], KEY, /needs --version/],
     [[...PREPARE, '--release-type', 'scheduled'], KEY, /manual or after-approval/],
@@ -510,19 +510,19 @@ test('the first App Store version takes neither after-approval nor a phased rele
 
 test('after a binary rejection submit takes the new version through the rejected one', async () => {
   const fake = new FakeAsc();
-  const v = fake.version({ versionString: '1.9.1', appVersionState: 'REJECTED', buildId: 'b-191' });
+  const v = fake.version({ versionString: '1.9.2', appVersionState: 'REJECTED', buildId: 'b-192' });
   fake.submissions.push({ id: 'rs-old', state: 'UNRESOLVED_ISSUES', items: [{ id: 'item-old', versionId: v.id }] });
-  fake.builds.push({ id: 'b-192', build: '263200000', pre: '1.9.2', state: 'VALID', expired: false, expirationDate: '2027-02-01T00:00:00Z' });
+  fake.builds.push({ id: 'b-193', build: '263200000', pre: '1.9.3', state: 'VALID', expired: false, expirationDate: '2027-02-01T00:00:00Z' });
   const store = mkdtempSync(join(tmpdir(), 'hjv-asc-'));
   try {
     cpSync(STORE, store, { recursive: true });
-    writeFileSync(join(store, 'version.txt'), '1.9.2\n');
-    const { code, out } = await asc(fake, ['submit', '--version', '1.9.2', '--build', '263200000', '--store', store]);
+    writeFileSync(join(store, 'version.txt'), '1.9.3\n');
+    const { code, out } = await asc(fake, ['submit', '--version', '1.9.3', '--build', '263200000', '--store', store]);
     assert.equal(code, 0, out);
   } finally { rmSync(store, { recursive: true, force: true }); }
   assert.equal(fake.versions.length, 1);
-  assert.equal(v.versionString, '1.9.2');
-  assert.equal(v.buildId, 'b-192');
+  assert.equal(v.versionString, '1.9.3');
+  assert.equal(v.buildId, 'b-193');
   assert.equal(fake.submissions.length, 1);
   assert.equal(fake.submissions[0].state, 'WAITING_FOR_REVIEW');
   assert.equal(fake.submissions[0].items.length, 1);
@@ -530,21 +530,21 @@ test('after a binary rejection submit takes the new version through the rejected
 
 test('submit and release that are done already must hold the build of the run', async () => {
   const fake = new FakeAsc();
-  const v = fake.version({ versionString: '1.9.1', appVersionState: 'WAITING_FOR_REVIEW', buildId: 'b-191' });
-  const wrong = await asc(fake, ['submit', '--version', '1.9.1', '--build', '999']);
+  const v = fake.version({ versionString: '1.9.2', appVersionState: 'WAITING_FOR_REVIEW', buildId: 'b-192' });
+  const wrong = await asc(fake, ['submit', '--version', '1.9.2', '--build', '999']);
   assert.equal(wrong.code, 1, wrong.out);
   assert.match(wrong.out, /has build 263120249, not 999/);
   v.appVersionState = 'PREPARE_FOR_SUBMISSION';
   fake.submissions.push({ id: 'rs-1', state: 'WAITING_FOR_REVIEW', items: [{ id: 'i', versionId: v.id }] });
-  const lagging = await asc(fake, ['submit', '--version', '1.9.1', '--build', '999']);
+  const lagging = await asc(fake, ['submit', '--version', '1.9.2', '--build', '999']);
   assert.equal(lagging.code, 1, lagging.out);
   assert.match(lagging.out, /has build 263120249, not 999/);
   for (const state of ['READY_FOR_DISTRIBUTION', 'PROCESSING_FOR_DISTRIBUTION']) {
     v.appVersionState = state;
-    const r = await asc(fake, ['release', '--version', '1.9.1', '--build', '999']);
+    const r = await asc(fake, ['release', '--version', '1.9.2', '--build', '999']);
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /has build 263120249, not 999/);
-    const ok = await asc(fake, ['release', '--version', '1.9.1', '--build', '263120249']);
+    const ok = await asc(fake, ['release', '--version', '1.9.2', '--build', '263120249']);
     assert.equal(ok.code, 0, ok.out);
     assert.match(ok.out, /released already/);
   }

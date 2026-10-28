@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 18:08:07 +0900
-Subject: [PATCH 036/162] hjviewer: wake-on-LAN: the app wakes a PC of the
+Subject: [PATCH 036/167] hjviewer: wake-on-LAN: the app wakes a PC of the
  account that is off
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

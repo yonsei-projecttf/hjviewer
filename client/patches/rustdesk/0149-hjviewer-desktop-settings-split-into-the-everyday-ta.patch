@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Mon, 26 Oct 2026 14:44:08 +0900
-Subject: [PATCH 149/162] hjviewer: desktop settings split into the everyday
+Subject: [PATCH 149/167] hjviewer: desktop settings split into the everyday
  tabs and Advanced settings
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

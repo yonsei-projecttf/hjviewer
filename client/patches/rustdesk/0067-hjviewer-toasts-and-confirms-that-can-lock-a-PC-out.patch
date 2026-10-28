@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 22:28:49 +0900
-Subject: [PATCH 067/162] hjviewer: toasts, and confirms that can lock a PC out
+Subject: [PATCH 067/167] hjviewer: toasts, and confirms that can lock a PC out
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

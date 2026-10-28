@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 17 Oct 2026 01:10:47 +0000
-Subject: [PATCH 062/162] hjviewer: the staff-only gate's screens, from the
+Subject: [PATCH 062/167] hjviewer: the staff-only gate's screens, from the
  user's side
 
 What a user meets around the gate, so that nobody locks a PC out by

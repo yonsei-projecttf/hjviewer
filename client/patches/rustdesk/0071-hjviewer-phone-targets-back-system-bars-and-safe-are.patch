@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 22:06:05 +0900
-Subject: [PATCH 071/162] hjviewer: phone targets, back, system bars and safe
+Subject: [PATCH 071/167] hjviewer: phone targets, back, system bars and safe
  areas
 
 U57: on a phone the most used controls keep their look and get larger

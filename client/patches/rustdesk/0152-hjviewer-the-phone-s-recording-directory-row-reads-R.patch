@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Mon, 26 Oct 2026 15:37:55 +0900
-Subject: [PATCH 152/162] hjviewer: the phone's recording directory row reads
+Subject: [PATCH 152/167] hjviewer: the phone's recording directory row reads
  "Recording folder"
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

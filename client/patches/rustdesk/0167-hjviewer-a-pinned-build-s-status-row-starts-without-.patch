@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 28 Oct 2026 11:19:28 +0900
+Subject: [PATCH 167/167] hjviewer: a pinned build's status row starts without
+ RustDesk's pricing link
+
+The desktop status row shows upstream's ", setup_server_tip" link, which
+opens https://rustdesk.com/pricing, while the service is ready and
+_svcIsUsingPublicServer holds. A new row (the home page's or the
+connection page's) started from true and kept the link until its first
+updateStatus had both of its answers from the core, so a pinned build
+showed the link for a moment whenever a row was made while the service
+was ready. The core then says false: the apply() of src/hjviewer.rs that
+pins allow-deep-link-password to N also puts the build's server in
+custom-rendezvous-server. The row now starts from hjvRustDeskPageOk of
+that page, the pinned-server flag by which a pinned build offers no
+button to RustDesk's pages: false in a pinned build, which so never shows
+the link, and upstream's true in any other build. (isCustomClient() is
+true in a pinned build too, but it tells the app's name, not its server.)
+A test pins the start and the page.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart        |  7 ++++---
+ flutter/lib/common/hjviewer_pins.dart          |  7 ++++---
+ flutter/lib/desktop/pages/connection_page.dart |  5 ++++-
+ flutter/test/hjviewer_pins_test.dart           | 15 +++++++++++++++
+ 4 files changed, 27 insertions(+), 7 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index a09c055..790e41d 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -1807,9 +1807,10 @@ bool hjvLinkSchemeOk(Uri uri) =>
+ String? hjvLinkPassword(String? password) =>
+     hjvLinkPasswordOf(password, pinned: _pinned);
+ 
+-/// msgBox's [JumpLink] (common.dart) and the Wayland keyboard prompt (toolbar.dart): whether a
+-/// button opens `link`, a page of RustDesk's, which a pinned build offers none of. A message
+-/// without a link asks the core nothing, as before.
++/// msgBox's [JumpLink] (common.dart), the Wayland keyboard prompt (toolbar.dart) and the start of
++/// the desktop status row's setup_server_tip (connection_page.dart): whether a button opens
++/// `link`, a page of RustDesk's, which a pinned build offers none of. A message without a link
++/// asks the core nothing, as before.
+ bool hjvRustDeskPageOk(String link) =>
+     link.isNotEmpty && hjvOffersRustDeskPage(link, pinned: _pinned);
+ 
+diff --git a/flutter/lib/common/hjviewer_pins.dart b/flutter/lib/common/hjviewer_pins.dart
+index c620e77..46ab29b 100644
+--- a/flutter/lib/common/hjviewer_pins.dart
++++ b/flutter/lib/common/hjviewer_pins.dart
+@@ -15,9 +15,10 @@ bool hjvOffersPrinter({required bool windows, required String supportsDriver}) =
+ 
+ /// Upstream's buttons to RustDesk's own pages: a message box's [JumpLink] to `link` (the core's
+ /// and a peer's messages link only to RustDesk's docs: HELPER_URL, LOGIN_ERROR_MAP,
+-/// SCRAP_X11_REF_URL) and the Wayland keyboard prompt's "Why this happens" (an issue on RustDesk's
+-/// GitHub). A pinned build is not RustDesk's app and offers neither, as it shows no "Powered by
+-/// RustDesk"; [pinned] is the links' pinned-server flag (hjviewer_access.dart).
++/// SCRAP_X11_REF_URL), the Wayland keyboard prompt's "Why this happens" (an issue on RustDesk's
++/// GitHub) and the desktop status row's setup_server_tip (its pricing page). A pinned build is not
++/// RustDesk's app and offers none of them, as it shows no "Powered by RustDesk"; [pinned] is the
++/// links' pinned-server flag (hjviewer_access.dart).
+ bool hjvOffersRustDeskPage(String link, {required bool pinned}) =>
+     !pinned && link.isNotEmpty;
+ 
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 9065637..2bdc449 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -44,7 +44,10 @@ class OnlineStatusWidget extends StatefulWidget {
+ /// State for the connection page.
+ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+   final _svcStopped = Get.find<RxBool>(tag: 'stop-service');
+-  final _svcIsUsingPublicServer = true.obs;
++  // HJViewer: setup_server_tip opens RustDesk's pricing page, which a pinned build offers no
++  // button to; a new row starts without it rather than show it until the core's first answer
++  final _svcIsUsingPublicServer =
++      hjvRustDeskPageOk('https://rustdesk.com/pricing').obs;
+   Timer? _updateTimer;
+ 
+   double get em => 14.0;
+diff --git a/flutter/test/hjviewer_pins_test.dart b/flutter/test/hjviewer_pins_test.dart
+index 3dc8999..2a8882d 100644
+--- a/flutter/test/hjviewer_pins_test.dart
++++ b/flutter/test/hjviewer_pins_test.dart
+@@ -1,3 +1,5 @@
++import 'dart:io';
++
+ import 'package:flutter_hbb/common/hjviewer_pins.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+@@ -29,6 +31,19 @@ void main() {
+     expect(hjvOffersRustDeskPage('', pinned: false), isFalse);
+   });
+ 
++  test('a pinned build\'s status row starts without the link to RustDesk\'s pricing', () {
++    // connection_page.dart: the desktop status row shows setup_server_tip, which opens this page,
++    // while _svcIsUsingPublicServer holds; it starts as hjvRustDeskPageOk has the page, not as
++    // upstream's true until the core's first answer
++    const pricing = 'https://rustdesk.com/pricing';
++    final page = File('lib/desktop/pages/connection_page.dart').readAsStringSync();
++    expect(page, contains('const url = "$pricing";'));
++    expect(page.replaceAll(RegExp(r'\s+'), ' '),
++        contains("final _svcIsUsingPublicServer = hjvRustDeskPageOk('$pricing').obs;"));
++    expect(hjvOffersRustDeskPage(pricing, pinned: true), isFalse);
++    expect(hjvOffersRustDeskPage(pricing, pinned: false), isTrue);
++  });
++
+   test('the connection tip of a pinned build names only the ID', () {
+     for (final t in [const HjvPinTexts(true), const HjvPinTexts(false)]) {
+       expect(t.idInputTip, isNot(matches(RegExp(r'IP|@|/r|[{}]'))));

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <build@hjviewer.invalid>
 Date: Sun, 18 Oct 2026 20:24:41 +0900
-Subject: [PATCH 064/162] hjviewer: serialize quiet device-list refreshes
+Subject: [PATCH 064/167] hjviewer: serialize quiet device-list refreshes
 
 Keep request-in-flight state separate from the visible loading indicator.
 Foreground and wake completion refresh the device list quietly, so using

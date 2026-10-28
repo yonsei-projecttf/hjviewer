@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 04:45:20 +0900
-Subject: [PATCH 121/162] hjviewer: lane A's follow-ups from 1.9 waves 1-2
+Subject: [PATCH 121/167] hjviewer: lane A's follow-ups from 1.9 waves 1-2
  (pc-code staff, E2E hooks, refused PC retry)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

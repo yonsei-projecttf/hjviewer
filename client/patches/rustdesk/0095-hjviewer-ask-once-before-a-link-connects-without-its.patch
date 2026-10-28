@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 02:09:25 +0900
-Subject: [PATCH 095/162] hjviewer: ask once before a link connects, without
+Subject: [PATCH 095/167] hjviewer: ask once before a link connects, without
  its password (TV-C6)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

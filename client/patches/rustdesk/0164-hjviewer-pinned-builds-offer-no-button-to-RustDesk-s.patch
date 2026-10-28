@@ -1,0 +1,201 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 28 Oct 2026 09:05:28 +0900
+Subject: [PATCH 164/167] hjviewer: pinned builds offer no button to RustDesk's
+ pages
+
+A message box showed upstream's [JumpLink] wherever its message had a
+link: the core's and a peer's messages link only to RustDesk's docs on
+rustdesk.com (HELPER_URL for a peer's message, the Wayland login screen and
+the X11 requirement for a refused login). The Wayland keyboard prompt's
+"Why this happens" opened an issue on RustDesk's GitHub. A pinned build is
+not RustDesk's app and shows neither button now, as it shows no "Powered by
+RustDesk"; it tells by the links' pinned-server flag (allow-deep-link-
+password pinned to N), which also keeps it to hjviewer:// links. Any other
+build keeps upstream's buttons, and a message without a link asks the
+core nothing, as before.
+
+The other ways to RustDesk's pages were closed in pinned builds already:
+"Powered by RustDesk" (hide-powered-by-me), the public server's pricing
+link (a pinned build has its own server), upstream's update cards and
+changelog (a custom client checks no RustDesk release), and links inside
+a message's text (hjvLinksOff in a build with update keys). The help cards
+of macOS and Linux keep their docs links; no pinned build is made for
+either. The About screens, the installer's licence and the wake guide link
+to this project's repository, the source the AGPL offers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                 |  6 ++-
+ flutter/lib/common/hjviewer_access.dart |  7 +++
+ flutter/lib/common/hjviewer_pins.dart   |  8 ++++
+ flutter/lib/common/widgets/toolbar.dart | 58 +++++++++++++------------
+ flutter/test/hjviewer_pins_test.dart    | 10 +++++
+ 5 files changed, 60 insertions(+), 29 deletions(-)
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index 9093594..708dca3 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -39,7 +39,8 @@ import 'common/hjviewer_access.dart'
+         hjvHandleGateLink,
+         hjvLinkAsk,
+         hjvLinkPassword,
+-        hjvLinkSchemeOk;
++        hjvLinkSchemeOk,
++        hjvRustDeskPageOk;
+ import 'common/widgets/overlay.dart';
+ import 'mobile/pages/file_manager_page.dart';
+ import 'mobile/pages/remote_page.dart';
+@@ -1338,7 +1339,8 @@ void msgBox(SessionID sessionId, String type, String title, String text,
+         ));
+     buttons.insert(0, button);
+   }
+-  if (link.isNotEmpty) {
++  // HJViewer: a message links only to RustDesk's docs, which a pinned build does not offer
++  if (hjvRustDeskPageOk(link)) {
+     buttons.insert(0, dialogButton('JumpLink', onPressed: jumplink));
+   }
+   dialogManager.show(
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 6c53dcc..a09c055 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -26,6 +26,7 @@ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart'
+     show HjvTexts, hjvLoginEndedLine;
+ import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
++import 'package:flutter_hbb/common/hjviewer_pins.dart' show hjvOffersRustDeskPage;
+ import 'package:flutter_hbb/common/hjviewer_ready.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+@@ -1806,6 +1807,12 @@ bool hjvLinkSchemeOk(Uri uri) =>
+ String? hjvLinkPassword(String? password) =>
+     hjvLinkPasswordOf(password, pinned: _pinned);
+ 
++/// msgBox's [JumpLink] (common.dart) and the Wayland keyboard prompt (toolbar.dart): whether a
++/// button opens `link`, a page of RustDesk's, which a pinned build offers none of. A message
++/// without a link asks the core nothing, as before.
++bool hjvRustDeskPageOk(String link) =>
++    link.isNotEmpty && hjvOffersRustDeskPage(link, pinned: _pinned);
++
+ /// Set while `again` runs after LK1's [연결]: the link goes on without asking again.
+ var _linkPass = false;
+ 
+diff --git a/flutter/lib/common/hjviewer_pins.dart b/flutter/lib/common/hjviewer_pins.dart
+index 26c86e1..c620e77 100644
+--- a/flutter/lib/common/hjviewer_pins.dart
++++ b/flutter/lib/common/hjviewer_pins.dart
+@@ -13,6 +13,14 @@ bool hjvPinnedOff({required bool fixed, required bool on}) => fixed && !on;
+ bool hjvOffersPrinter({required bool windows, required String supportsDriver}) =>
+     windows && supportsDriver == 'true';
+ 
++/// Upstream's buttons to RustDesk's own pages: a message box's [JumpLink] to `link` (the core's
++/// and a peer's messages link only to RustDesk's docs: HELPER_URL, LOGIN_ERROR_MAP,
++/// SCRAP_X11_REF_URL) and the Wayland keyboard prompt's "Why this happens" (an issue on RustDesk's
++/// GitHub). A pinned build is not RustDesk's app and offers neither, as it shows no "Powered by
++/// RustDesk"; [pinned] is the links' pinned-server flag (hjviewer_access.dart).
++bool hjvOffersRustDeskPage(String link, {required bool pinned}) =>
++    !pinned && link.isNotEmpty;
++
+ class HjvPinTexts {
+   final bool korean;
+   const HjvPinTexts(this.korean);
+diff --git a/flutter/lib/common/widgets/toolbar.dart b/flutter/lib/common/widgets/toolbar.dart
+index 43f4a07..ad0d158 100644
+--- a/flutter/lib/common/widgets/toolbar.dart
++++ b/flutter/lib/common/widgets/toolbar.dart
+@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_access.dart' show hjvRustDeskPageOk;
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/hjviewer_end_lock.dart';
+ import 'package:flutter_hbb/common/hjviewer_end_lock_ui.dart';
+@@ -272,34 +273,37 @@ void showWaylandKeyboardInputWarningDialog(
+               ],
+             ).marginOnly(bottom: 10),
+           ],
+-          TextButton(
+-            onPressed: consentInProgress
+-                ? null
+-                : () async {
+-                    try {
+-                      final opened = await openWaylandKeyboardIssueUrl();
+-                      if (!opened) {
+-                        // Opening this optional help link almost never fails in
+-                        // normal desktop environments. Keep the result handled
+-                        // for review hygiene, but avoid a low-value user toast.
+-                        debugPrint('Failed to open Wayland keyboard issue URL');
++          // HJViewer: the issue on RustDesk's GitHub is not a pinned build's to offer
++          if (hjvRustDeskPageOk(kWaylandKeyboardIssueUrl))
++            TextButton(
++              onPressed: consentInProgress
++                  ? null
++                  : () async {
++                      try {
++                        final opened = await openWaylandKeyboardIssueUrl();
++                        if (!opened) {
++                          // Opening this optional help link almost never fails in
++                          // normal desktop environments. Keep the result handled
++                          // for review hygiene, but avoid a low-value user toast.
++                          debugPrint(
++                              'Failed to open Wayland keyboard issue URL');
++                        }
++                      } catch (e) {
++                        debugPrint(
++                            'Failed to open Wayland keyboard issue URL: $e');
+                       }
+-                    } catch (e) {
+-                      debugPrint(
+-                          'Failed to open Wayland keyboard issue URL: $e');
+-                    }
+-                  },
+-            style: TextButton.styleFrom(
+-              foregroundColor: HjvPalette.of(context).primary,
+-              padding: EdgeInsets.zero,
+-              minimumSize: Size.zero,
+-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+-            ),
+-            child: Text(
+-              translate('Why this happens'),
+-              style: const TextStyle(decoration: TextDecoration.underline),
+-            ),
+-          ).marginOnly(bottom: 6),
++                    },
++              style: TextButton.styleFrom(
++                foregroundColor: HjvPalette.of(context).primary,
++                padding: EdgeInsets.zero,
++                minimumSize: Size.zero,
++                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
++              ),
++              child: Text(
++                translate('Why this happens'),
++                style: const TextStyle(decoration: TextDecoration.underline),
++              ),
++            ).marginOnly(bottom: 6),
+           CheckboxListTile(
+             value: remember,
+             dense: true,
+diff --git a/flutter/test/hjviewer_pins_test.dart b/flutter/test/hjviewer_pins_test.dart
+index bb0856f..3dc8999 100644
+--- a/flutter/test/hjviewer_pins_test.dart
++++ b/flutter/test/hjviewer_pins_test.dart
+@@ -19,6 +19,16 @@ void main() {
+     expect(hjvOffersPrinter(windows: false, supportsDriver: 'true'), isFalse);
+   });
+ 
++  test('a pinned build offers no button to a page of RustDesk\'s', () {
++    const docs = 'https://rustdesk.com/docs/en/manual/linux/#login-screen';
++    const issue = 'https://github.com/rustdesk/rustdesk/issues/14586';
++    expect(hjvOffersRustDeskPage(docs, pinned: true), isFalse);
++    expect(hjvOffersRustDeskPage(issue, pinned: true), isFalse);
++    // any other build keeps upstream's buttons, where there is a link
++    expect(hjvOffersRustDeskPage(docs, pinned: false), isTrue);
++    expect(hjvOffersRustDeskPage('', pinned: false), isFalse);
++  });
++
+   test('the connection tip of a pinned build names only the ID', () {
+     for (final t in [const HjvPinTexts(true), const HjvPinTexts(false)]) {
+       expect(t.idInputTip, isNot(matches(RegExp(r'IP|@|/r|[{}]'))));
