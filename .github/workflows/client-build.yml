@@ -141,11 +141,13 @@ env:
 # repository's 10 GiB (GHA-10 of the 2026-10-27 CI audit).
 #
 # Actions run on Node 24 (GitHub took Node 20 off the runners on 2026-09-23): every JavaScript action
-# is pinned to a release that declares node24 but one, which the runner runs on Node 24 all the same:
-# KyleMayes/install-llvm-action, whose newest release (v2.0.9) still declares node20. The Android
-# job signs its APK with build-tools' own commands ("Sign app APK"). actions/cache v6.1.0 computes
-# an entry's version (the paths, the compression, Windows-only) and looks up its key as v3.5.0 did,
-# so the bridge and vcpkg entries that v3.5.0 saved still restore (docs/ci.md, "캐시").
+# is pinned by its full SHA to a commit that declares node24 but one, which the runner runs on Node 24
+# all the same: KyleMayes/install-llvm-action, whose newest release (v2.0.9) still declares node20.
+# Each of these commits is a release tag's but Swatinem/rust-cache's e18b497 ("v2"): v2.9.1 and one
+# CHANGELOG commit after it, so v2.9.1's code. The Android job signs its APK with build-tools' own
+# commands ("Sign app APK"). actions/cache v6.1.0 computes an entry's version (the paths, the
+# compression, Windows-only) and looks up its key as v3.5.0 did, so the bridge and vcpkg entries
+# that v3.5.0 saved still restore (docs/ci.md, "캐시").
 
 jobs:
   # Not upstream. What every other job needs first: the build plan, the inputs a build refuses, the

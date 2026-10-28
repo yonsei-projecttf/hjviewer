@@ -257,7 +257,7 @@ Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하�
 - **flutter doctor**: Windows 잡의 엔진 교체 단계에서 upstream의 `flutter doctor -v`(아무도 보지 않는 진단)를 뺐습니다.
 - **서명**: upstream의 비공개 서명 서비스 대신 아래 시크릿으로 선택적으로 서명합니다. Android APK는 upstream이 쓰는 `r0adkll/sign-android-release` 대신, 그 액션이 부르던 zipalign·apksigner를 같은 build-tools와 같은 옵션으로 직접 부릅니다(아래 "서명 시크릿"의 Android). Windows는 서명하지 않습니다.
 - **Xcode 고정**: upstream은 `macos-latest`의 기본 Xcode를 씁니다. 이 워크플로는 `macos-26`에서 Xcode 26.6(`XCODE_VERSION`)을 고르고, 26.x가 아니면 실패합니다. App Store Connect는 Xcode 26 이상으로 만든 빌드만 받습니다. 반면 Xcode 27(iOS 27 SDK)로 만들면 UIScene 수명 주기가 없는 Flutter 3.24.5 앱이 실행되지 않습니다. TestFlight upload 잡도 altool을 부르기 전에 같은 Xcode를 고릅니다.
-- **액션 판**: JavaScript 액션은 모두 node24를 선언한 판의 40자리 SHA로 고정합니다(`actions/checkout` v7.0.1, `actions/cache` v6.1.0, `microsoft/setup-msbuild` v3.0.0 등. `server.yml`의 checkout도). GitHub는 2026-09-23에 러너에서 Node 20을 뺐고, 그보다 낮은 판을 선언한 액션은 Node 24로 돌립니다. 그렇게 도는 것은 node24 판이 아직 없는 `KyleMayes/install-llvm-action`(v2.0.9, node20) 하나입니다. Windows 잡의 `subosito/flutter-action` v2.12.0 안에 있는 `actions/cache@v3`(node16)는 `cache: true`일 때만 도는데, 이 워크플로는 켜지 않습니다.
+- **액션 판**: JavaScript 액션은 모두 40자리 SHA로 고정하고, 하나를 빼면 node24를 선언한 커밋입니다(`actions/checkout` v7.0.1, `actions/cache` v6.1.0, `microsoft/setup-msbuild` v3.0.0 등. `server.yml`의 checkout도). 그 하나는 node24 판이 아직 없는 `KyleMayes/install-llvm-action`(v2.0.9, node20)입니다. GitHub는 2026-09-23에 러너에서 Node 20을 뺐고, 그보다 낮은 판을 선언한 액션은 Node 24로 돌립니다. 고정한 커밋은 릴리스 태그의 것이지만, `Swatinem/rust-cache`의 e18b497(주석 `# v2`)만은 v2.9.1 뒤의 CHANGELOG 커밋 하나라 코드가 v2.9.1과 같습니다. Windows 잡의 `subosito/flutter-action` v2.12.0 안에 있는 `actions/cache@v3`(node16)는 `cache: true`일 때만 도는데, 이 워크플로는 켜지 않습니다.
 - **제외한 것**:
   - macOS·Linux·웹·Sciter 빌드
   - Windows arm64, Android armv7/x86_64/universal APK
