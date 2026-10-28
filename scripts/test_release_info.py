@@ -970,8 +970,8 @@ class WorkflowTest(unittest.TestCase):
                     continue
                 for builder in ("cargo", "build.py", "flutter build", "ndk_arm64"):
                     self.assertNotIn(builder, step.get("run", ""), f"{job}: {step.get('name')}")
-            # and they are, a few steps (the toolchain, the cache) later
-            later = " ".join(step.get("run", "") for step in steps[restore + 1:restore + 5])
+            # and the next step builds
+            later = steps[restore + 1].get("run", "")
             self.assertTrue(any(builder in later for builder in ("build.py", "ndk_arm64")), job)
         self.assertEqual(self.step("windows", "Wait for the bridge files"), self.step("android", "Wait for the bridge files"))
         wait = self.step("windows", "Wait for the bridge files")

@@ -8,8 +8,8 @@ store-release.yml: called only (workflow_call), Linux only, read permissions but
 every checkout of this file's own repository and commit without credentials, the environment
 `store` and the secrets in the play and appstore jobs alone (by name, never inherit), status out
 of the editing jobs' concurrency groups. client-build.yml: no Google Play job, play refused, the
--play bundle kept 30 days, the release checks before any third-party build step, and the TestFlight
-upload a job of its own that builds nothing and takes the IPA of a checked, finished build run. The
+-play bundle kept 30 days, the release checks before any third-party build step, the Rust cache before
+the vcpkg cache, and the TestFlight upload a job of its own that builds nothing and takes the IPA of a checked, finished build run. The
 run summary (scripts/run-summary.py, RunSummaryTest) never fails a run.
 """
 import importlib.util
@@ -381,6 +381,22 @@ class ClientBuildWorkflowTest(unittest.TestCase):
             self.assertIn('echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"', image)
             names = [name_of(s) for s in steps(self.jobs[build])]
             self.assertEqual(names.index("Install Rust toolchain"), names.index("Runner image and rustup directory") + 1, build)
+
+    def test_the_rust_cache_comes_before_the_vcpkg_cache(self):
+        """W5 (1.9.2): Android and iOS restore their Rust cache before the vcpkg cache, as Windows always
+        did, so that a cache over 10 GB loses a job's old Rust entry before the vcpkg entry it restored
+        (docs/ci.md, the caches' size)."""
+        for build in ("windows", "android", "ios"):
+            job = steps(self.jobs[build])
+            names = [name_of(s) for s in job]
+            (cache,) = [i for i, s in enumerate(job) if s.startswith("      - id: rust-cache\n")]
+            order = [names.index("Runner image and rustup directory"), names.index("Install Rust toolchain"),
+                     cache, names.index("Restore vcpkg binary cache")]
+            self.assertEqual(order, sorted(order), build)
+            if build != "windows":
+                # the order whose Rust and vcpkg keys W5 showed unchanged: one step after the other
+                # (Windows sets vcpkg up between the Rust cache and the restore)
+                self.assertEqual(order, list(range(order[0], order[0] + 4)), build)
 
 
 class RunSummaryTest(unittest.TestCase):

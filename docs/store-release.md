@@ -228,7 +228,7 @@ environment를 선언하지 않은 잡(빌드 실행의 잡)은 environment 시�
 | 설정 | 지금 | 권장 |
 |---|---|---|
 | 비공개 저장소 main 보호 | 없음 | 규칙 하나: 강제 push와 삭제만 막습니다. PR 요구는 넣지 않습니다(Release record 잡의 커밋이 막힘) |
-| Actions의 SHA 고정 필수 | 두 저장소 모두 꺼짐 | 비공개 저장소에서 켭니다. 공개 저장소는 `server.yml`의 태그 고정을 고친 뒤에 |
+| Actions의 SHA 고정 필수 | 두 저장소 모두 꺼짐 | 비공개 저장소에서 켭니다. 공개 저장소도 켤 수 있습니다(`server.yml`의 마지막 태그 고정 `dtolnay/rust-toolchain@stable`을 1.9.2에서 SHA로 바꿈) |
 | 조직 2FA 필수 | 꺼짐 | 구성원이 모두 2FA를 켰는지 본 뒤 켭니다 |
 | 아티팩트 보관 상한, 기본 GITHUB_TOKEN 권한 | 90일, read | 그대로 |
 
