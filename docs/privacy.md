@@ -473,9 +473,10 @@ beyond section 9.
   recorded.
 - **The Yonsei SSO** checks your portal ID and password at login.
 - **An AI assistant**: the operator uses an AI assistant for work on the server. Its rules let it
-  see only shortened, masked output and counts, and what it sees goes to the external AI service
-  that runs it: Anthropic, in the United States. Showing full values and making keys are done by
-  people only.
+  see only counts and output that names no person and no person's device, and what it sees goes to
+  the external AI service that runs it: Anthropic, in the United States, which does not use these
+  conversations to train its models (that setting is turned off). Anything about a person or a
+  person's device, and showing full values and making keys, is done by people only.
 - **Not the PC's two-factor codes**: HJViewer builds turn off upstream RustDesk's option to send a
   PC's two-factor codes to a Telegram bot; the codes come from the authenticator app you set up.
 - **STUN servers** (section 2). Nobody else: no advertising or analytics companies.
@@ -484,11 +485,12 @@ beyond section 9.
   server's operating system, its version and processor type, and a fingerprint of the server
   machine; nothing about users or their devices.
 
-**Third parties.** The Yonsei SSO and public STUN servers get only the data named here and only
-for the purpose named here. The Yonsei SSO, the university's own login service, gets a portal ID and
-password only to check a login, and protects them as the university's privacy policy and Korean law
-require. Public STUN servers get only the requesting device's IP address and port, as any server the
-device contacts does; HJViewer gives them no other user data.
+**Third parties.** The Yonsei SSO and public STUN servers get only the data named here and only for
+the purpose named here; besides them and the operator, nobody gets user data from HJViewer. The
+Yonsei SSO, the university's own login service, gets a portal ID and password only to check a login,
+and protects them as the university's privacy policy and Korean law require. Public STUN servers get
+only the requesting device's IP address and port, as any server the device contacts does; HJViewer
+gives them no other user data.
 
 ### 10. Contact and changes
 
@@ -607,12 +609,12 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 - **운영자**: 프로젝트TF(이 정보의 개인정보 처리자)가 서버와 그 계정 서비스를 운영하고, 요청에 답하며, 이 정보를 책임집니다. 관리 명령은 사람이 따로 요청하지 않는 한 ID를 줄여 보이고 이름, 주소, 기기 이름을 보이지 않습니다. 관리 명령은 모두 기록됩니다. 5분마다 도는 점검이 읽는 명령 하나만 예외이고, 그 명령은 개수만 돌려주며 아무것도 바꾸지 않습니다. 운영자가 서버의 설정에서 정한 최고운영자는 앱에서 3절의 사용자와 PC를 보며, 볼 때마다 기록됩니다.
 - **연세 SSO**: 로그인할 때 포탈 ID와 비밀번호를 확인합니다.
-- **AI 도우미**: 운영자는 서버 작업에 AI 도우미를 씁니다. AI 도우미는 줄이고 가린 출력과 개수만 보도록 규칙으로 정해져 있고, 본 내용은 AI 도우미를 실행하는 외부 AI 서비스로 갑니다. 그 서비스는 미국의 Anthropic입니다. 원래 값 보기와 키 만들기는 사람만 합니다.
+- **AI 도우미**: 운영자는 서버 작업에 AI 도우미를 씁니다. AI 도우미는 개수와, 사람이나 사람의 기기를 가리키지 않는 출력만 보도록 규칙으로 정해져 있고, 본 내용은 AI 도우미를 실행하는 외부 AI 서비스로 갑니다. 그 서비스는 미국의 Anthropic이고, 그 대화를 모델 학습에 쓰지 않습니다(그 설정을 꺼 둠). 사람이나 사람의 기기에 관한 일, 원래 값 보기와 키 만들기는 사람만 합니다.
 - **PC의 2단계 인증 코드는 보내지 않음**: HJViewer 빌드는 upstream RustDesk의 'PC의 2단계 인증 코드를 Telegram 봇으로 보내기'를 꺼 두었습니다. 코드는 직접 설정한 인증 앱에서 나옵니다.
 - **STUN 서버**(2절). 그 밖에는 없습니다. 광고나 분석 회사에 넘기지 않습니다.
 - 사용자에 관한 것이 아닌 것: upstream rustdesk-server와 같이, 서버의 hbbs는 시작할 때와 하루에 한 번 RustDesk의 업데이트 서비스(api.rustdesk.com)에 더 새 서버 버전이 있는지 묻습니다. 서버의 운영체제와 그 버전, 프로세서 종류, 서버 기계의 지문을 보냅니다. 사용자나 기기에 관한 것은 보내지 않습니다.
 
-**제3자.** 연세 SSO와 공개 STUN 서버는 여기에 적은 정보만, 적은 목적으로만 받습니다. 학교의 로그인 서비스인 연세 SSO는 로그인을 확인하는 데에만 포탈 ID와 비밀번호를 받고, 학교의 개인정보 처리방침과 법이 요구하는 대로 보호합니다. 공개 STUN 서버는 기기가 닿는 다른 서버와 마찬가지로 요청한 기기의 IP 주소와 포트만 받고, HJViewer는 그 밖의 사용자 정보를 주지 않습니다.
+**제3자.** 연세 SSO와 공개 STUN 서버는 여기에 적은 정보만, 적은 목적으로만 받고, 이 둘과 운영자 말고는 누구도 HJViewer에서 사용자 정보를 받지 않습니다. 학교의 로그인 서비스인 연세 SSO는 로그인을 확인하는 데에만 포탈 ID와 비밀번호를 받고, 학교의 개인정보 처리방침과 법이 요구하는 대로 보호합니다. 공개 STUN 서버는 기기가 닿는 다른 서버와 마찬가지로 요청한 기기의 IP 주소와 포트만 받고, HJViewer는 그 밖의 사용자 정보를 주지 않습니다.
 
 ### 10. 문의와 변경
 
