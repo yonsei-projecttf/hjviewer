@@ -485,7 +485,7 @@ App Review 계정이 `review.conf`의 `PC=` 줄에 적힌 데모 PC를 직접 �
 | RP7 | 파일의 `UNTIL`을 75초 뒤로(같은 `PC=`), 그다음 `NOT_BEFORE=<지금>` | hbbs가 PC의 등록을 닫고(`access closed reg … revoked`), PC는 다음 동기화의 출입증(`exp`가 새 `UNTIL`)으로 `UNTIL` 전에 다시 온라인. `UNTIL` 뒤에는 `hjv-access-pc` `refused`, 오프라인, hbbs가 그 출입증으로 받은 등록을 다음 심장 박동(10초 안)에 닫음(`access closed reg … expired`가 늚: `NOT_BEFORE`가 아니라 `UNTIL`이 끝냄), 12초 동안 `sync pc`가 늘지 않고 동기화는 200, 묶음은 그대로 |
 | RP8 | 끝: `admin user delete tag:<T>`, 파일 지움, `MODE=off` | PC가 서명된 `revoked`로 묶음을 버림, 다시 등록해 온라인(뒤 단계가 씀), 둘째 PC는 멈춤 |
 
-**결과**(2026-10-28, WSL2 Ubuntu 24.04, `scripts/ci.sh prepush server:api e2e` 한 번, 커밋 `e501950`, 클라이언트 패치 0001–0167): 열 줄 모두 PASS, strict 전체 PASS 139줄(하한 139), open 2줄, 건너뜀 0, 다시 돌린 시험 0. 이 단계는 3분쯤(RP7이 92초)이고, strict 전체는 684초, 그 prepush 전체(hjv-api 시험 86초, 바뀌지 않은 클라이언트 빌드 34초, e2e 722초)는 842초였습니다.
+**결과**(2026-10-28, WSL2 Ubuntu 24.04, `scripts/ci.sh prepush server:api e2e` 한 번, 통합 전 검토 가지의 중간 커밋(공개 역사에 없음. 그 뒤 서버와 E2E가 더 바뀜), 클라이언트 패치 0001–0167): 열 줄 모두 PASS, strict 전체 PASS 139줄(하한 139), open 2줄, 건너뜀 0, 다시 돌린 시험 0. 이 단계는 3분쯤(RP7이 92초)이고, strict 전체는 684초, 그 prepush 전체(hjv-api 시험 86초, 바뀌지 않은 클라이언트 빌드 34초, e2e 722초)는 842초였습니다.
 
 | # | 본 것 |
 |---|---|
@@ -501,7 +501,7 @@ App Review 계정이 `review.conf`의 `PC=` 줄에 적힌 데모 PC를 직접 �
 | RP8 | `user delete` 뒤 PC가 서명된 `revoked`로 묶음을 버림, 파일을 지우고 `MODE=off`로 다시 온라인, 둘째 PC 멈춤 |
 
 - 뒤 단계(V1–V9, `relay window`)는 이 단계가 남긴 상태(`MODE=off`, 아무 계정에도 없는 PC)에서 그대로 통과했습니다. `relay window` 줄의 `rev` 4번은 A10의 화면 하나와 RP3의 둘(비밀번호로 받은 화면, 비밀번호 없는 시도), RP5의 하나이고, 모두 기본 대기(2.5초)를 지났습니다.
-- 리뷰 수정 뒤의 실행(2026-10-28, 커밋 `dc9aa61`, 같은 명령): 열 줄 모두 PASS, strict PASS 139줄(하한 139), open 2줄, 건너뜀 0, 다시 돌린 시험 0. RP7은 이번부터 `UNTIL` 뒤에 `access closed reg … expired`가 느는 것을 따로 보았습니다(PASS 줄의 `at UNTIL hbbs closed its registration (access closed reg: expired)`). hbbs 로그로는 `UNTIL` 그 초에 서비스가 같은 연결에서 앞 로그인의 출입증으로 다시 등록해 보다 `revoked`로 거절되었고, 4초 뒤 심장 박동이 마지막 동기화 출입증으로 받은 등록을 `expired`로 닫았습니다. 거절된 재등록은 받아 둔 등록을 바꾸지 않으므로(서버 패치 0006: 연결의 출입증은 받아들인 등록만 바꿈) 이 순서에서도 `expired` 닫힘이 남습니다. 이 단계는 3분쯤(RP7 92초), strict 전체는 705초, 그 prepush 전체(hjv-api 시험 496개 84초, 바뀌지 않은 클라이언트 빌드 34초, e2e 725초)는 844초였습니다.
+- 리뷰 수정 뒤의 실행(2026-10-28, 같은 명령. 통합 전 검토 가지의 커밋이고, 이 파일의 이 줄 말고는 커밋 `b66322b`와 같은 트리): 열 줄 모두 PASS, strict PASS 139줄(하한 139), open 2줄, 건너뜀 0, 다시 돌린 시험 0. RP7은 이번부터 `UNTIL` 뒤에 `access closed reg … expired`가 느는 것을 따로 보았습니다(PASS 줄의 `at UNTIL hbbs closed its registration (access closed reg: expired)`). hbbs 로그로는 `UNTIL` 그 초에 서비스가 같은 연결에서 앞 로그인의 출입증으로 다시 등록해 보다 `revoked`로 거절되었고, 4초 뒤 심장 박동이 마지막 동기화 출입증으로 받은 등록을 `expired`로 닫았습니다. 거절된 재등록은 받아 둔 등록을 바꾸지 않으므로(서버 패치 0006: 연결의 출입증은 받아들인 등록만 바꿈) 이 순서에서도 `expired` 닫힘이 남습니다. 이 단계는 3분쯤(RP7 92초), strict 전체는 705초, 그 prepush 전체(hjv-api 시험 496개 84초, 바뀌지 않은 클라이언트 빌드 34초, e2e 725초)는 844초였습니다.
 
 **`scripts/ci.sh`가 하는 것**
 - 감지: 따로 없습니다. 이 단계는 출입 제한 단계(`HJV_E2E_ACCESS=1`) 안에서 돌고, 클라이언트에 0161의 `--hjv-e2e-delete-account`가 없으면 DEL1–DEL3과 함께 `skipped:`를 남깁니다(push 전 검사에서 실패).
