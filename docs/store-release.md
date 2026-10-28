@@ -100,7 +100,7 @@ appstore 1.9.1 <빌드> release - <소스 커밋 40자리> 2026-11-02 store #15
 | 3 | 같은 실행의 APK로 확인(APK 설치본 기기) | `store.yml ios status`로 처리를 본 뒤 TestFlight에서 확인 | 소유자 |
 | 4 | 태그 `client-<버전>`, 산출물을 `build/release-<버전>/`에(스토어 정책을 낼 때까지 지우지 않음) | 같음 | 에이전트 |
 | 5 | 패키지 정책(Windows·APK, 빌드 뒤 7일 안) | ios는 그대로(`--hold ios`). 스토어 항목(android_play, ios)은 늘 스토어 정책(9번)에서 올리고, App Store 제출 중에는 반드시 그대로 | 에이전트 초안, 소유자 서명 |
-| 6 | 전제: 서버에 이 버전의 hjv-api(1.9.1: 계정 삭제)가 돌고 있음([server-runbook.md](server-runbook.md) 9-10). "내보내도 됨" → `store.yml android upload run_id=<1의 실행 ID>` | 같은 전제. "내보내도 됨" → `store.yml ios submit`(첫 App Store 버전은 아래) | 소유자 승인, 에이전트 실행 |
+| 6 | 전제: 서버에 이 버전의 hjv-api가 돌고 있음(1.9.1: 계정 삭제, [server-runbook.md](server-runbook.md) 9-10. 1.9.2: 데모 PC, 9-11 확인의 `lifetimes:` 줄). "내보내도 됨" → `store.yml android upload run_id=<1의 실행 ID>` | 같은 전제. "내보내도 됨" → `store.yml ios submit`(첫 App Store 버전은 아래) | 소유자 승인, 에이전트 실행 |
 | 7 | Google 심사(몇 시간–7일) | App Review | — |
 | 8 | `store.yml android status` → `PUBLISHED` | 수동 출시면 `store.yml ios release`. after-approval이면 status가 `READY_FOR_DISTRIBUTION`을 보인 뒤 `store.yml ios release`를 한 번(이미 출시됨으로 성공하고 기록 줄을 남김) | 에이전트 |
 | 9 | 스토어 정책: `--play-live <versionCode>`. 첫 android_play 항목은 `--min android_play=<android의 min>`으로 | 스토어 정책: `--appstore-live <버전>` | 에이전트 초안, 소유자 서명 |
