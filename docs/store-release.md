@@ -117,12 +117,12 @@ appstore 1.9.1 <빌드> release - <소스 커밋 40자리> 2026-11-02 store #15
 
 배포 방법은 **등록되지 않은 앱(Unlisted)**이고, 첫 버전은 **수동 출시**입니다(소유자 결정). App Store에 나온 버전이 아직 없는 동안에는 거절 뒤에 다시 내는 제출도 이 절을 따릅니다.
 
-**낼 판은 소유자가 정합니다.** 2026-10-26의 결정은 1.9.1이었고([distribution.md](distribution.md)), 지침 3.2 거절에 보낼 답장의 초안(개발 PC의 `build/appstore-listing/submit/reply-3.2-2026-10-28.md`)은 아래 1번의 조건이 갖춰진 때 TestFlight에서 처리를 마친 가장 높은 판을 권합니다(그때 1.9.2가 있으면 1.9.2). 스토어 실행은 `store.yml`이 고정한 커밋의 글을 보내고, 그 글의 `version.txt`가 입력 `version`과 다르면 Checks가 멈춥니다. main의 글은 413641d(`client: 1.9.2`)부터 1.9.2의 것입니다. 정하기 전에 1.9.2를 push하면 `store.yml`은 아래 1.9.1의 커밋(ac6aaf3)에 둡니다. 1.9.2의 스토어 실행은 태그 `client-1.9.2` 뒤에야 되므로 잃는 것이 없고, 1.9.1의 길도 열려 있습니다.
+**낼 판은 소유자가 정합니다.** 2026-10-28의 결정은 1.9.2(빌드 263010510)이고, 스토어 실행 없이 App Store Connect에서 손으로 다시 냅니다(App Review 통과 계획, 개발 PC의 `build/appstore-listing/submit/PASS-PLAN-1.9.2.md`. 메모는 [store/README.md](../store/README.md)의 "심사 메모"). 아래는 그 전의 기록입니다. 2026-10-26의 결정은 1.9.1이었고([distribution.md](distribution.md)), 지침 3.2 거절에 보낼 답장의 초안(개발 PC의 `build/appstore-listing/submit/reply-3.2-2026-10-28.md`)은 아래 1번의 조건이 갖춰진 때 TestFlight에서 처리를 마친 가장 높은 판을 권합니다(그때 1.9.2가 있으면 1.9.2). 스토어 실행은 `store.yml`이 고정한 커밋의 글을 보내고, 그 글의 `version.txt`가 입력 `version`과 다르면 Checks가 멈춥니다. main의 글은 413641d(`client: 1.9.2`)부터 1.9.2의 것입니다. 정하기 전에 1.9.2를 push하면 `store.yml`은 아래 1.9.1의 커밋(ac6aaf3)에 둡니다. 1.9.2의 스토어 실행은 태그 `client-1.9.2` 뒤에야 되므로 잃는 것이 없고, 1.9.1의 길도 열려 있습니다.
 
 - **1.9.2 이상으로 낼 때**: "릴리스마다" 0번대로 `store.yml`을 그 판의 커밋으로 옮깁니다. Play에 1.9.1을 올리지 않고 그 판을 올리면 Alpha의 테스터는 1.9.0에서 바로 오므로, `store/play/ko-KR/release_notes.txt`에 1.9.1의 변경(앱 안 계정 삭제 등)도 씁니다(덧붙는 두 줄까지 500자 안).
 - **1.9.1로 낼 때**: `store.yml`을 ac6aaf3에 고정합니다. 1.9.1의 글과 고친 심사 메모가 있는 마지막 커밋입니다. 1.9.2를 push할 때 `build.yml`은 1.9.2의 커밋으로, `store.yml`은 ac6aaf3으로 옮기고, `store.yml`은 1.9.1의 prepare·submit(과 1.9.1의 Play upload)이 끝날 때까지 그대로 둡니다. 그동안 1.9.2의 Play upload는 Checks가 멈춥니다(release는 글을 보내지 않으므로 어느 커밋에서도 돕니다). main에서는 1.9.1의 글을 더 고칠 수 없습니다. main의 글은 앱 버전의 것이어야 하고(`scripts/test_check_store_text.py`), 고정 SHA는 main의 조상이어야 하기 때문입니다(G2). 그래서 메모에 ac6aaf3에 없는 문장이 필요하면 1.9.1은 스토어 실행으로 낼 수 없습니다. 1번이 요구하는 학교의 허락서(B4)를 첨부할 때의 문장과 Unlisted 승인 뒤의 문장([store/README.md](../store/README.md)의 조건부 문장)이 그렇습니다. 그때는 1.9.2 이상으로 내거나(prepare가 편집할 수 있는 버전의 번호와 빌드를 바꾸고 submit이 열린 제출을 다시 냄. "실패와 대처"의 바이너리 거절과 같음), 소유자가 정하면 콘솔에서 손으로 냅니다(출시 기록에 submit 줄을 손으로 더함).
 
-1. 막는 것 B1–B10(제출 분석 `build/appstore-listing/submit/SUBMIT-1.9.0.md` 0-3, 1.9.1 기준)을 점검합니다. 데모 Windows PC(B3), 학교의 서면 허락(B4), 낼 판의 화면의 스크린샷(B5), 처리방침(B7), 계정 종류마다의 심사 계정(B10)이 남아 있으면 제출하지 않습니다. 학교의 서면 허락(B4)은 2026-10-28에 갖췄습니다. 그 허락을 내주는 자리인 프로젝트TF 팀장으로서 소유자가 학교의 이름(앱 이름 `HJViewer: 연세행정 PC 원격 제어` 포함)과 SSO 로그인을 쓰도록 서면으로 허락했고, 그 허락서는 제출에 첨부합니다(앱 심사 정보의 첨부 파일과 심사에 보내는 답장). 메모에는 [store/README.md](../store/README.md)의 허락서 문장을 넣습니다. 서버에 1.9.1의 hjv-api(앱 안 계정 삭제)가 돌고 있어야 합니다([server-runbook.md](server-runbook.md) 9-10의 확인 curl이 401). 심사자가 데모 계정을 지워 봅니다.
+1. 막는 것 B1–B10(제출 분석 `build/appstore-listing/submit/SUBMIT-1.9.0.md` 0-3, 1.9.1 기준)을 점검합니다. 데모 Windows PC(B3), 학교의 서면 허락(B4), 낼 판의 화면의 스크린샷(B5), 처리방침(B7), 계정 종류마다의 심사 계정(B10)이 남아 있으면 제출하지 않습니다. 학교의 서면 허락(B4)은 그 허락을 내주는 자리인 프로젝트TF 팀장으로서 소유자가 2026-10-28에 낸 허락서입니다. 학교의 이름(앱 이름 `HJViewer: 연세행정 PC 원격 제어` 포함)과 SSO 로그인을 쓰도록 허락하고, 소유자가 서명한 그 허락서(PDF)를 제출에 첨부하면(앱 심사 정보의 첨부 파일과 심사에 보내는 답장) B4를 갖춥니다. 메모에는 [store/README.md](../store/README.md)의 허락서 문장을 넣습니다. 서버에 1.9.1의 hjv-api(앱 안 계정 삭제)가 돌고 있어야 합니다([server-runbook.md](server-runbook.md) 9-10의 확인 curl이 401). 심사자가 데모 계정을 지워 봅니다.
 2. `prepare`(release_type=manual). 데모 PC 값(`REVIEW_DEMO_PC_*`)을 포함한 `REVIEW_*` 여덟 개가 모두 있어야 돕니다. 그 전(B3 전)에는 `dry_run=true`만 됩니다. 그다음 소유자가 App Store Connect에서 모든 칸, App Privacy, 스크린샷, 연령 등급을 봅니다. **글은 콘솔에서 고치지 않습니다.** 고칠 것이 있으면 `store/`를 고쳐 커밋하고, `store.yml`의 고정 SHA를 그 커밋으로 바꾼 뒤 prepare를 다시 돌립니다(`dry_run=true`가 콘솔과 다른 칸을 보여 줍니다). 글만 고친 커밋이면 `store.yml`의 SHA만 옮깁니다(`build.yml`보다 앞서도 됨).
 3. 심사 첨부 영상(SUBMIT 7-6)을 손으로 올립니다.
 4. `submit`. 심사 메모에 Apple이 요구하는 문장 "This app is intended for unlisted distribution."이 있어야 합니다(글 검사가 봅니다).
@@ -181,7 +181,7 @@ App Store Connect 오류는 Apple의 코드와 설명을 출력합니다(비밀�
 | # | 할 일 |
 |---|---|
 | A1 | 비즈니스: 최신 계약, DSA(거래자 아님), 대한민국 규정 준수 정보 |
-| A2 | 앱 정보: 카테고리, 콘텐츠 권한(학교의 서면 허락 B4는 2026-10-28에 갖춤), 연령 등급 |
+| A2 | 앱 정보: 카테고리, 콘텐츠 권한(학교의 서면 허락 B4: 소유자가 2026-10-28에 낸 허락서. 서명한 PDF를 첨부하면 갖춤), 연령 등급 |
 | A3 | 가격 무료, 판매 지역 대한민국만, Mac·Vision Pro 끔. 배포 방법은 **공개**로 둡니다. **비공개는 고르지 않습니다**(비공개 = 맞춤형 앱, 승인 뒤 되돌릴 수 없음). 등록되지 않은 앱(Unlisted)은 콘솔에서 고르는 값이 아니라, 제출 뒤 요청이 승인되면 Apple이 바꿉니다(위 "첫 App Store 버전만" 5–6단계) |
 | A4 | App Privacy 답과 게시(API 없음) |
 | A5 | 첫 App Store 버전으로 낼 판의 화면의 스크린샷(위 "첫 App Store 버전만" 1번의 B5) |
