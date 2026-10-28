@@ -15,7 +15,7 @@ scripts/ci.sh server     # 서버 테스트만: 네 부분(hbbs, api, relay, rel
 scripts/ci.sh server:api # 서버 단계의 일부 부분만 (server:<부분>[,<부분>]. prepush에도 단계로 줄 수 있음)
 scripts/ci.sh deploy     # 배포 시험만 (server를 먼저 돌려 이 트리의 hbbs·hbbr·hjv-api가 있어야 함. hjv-probe·hjv-load는 이 단계가 빌드)
 scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, 스토어 실행(글 검사, 출시 기록, App Store Connect, 워크플로 규칙), 공개키 확인, actionlint, 릴리스 기록, hbb_common WebSocket, Rust 1.75 check, 공유 벡터, 순수 Dart (hjv-release 릴리스 빌드가 이 트리의 것이 아니면 스스로 빌드)
-scripts/ci.sh e2e        # 방화벽 E2E (docs/e2e.md): sudo, 클라이언트 빌드 포함. server를 먼저 돌려야 함
+scripts/ci.sh e2e        # 방화벽 E2E (docs/e2e.md): sudo, 클라이언트와 시험 정책에 서명할 tools/hjv-release 빌드 포함. server를 먼저 돌려야 함
 scripts/ci.sh e2e:build  # e2e 단계의 빌드만: E2E 클라이언트와 그 단위 시험, hjv-api와 가짜 SSO, Caddy, libfaketime (포트·sudo 없이)
 scripts/ci.sh wol        # 원격 켜기 E2E (docs/e2e.md): sudo 없이, 클라이언트 빌드 포함. server를 먼저 돌려야 함
 scripts/ci.sh drill:full # 운영 연습 (docs/hjv-api-drill.md). drill:quick은 빠른 연습, drill:build는 그 빌드만
@@ -84,7 +84,7 @@ e2e·wol 단계가 시험 스크립트에 넘기는 값은 `HJV_E2E_WORK`, `CADD
   2. 잠금을 잡고(위 "한 번에 한 실행"), 포트를 보고, 단위마다 돌릴지 다시 쓸지 정합니다(아래 "통과 재사용"). 그 계획은 단위마다 한 줄로 찍히고 `summary.txt`에도 남습니다.
   3. server: 돌릴 부분을 나란히.
   4. deploy와 그 옆에서 client(자기 프로세스로: 그 단계의 끝 trap이 그래야 돕니다), e2e:build, `--drill`이면 운영 연습의 빌드(`drill:build`). 옆의 셋은 낮은 우선순위(`nice -n 10`, `ionice -c 2 -n 7`)로 돕니다. deploy의 heartbeat 확인은 여유가 2초쯤이라 CPU를 deploy에 먼저 줍니다. 서로 겹치는 것이 없습니다. deploy는 `build/ci/src`, nginx·Apache, compose 프로젝트 `hjv-ci`, 포트 21115–21119·18080–18082·18443–18448·18599를 쓰고, e2e:build는 `build/ci/upstream-e2e`, `target-e2e*`, `target-api-e2e`, `build/ci/e2e`를, client는 `build/ci/upstream`, `target-client`, `target-175`, `target-hjv-release`를, 운영 연습의 빌드는 `target-drill`을 씁니다. `target-hjv-release`에 빌드하는 것은 이때 client뿐입니다(e2e 단계의 hjv-release 빌드는 다음 차례).
-  5. e2e(e2e:build의 클라이언트와 단위 시험 결과를 씀), 그 옆에서 `--drill`의 연습(`drill:full`이나 `drill:quick`). 연습은 Docker의 기본 브리지에 포트 없이 컨테이너를 띄우고 호스트에 iptables 규칙을 두지 않으며, e2e의 방화벽 규칙은 그 veth 인터페이스에 묶여 있습니다.
+  5. e2e(e2e:build의 클라이언트와 단위 시험 결과를 쓰고, 시험 정책에 서명할 hjv-release를 `target-hjv-release`에 빌드함), 그 옆에서 `--drill`의 연습(`drill:full`이나 `drill:quick`). 연습은 Docker의 기본 브리지에 포트 없이 컨테이너를 띄우고 호스트에 iptables 규칙을 두지 않으며, e2e의 방화벽 규칙은 그 veth 인터페이스에 묶여 있습니다.
   6. wol(연습이 끝나는 동안 그 옆에서). 연습이 e2e 옆에서 이미 끝났으면 그 결과를 먼저 보고, 통과하지 못했으면 wol을 시작하지 않습니다.
   단위가 실패하면 아직 시작하지 않은 것은 돌리지 않습니다. 옆에서 돌던 것은 끝까지 두고(deploy 옆의 일은 1–2분이고, deploy는 systemd 유닛과 컨테이너를 정리해야 함) 그 출력과 통과 기록을 남깁니다. 연습만은 e2e나 wol이 실패하면 멈춥니다(끝 trap이 컨테이너를 지움). prepush가 일찍 멈추면(자기 실패, 신호) 아직 도는 일을 멈추고, 그 일의 프로세스가 모두 끝난 뒤에야 끝납니다. 출력을 받던 곳이 사라져도 그렇습니다(`scripts/ci.sh prepush | tee <파일>`의 tee도 끝낸 Ctrl-C, 닫힌 터미널). 그때 멈춤의 알림은 `summary.txt`에만 남습니다. 끝 trap(deploy의 systemd 유닛과 컨테이너, E2E의 네임스페이스, 연습의 컨테이너 정리)이 끝나기 전에 잠금이 풀리지 않게 하기 위해서입니다. Ctrl-C는 그 일들에도 닿아 이미 정리를 시작하게 하므로, 신호를 한 번 더 보내 정리를 끊지 않고 2분까지 스스로 끝나기를 기다린 뒤에 남은 것만 멈춥니다. 아직 단계를 띄우기 전(로그 머리를 쓰는 중)이던 일은 그 단계를 띄우지 않습니다(로그에 `prepush stopped before scripts/ci.sh <단계> started`. 프로세스 그룹 전체에 온 TERM·HUP은 로그 머리의 프로세스도 끝내므로, 그때 로그는 그 줄 없이 `EXIT 143`·`EXIT 129`로 끝남). 그 뒤에 뜬 단계에는 Ctrl-C가 닿지 않았으므로 스스로 끝나지 않기 때문입니다. 실패한 단위는 그 로그의 끝 25줄을 찍습니다. 단위가 실패하거나, 마지막 줄이 `CI passed: <단위> (0 skipped)`가 아니거나, `skipped:` 줄이 있거나, 그 사이에 HEAD나 작업 트리가 바뀌면 실패합니다. 통과는 prepush가 시작한 커밋(leak이 돌면 leak이 검사한 커밋)의 것입니다. 잠금을 잡기 전에(preflight, 잠금을 기다리는 동안) HEAD가 바뀌면 잠금을 잡은 뒤 바로 실패하고(`HEAD moved from …`), 단위를 모두 다시 써서 단위가 하나도 돌지 않은 실행도 끝에서 HEAD와 작업 트리를 한 번 더 봅니다. 모두 통과하면 마지막 줄은 `== CI passed: prepush (0 skipped, <n> reused)`, `summary.txt`의 끝은 `prepush: passed, <초> s, <n> of <m> units reused (…)`입니다. `HJV_E2E_PARTS`가 있으면 시작할 때 거절합니다. 캐시가 없는 첫 실행은 한 시간을 넘길 수 있습니다.
 - **로그**: 단계마다 `build/ci/prepush/<시각>-<커밋>/<단계>.log` 하나입니다(`HJV_CI_LOGS`로 폴더를 바꿈). 머리에는 이 저장소, `upstream/rustdesk`(클라이언트 시리즈), `upstream/rustdesk-server`(hbbs)의 HEAD와 트리, 각각의 `git status --porcelain` 줄 수(`upstream/rustdesk`는 덮어쓰기 파일 55개와 하위 모듈 포인터 때문에 보통 56), 툴체인, 시작 시각이 있고, 끝 줄은 `EXIT <종료 코드> <시각>`입니다. prepush 밖에서 단계를 따로 돌린 실행도 같은 머리로 시작합니다(첫 줄이 `LOG scripts/ci.sh <단계> (on its own, …)`. `server:<부분>`도 그렇고, server 단계가 나란히 돌리는 부분은 그 단계의 머리를 씀). 그 실행은 `CI passed: …`나 `FAIL: …` 줄로 끝나고(통과하지 못한 실행은 그 뒤에 지운 통과 기록의 줄, 아래 "통과 재사용"의 "기록") `EXIT` 줄은 없습니다. 다시 쓴 단위의 로그는 prepush의 머리(첫 줄 `LOG scripts/ci.sh <단위> (prepush, reused, …)`), 다시 쓴 통과를 적은 `REUSED` 줄(그 통과의 커밋과 시각, 그 로그의 경로, 그 트리, 입력의 해시와 그 기록의 경로), 마지막 줄 `== CI reused: <단위> (…)`, `EXIT 0`입니다. server 단계의 일부 부분만 다시 쓰면 돌린 부분의 로그(`server.log`) 머리 아래에 다시 쓴 부분의 `REUSED` 줄이 붙습니다. 단위마다 계획에 쓴 입력 목록은 `inputs/<단위>.txt`, e2e:build와 운영 연습의 로그는 `e2e-build.log`, `drill-build.log`, `drill.log`입니다. 같은 폴더의 `summary.txt`에는 prepush가 단계마다 찍는 줄(종료 코드, 걸린 초, `skipped:` 줄 수, 로그)과, 모두 통과하면 끝에 `prepush: passed, <초> s`가 남고, `times.tsv`에는 각 단계의 일별 시간(`<단계>`, `<초>`, `<일>`을 탭으로 나눈 줄)이 쌓입니다. `HJV_CI_LOGS`로 같은 폴더를 다시 쓰면 둘 다 새로 시작합니다. 여러 실행의 시간은 `scripts/ci-times.sh [<폴더>...]`가 더합니다. 단계(와 e2e-build처럼 옆에서 도는 일)마다 로그 수, 종료 코드가 0인 수, 그 가운데 다시 쓴 수, 걸린 시간의 합(각 로그의 `START`와 `EXIT` 줄), 통과한 실행이 처음부터 끝까지 걸린 시간의 합(`summary.txt`. 단위가 나란히 돌므로 단계 시간의 합보다 짧음)과, 합이 가장 큰 일 20개(`times.tsv`)입니다. 폴더를 주지 않으면 CI 폴더의 prepush 폴더 모두이고, `scripts/ci-times.sh build/ci/prepush/20261026-*`는 그날의 실행입니다. deploy 단계의 곁 로그(이미지 빌드의 `build.log`, 서버 묶음의 `package.log`, `container.log`, `api-settings.log`, `relay-package.log`, 오프라인 시험의 `deploy-offline.log`) 가운데 그 실행이 쓴 것은 `deploy-<이름>`으로 함께 남습니다(`deploy-offline.log`는 그 이름 그대로). 다음 실행이 `build/ci`의 원본을 덮어쓰기 때문입니다. server, client, e2e 단계는 패치를 적용한 트리의 해시도 찍으므로 시리즈의 트리와 맞춰 볼 수 있습니다. 커밋 하나에 대한 로그는 그 뒤 그 단계가 읽는 파일을 바꾼 커밋이 생기면 아무것도 증명하지 않습니다.
@@ -235,15 +235,15 @@ macOS와 Linux 앱은 빌드하지 않습니다.
 | Checks | ubuntu-24.04 | 입력(`platforms`, `testflight`와 `testflight_run`, 늘 거부하는 `play`, `check_only`와의 조합)·서버 변수·고정 공개키를 확인하고 소스 커밋을 고정합니다. 실행이 무엇을 하는지(플랫폼마다 빌드하는지, TestFlight 업로드인지) 정하고, 다른 잡은 모두 이 값을 읽습니다. | 없음 |
 | Bridge codegen | ubuntu-22.04 | 앱을 빌드하는 실행에서만 돕니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 flutter_rust_bridge 코드를 생성합니다. 같은 소스 커밋과 생성 도구의 결과가 캐시에 있으면(아래 "캐시") 생성 단계를 건너뛰고 그 파일을 올립니다. | 앱 빌드의 내부용 `bridge-artifact` (다른 아티팩트처럼 7일, 확인 빌드는 1일 보관. 아래 "릴리스 기록") |
 | Dart tests | ubuntu-24.04 | 생성된 bridge로 `flutter/test`의 Dart 테스트를 모두 돌립니다. 앱 패치가 더하거나 고친 테스트(제스처, iPhone 한글 입력, 화질 표시)가 하나라도 없으면 실패합니다. 어느 플랫폼 잡도 이 잡을 기다리지 않습니다. 이 잡이 실패하면 실행이 실패하므로, 그 실행의 IPA는 TestFlight에 가지 않고 패키지는 정책에 들어가지 않습니다. | 없음 |
-| Windows x64 | windows-2022 | Checks 잡 다음에 Bridge codegen과 함께 시작하고, cargo 바로 앞에서 그 실행의 `bridge-artifact`를 기다립니다("Wait for the bridge files", Bridge codegen이 실패하면 그 자리에서 실패). vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
-| Android arm64 | ubuntu-24.04 | Windows처럼 Bridge codegen과 함께 시작하고 cargo 바로 앞에서 bridge 파일을 기다립니다. 첫 단계(서드파티 빌드 코드보다 먼저): 이 저장소의 출시 기록 `store-releases.txt`에 이 버전의 Google Play 줄이 없는지(`scripts/store-record.py check-build`, 실행의 토큰으로 읽기만, 확인 빌드는 건너뜀) → vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명. 비공개 저장소의 서명 빌드는 이어서 `flutter build appbundle`로 AAB를 만들어 업로드 키로 서명하고 검사합니다(아래 "Google Play 업로드"). | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned`. 비공개 서명 빌드는 `…-android-aarch64-play`(AAB)도 |
+| Windows x64 | windows-2022 | Checks 잡 다음에 Bridge codegen과 함께 시작하고, 크레이트를 미리 받은 뒤(`cargo fetch`) cargo가 빌드하기 바로 앞에서 그 실행의 `bridge-artifact`를 기다립니다("Wait for the bridge files", Bridge codegen이 실패하면 그 자리에서 실패). vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
+| Android arm64 | ubuntu-24.04 | Windows처럼 Bridge codegen과 함께 시작하고 cargo가 빌드하기 바로 앞에서 bridge 파일을 기다립니다. 첫 단계(서드파티 빌드 코드보다 먼저): 이 저장소의 출시 기록 `store-releases.txt`에 이 버전의 Google Play 줄이 없는지(`scripts/store-record.py check-build`, 실행의 토큰으로 읽기만, 확인 빌드는 건너뜀) → vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 build-tools의 zipalign·apksigner로 릴리스 서명(아래 "서명 시크릿"의 Android). 비공개 저장소의 서명 빌드는 이어서 `flutter build appbundle`로 AAB를 만들어 업로드 키로 서명하고 검사합니다(아래 "Google Play 업로드"). | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned`. 비공개 서명 빌드는 `…-android-aarch64-play`(AAB)도 |
 | iOS | macos-26 (Xcode 26.6) | Bridge codegen이 끝난 뒤 시작합니다(기다리는 macOS 러너는 Linux 러너의 10배 값). 첫 단계: 출시 기록에 이 버전의 App Store 줄이 없는지 → vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA. TestFlight에는 올리지 않습니다(아래 TestFlight upload). | `…-ios` 또는 `…-ios-unsigned` |
-| TestFlight upload | macos-26 | `testflight`와 `testflight_run`을 준 실행에서만 돕니다. 그 실행은 아무것도 빌드하지 않습니다. 위 "실행"의 TestFlight 업로드: 출시 기록, 빌드 실행의 출처, App Store Connect의 같은 버전을 본 뒤 그 빌드 실행의 IPA를 받아 확인하고 App Store Connect에 올립니다. 서명 키는 받지 않습니다. | 없음 (App Store Connect) |
+| TestFlight upload | macos-26 | `testflight`와 `testflight_run`을 준 실행에서만 돕니다. 그 실행은 아무것도 빌드하지 않습니다. 위 "실행"의 TestFlight 업로드: 출시 기록, 빌드 실행의 출처, App Store Connect의 같은 버전을 본 뒤 iOS 잡과 같은 Xcode를 고르고, 그 빌드 실행의 IPA를 받아 확인해 그 Xcode의 altool로 App Store Connect에 올립니다. 서명 키는 받지 않습니다. | 없음 (App Store Connect) |
 | hjv-relay | ubuntu-24.04 | 명령 공개키 확인 → musl-tools와 Rust(`RELAY_RUST_VERSION`, 개발 PC와 같은 판) → `scripts/package-relay.sh`로 정적 빌드와 묶음. 비공개 저장소의 출시 빌드만 서버 값(`HJV_SERVER`, `HJV_COMMAND_PUBKEY`)을 넣고, 나머지는 서버 값 없는 시험 빌드(`-test`, `run`을 거부)입니다. 실행 요약에 묶음의 SHA-256과 명령 키 지문이 나옵니다. | `hjviewer-relay-<판>-linux-x86_64[-test]` (`tar.gz`와 `SHA256SUMS`) |
 | hjv-relay draft release | ubuntu-24.04 | 비공개 저장소의 출시 빌드(`check_only` 아님)에서만 돕니다. hjv-relay 묶음을 그 저장소의 **초안** Release `relay-<판>`에 올립니다. 같은 이름의 Release가 이미 있으면 건드리지 않고 알림만 남깁니다. 저장소에 쓰는 유일한 잡이고, 서드파티 빌드 코드를 돌리지 않습니다. | 없음 (초안 Release) |
 | Run summary | ubuntu-24.04 | 모든 실행의 마지막 잡입니다. 잡과 단계마다 걸린 시간(실행의 잡 API), 러너 이미지, Rust 캐시 적중, vcpkg가 캐시에서 받은 패키지 수, Bridge 캐시, Android 잡이 남긴 디스크를 실행 요약에 적습니다(`scripts/run-summary.py`). 실패해도 실행을 실패시키지 않습니다(`continue-on-error`, 정책 도구는 성공한 실행만 받음). | 없음 |
 
-앱을 포함한 실행에서는 Checks 잡이 끝나면 Bridge codegen과 선택한 Windows, Android, hjv-relay 잡이 함께 시작하고, Dart tests와 iOS 잡은 Bridge codegen이 끝난 뒤에 시작합니다. Windows·Android 잡은 bridge 파일이 필요한 cargo 바로 앞에서 기다립니다(Windows는 그 전에 약 6분, Android는 약 5분 동안 준비함). hjv-relay draft release 잡은 hjv-relay 잡이 성공한 뒤에 시작합니다. `relay`만 선택하면 Checks 뒤 hjv-relay로 바로 진행하며, Bridge codegen·Dart tests는 돌지 않습니다. TestFlight 업로드 실행은 Checks 뒤 TestFlight upload 잡만 돕니다. Run summary 잡은 다른 잡이 모두 끝난 뒤에 돕니다. 끝난 실행은 개발 PC에서 `gh api --paginate repos/<저장소>/actions/runs/<ID>/jobs --jq '.jobs[]' > jobs.json`과 `python3 -I scripts/run-summary.py jobs.json`으로 같은 표를 봅니다(캐시 칸 없이).
+앱을 포함한 실행에서는 Checks 잡이 끝나면 Bridge codegen과 선택한 Windows, Android, hjv-relay 잡이 함께 시작하고, Dart tests와 iOS 잡은 Bridge codegen이 끝난 뒤에 시작합니다. Windows·Android 잡은 bridge 파일이 필요한 cargo 빌드 바로 앞에서 기다립니다. 2026-10-27 확인 빌드에서는 Windows가 잡을 시작한 지 4.6분, Android가 3.9분 뒤에 기다리기 시작했습니다. 1.9.2부터는 둘 다 그 전에 크레이트를 받고(`cargo fetch`), Android는 Rust 툴체인과 Rust 캐시도 그 전에 받습니다. hjv-relay draft release 잡은 hjv-relay 잡이 성공한 뒤에 시작합니다. `relay`만 선택하면 Checks 뒤 hjv-relay로 바로 진행하며, Bridge codegen·Dart tests는 돌지 않습니다. TestFlight 업로드 실행은 Checks 뒤 TestFlight upload 잡만 돕니다. Run summary 잡은 다른 잡이 모두 끝난 뒤에 돕니다. 끝난 실행은 개발 PC에서 `gh api --paginate repos/<저장소>/actions/runs/<ID>/jobs --jq '.jobs[]' > jobs.json`과 `python3 -I scripts/run-summary.py jobs.json`으로 같은 표를 봅니다(캐시 칸 없이).
 
 호출 워크플로의 `platforms` 값도 `windows`, `android`, `ios`, `relay`, `all` 중 하나여야 합니다. `testflight=true`는 `platforms=ios`와 `testflight_run`(빌드 실행 ID)이 함께일 때만, `testflight_run`은 `testflight=true`와 함께일 때만 받고, `play=true`는 늘 거부합니다(스토어 실행의 upload를 씀). 맞지 않는 조합은 Checks 잡에서 실패합니다.
 
@@ -252,11 +252,12 @@ Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하�
 ### upstream과 다른 점
 
 - **vcpkg 캐시**: upstream은 `VCPKG_BINARY_SOURCES=clear;x-gha,readwrite`를 씁니다. 그런데 vcpkg가 2025년에 x-gha 제공자를 없앴고 지금은 경고만 출력하므로, upstream은 매번 ffmpeg 등 모든 포트를 새로 빌드합니다. 이 워크플로는 vcpkg의 `files` 제공자와 `actions/cache`로 빌드된 포트를 저장하고, 그 실행에서 설치한 패키지만 남깁니다. `lukka/run-vcpkg`의 자체 캐시는 끕니다. 키와 그 밖의 캐시는 아래 "캐시"에 있습니다.
-- **Rust 캐시와 Flutter 캐시**: upstream의 `Swatinem/rust-cache`를 그대로 쓰되, Rust를 빌드하는 잡은 rustup에 잡만의 폴더를 줍니다. Bridge codegen 잡의 Flutter 캐시(`cache: true`)는 뺐습니다(아래 "캐시").
-- **잡의 순서**: upstream은 모든 플랫폼 잡이 bridge 잡을 기다립니다. 여기서는 확인만 하는 Checks 잡이 먼저 돌고, Windows·Android 잡은 bridge 잡과 함께 시작해 cargo 바로 앞에서 bridge 파일을 기다립니다(위 "잡 구성").
+- **Rust 캐시와 Flutter 캐시**: upstream의 `Swatinem/rust-cache`를 그대로 쓰되, Rust를 빌드하는 잡은 rustup에 잡만의 폴더를 줍니다. Android·iOS 잡은 Rust 캐시를 vcpkg 캐시보다 먼저 받고, Windows·Android 잡은 bridge 파일을 기다리기 전에 `cargo fetch --locked --target <타깃>`으로 크레이트를 받아 둡니다. Bridge codegen 잡의 Flutter 캐시(`cache: true`)는 뺐습니다(아래 "캐시").
+- **잡의 순서**: upstream은 모든 플랫폼 잡이 bridge 잡을 기다립니다. 여기서는 확인만 하는 Checks 잡이 먼저 돌고, Windows·Android 잡은 bridge 잡과 함께 시작해 cargo가 빌드하기 바로 앞에서 bridge 파일을 기다립니다(위 "잡 구성").
 - **flutter doctor**: Windows 잡의 엔진 교체 단계에서 upstream의 `flutter doctor -v`(아무도 보지 않는 진단)를 뺐습니다.
-- **서명**: upstream의 비공개 서명 서비스 대신 아래 시크릿으로 선택적으로 서명합니다. Windows는 서명하지 않습니다.
-- **Xcode 고정**: upstream은 `macos-latest`의 기본 Xcode를 씁니다. 이 워크플로는 `macos-26`에서 Xcode 26.6(`XCODE_VERSION`)을 고르고, 26.x가 아니면 실패합니다. App Store Connect는 Xcode 26 이상으로 만든 빌드만 받습니다. 반면 Xcode 27(iOS 27 SDK)로 만들면 UIScene 수명 주기가 없는 Flutter 3.24.5 앱이 실행되지 않습니다.
+- **서명**: upstream의 비공개 서명 서비스 대신 아래 시크릿으로 선택적으로 서명합니다. Android APK는 upstream이 쓰는 `r0adkll/sign-android-release` 대신, 그 액션이 부르던 zipalign·apksigner를 같은 build-tools와 같은 옵션으로 직접 부릅니다(아래 "서명 시크릿"의 Android). Windows는 서명하지 않습니다.
+- **Xcode 고정**: upstream은 `macos-latest`의 기본 Xcode를 씁니다. 이 워크플로는 `macos-26`에서 Xcode 26.6(`XCODE_VERSION`)을 고르고, 26.x가 아니면 실패합니다. App Store Connect는 Xcode 26 이상으로 만든 빌드만 받습니다. 반면 Xcode 27(iOS 27 SDK)로 만들면 UIScene 수명 주기가 없는 Flutter 3.24.5 앱이 실행되지 않습니다. TestFlight upload 잡도 altool을 부르기 전에 같은 Xcode를 고릅니다.
+- **액션 판**: JavaScript 액션은 모두 node24를 선언한 판의 40자리 SHA로 고정합니다(`actions/checkout` v7.0.1, `actions/cache` v6.1.0, `microsoft/setup-msbuild` v3.0.0 등. `server.yml`의 checkout도). GitHub는 2026-09-23에 러너에서 Node 20을 뺐고, 그보다 낮은 판을 선언한 액션은 Node 24로 돌립니다. 그렇게 도는 것은 node24 판이 아직 없는 `KyleMayes/install-llvm-action`(v2.0.9, node20) 하나입니다. Windows 잡의 `subosito/flutter-action` v2.12.0 안에 있는 `actions/cache@v3`(node16)는 `cache: true`일 때만 도는데, 이 워크플로는 켜지 않습니다.
 - **제외한 것**:
   - macOS·Linux·웹·Sciter 빌드
   - Windows arm64, Android armv7/x86_64/universal APK
@@ -600,6 +601,13 @@ gh secret set ANDROID_KEYSTORE_PASSWORD -R yonsei-projecttf/hjviewer-private   #
 gh secret set ANDROID_KEY_ALIAS -R yonsei-projecttf/hjviewer-private --body hjviewer
 ```
 
+워크플로는 upstream이 쓰는 `r0adkll/sign-android-release`가 하던 일을 그 액션 없이 합니다("Sign app APK", 1.9.2부터). 그 액션(349ebde)은 node12였고, GitHub가 2022년에 막겠다고 알린 뒤 날짜 없이 미룬 `set-output` 명령으로 결과를 냈습니다. 그 명령이 막히면 그 액션을 쓰는 서명 단계와 Android 잡이 실패합니다.
+
+- **도구와 옵션은 그 액션과 같습니다.** 이미지의 가장 새 build-tools("Setup sign tool version variable")에서 `zipalign -c -v 4`로 APK가 정렬되어 있는지만 보고, 그 사본 `-aligned.apk`를 `apksigner sign`이 기본 서명 방식으로 `-signed.apk`에 서명한 뒤 `apksigner verify`로 확인합니다. 1.9.1의 APK는 v2·v3로 서명되었고 v1은 없습니다(minSdk 24라 apksigner가 넣지 않음. 2026-10-28 개발 PC에서 apksigner 36.0.0의 `verify --verbose`로 확인). v4 서명은 옆의 `.idsig` 파일에 들어가고, 그 파일은 올리지 않습니다.
+- **비밀 값**: 키스토어는 작업 폴더 밖(`$RUNNER_TEMP`)에 권한 600으로 풀고, 서명이 끝나면 바로 지웁니다. 단계가 실패하거나 실행을 취소해도 다음 단계 "Remove the APK keystore"가 지웁니다. 비밀번호는 `--ks-pass env:…`, `--key-pass env:…`로 환경 변수의 이름만 넘기므로 명령 줄에 나오지 않습니다. 그 액션은 키스토어를 `signed-apk/signingKey.jks`에 쓰고 비밀번호를 apksigner의 명령 줄로 넘겼습니다.
+- **로그**: 서명 방식 줄(`Verified using …`)과 서명 인증서의 SHA-256만 나오고, 인증서의 이름(DN)은 나오지 않습니다. 같은 키스토어로 서명하므로, 이 SHA-256은 같은 실행의 "Sign and check Play bundle"이 적는 업로드 인증서 SHA-256과 같아야 합니다.
+- **결과**: 서명한 APK는 그 액션이 만들던 이름과 위치(작업 폴더 기준 `upstream/rustdesk/signed-apk/<이름>-android-aarch64-signed.apk`)이고, 단계 출력 `signedReleaseFile`과 환경 변수 `SIGNED_RELEASE_FILE`로 넘깁니다. 릴리스 기록, APK 업로드, Play 번들 검사(APK와 versionCode 비교)가 이 값을 읽습니다. 폴더에 APK가 하나가 아니면 실패합니다. 오프라인 시험(`scripts/test_release_info.py`)이 두 도구를 흉내 낸 것으로 이 단계를 돌려 봅니다.
+
 - **키스토어 백업**: 키스토어를 잃어버리면 이미 설치된 앱을 업데이트할 수 없습니다. 비밀번호와 함께 안전한 곳에 백업하세요.
 - **Google Play 업로드 키**: Play에 올리는 AAB도 이 키스토어로 서명합니다. 그래서 첫 AAB를 올리면 이 키가 Play의 업로드 키가 됩니다. 업로드 키는 잃어도 Play Console에서 재설정을 요청할 수 있지만(아래 "오류와 대처"의 "다른 키로 서명"), 사이드로드한 APK를 업데이트하려면 이 키가 꼭 있어야 합니다.
 - **디버그 서명 APK**: 러너가 매번 새 디버그 키로 서명합니다. 그래서 이전 빌드 위에 덮어 설치할 수 없고, 앱을 지운 뒤 다시 설치해야 합니다.
@@ -621,8 +629,8 @@ Apple Developer Program(유료) 계정이 필요합니다. `.p12`와 프로파�
 준비 순서는 다음과 같습니다.
 
 1. **App ID**: Certificates, Identifiers & Profiles → Identifiers에서 explicit App ID를 만듭니다. 패치의 번들 ID는 `kr.ac.yonsei.hjviewer`입니다. 다른 ID를 써도 워크플로는 프로파일의 번들 ID를 따릅니다. 와일드카드 App ID는 쓸 수 없습니다.
-   - 앱의 entitlements는 Push Notifications와 Access Wi-Fi Information을 요청하므로 두 기능을 켜 두기를 권장합니다.
-   - 켜지 않아도 서명은 됩니다. 워크플로가 경고를 남기고 해당 항목을 entitlements에서 뺍니다. 앱 코드는 두 기능을 쓰지 않습니다.
+   - 기능(Capabilities)은 켜지 않습니다. 앱은 Push Notifications도 Access Wi-Fi Information도 쓰지 않습니다. 1.9.2부터는 클라이언트 패치가 upstream의 `Runner.entitlements`에서 두 항목을 빼므로, 빌드할 때 빠지는 것도 없습니다. 그 전의 빌드(1.9.1, 2026-10-27 확인 빌드)에서는 서명 단계가 경고를 남기고 두 항목을 뺐습니다.
+   - upstream을 올리다 둘 중 하나가 다시 들어오면 서명 단계가 경고를 남기고 그 항목을 entitlements에서 뺍니다(프로파일이 주지 않는 항목이 있으면 서명이 실패함). 그때는 그 항목을 클라이언트 패치에서 다시 뺍니다.
 2. **인증서**: 다음 중 한 가지로 발급합니다.
    - Xcode → Settings → Accounts → Manage Certificates → + → Apple Distribution
    - 키체인 접근에서 CSR을 만들어 웹에서 발급
@@ -667,7 +675,7 @@ Android 앱은 Google Play의 **비공개 테스트 트랙 Alpha**(API 이름 `a
 
 1. **AAB 빌드**: 비공개 저장소의 서명 빌드는 `play`와 상관없이, APK 아티팩트를 올린 다음 arm64 AAB를 만듭니다. 첫 업로드는 Play Console에서 직접 해야 하므로, 그때 쓸 AAB가 늘 있습니다. 아티팩트 이름은 `HJViewer-<이름>-android-aarch64-play`입니다.
    - 번들을 빌드하기 직전에 Play 전용 매니페스트(`client/play/AndroidManifest.xml`)를 넣습니다. APK는 이미 빌드된 뒤라 이 파일은 번들에만 적용됩니다(아래 "Play 번들에서 빼는 것").
-   - APK 서명 액션이 작업 폴더에 남긴 키스토어 사본은 번들 빌드(Gradle, 플러그인의 빌드 스크립트)가 시작되기 전에 지웁니다.
+   - APK를 서명한 키스토어는 작업 폴더 밖에 풀었다가 서명 직후 지우므로("Sign app APK", "Remove the APK keystore"), 번들 빌드(Gradle, 플러그인의 빌드 스크립트)가 돌 때는 없습니다. 번들을 서명할 키스토어는 번들 빌드가 끝난 뒤 2번 단계가 따로 풉니다.
    - **번들 단계가 실패하면**: APK 아티팩트는 번들 단계보다 먼저 올라가므로 어느 경우든 그대로 쓸 수 있습니다. 확인 빌드(`check_only`)에서는 Android 잡이 실패합니다(`play`를 켠 실행도 그렇게 되어 있지만, 1.9.1부터 `play=true`는 빌드 전에 거부됩니다). 그 밖의 실행에서는 Android 잡이 성공으로 끝나고, 실행 화면에 경고 "This run has no Play bundle"과 요약 한 줄이 남으며, `…-android-aarch64-play` 아티팩트가 없습니다. Play에 아무것도 올리지 않는 실행이 번들 때문에 실패로 보이지 않게 하려는 것입니다. 이 동작은 번들 단계들의 `if`·`continue-on-error` 줄과 단계 순서로 정해집니다. 그 효과는 GitHub에서 실패한 실행으로만 볼 수 있으므로, 오프라인 시험(`scripts/test_play_upload.py`의 `PlayBundleListsTest`)이 그 줄들과 순서를 지킵니다. 바꿀 때는 시험의 `BUNDLE_STEPS`와 이 문단을 같은 커밋에서 고칩니다.
 2. **서명과 검사**: 릴리스 키스토어로 jarsigner 서명을 한 번 합니다. 비밀번호는 환경 변수로만 넘깁니다. 서명을 확인한 뒤에는 키스토어 파일을 지우고 비밀번호를 환경에서 없앤 다음에 bundletool을 내려받아 돌립니다. 이어서 다음을 확인하고, 하나라도 틀리면 이 단계가 실패합니다(잡이 실패하는지는 1번과 같음). 검사에 실패한 번들은 아티팩트로 올리지 않습니다.
    - 서명자가 하나이고, 그 인증서가 키스토어의 것인지
@@ -846,21 +854,21 @@ upload를 다시 실행하는 것은 상태 확인으로 쓰지 않습니다. �
 
 ## 소요 시간
 
-이 저장소의 실측값과 upstream 참고값입니다. 첫 실행은 2026-10-10 비공개 저장소에서 캐시 없이 돌았습니다. 1.9.x의 값은 2026-10-11부터 10-26까지의 빌드 저장소 실행에서 잰 것입니다(2026-10-27 CI 점검). "캐시를 못 씀"은 Rust 캐시 키가 바뀌었거나 vcpkg 캐시가 지워졌거나 맞지 않은 실행입니다(아래 "캐시"). upstream 값은 2026-10-09 nightly(공개 저장소, Rust 캐시만 있음)입니다.
+이 저장소의 실측값과 upstream 참고값입니다. 첫 실행은 2026-10-10 비공개 저장소에서 캐시 없이 돌았습니다. 1.9.x의 값은 2026-10-11부터 10-26까지의 빌드 저장소 실행에서 잰 것입니다(2026-10-27 CI 점검). "캐시를 못 씀"은 Rust 캐시 키가 바뀌었거나 vcpkg 캐시가 지워졌거나 맞지 않은 실행입니다(아래 "캐시"). upstream 값은 2026-10-09 nightly(공개 저장소, Rust 캐시만 있음)입니다. 1.9.2 확인 빌드(2026-10-27, 실행 40546626686)는 Rust 캐시 키가 바뀐 뒤의 첫 실행이라 Rust는 캐시 없이 빌드했고, vcpkg는 세 잡 모두 캐시에서 받았습니다. 캐시가 모두 맞는 1.9.2 워크플로의 값은 다음 실행의 Run summary로 채웁니다.
 
-| 잡 | 첫 실행 (캐시 없음) | 1.9.x (캐시 있음) | 1.9.x (캐시를 못 씀) | upstream 참고 |
-|---|---|---|---|---|
-| Checks | 없음 | 1분 안 (1.9.2부터) | 같음 | 없음 |
-| Bridge codegen | 7분 | **2.7–4.2분** | 9.7분 (1.9.0) | 7분 |
-| Dart tests | 없음 | **2.8–3.1분** | 같음 | 없음 |
-| Windows x64 | 72분 | **24–29분** | 53.5분 (1.9.1: Rust 캐시 없음, vcpkg 16개를 다시 빌드) | 52분 (vcpkg 16, 빌드 22, exe 4, 서명·MSI 5) |
-| Android arm64 | 51분 | **18–27분** | 49.4분 (1.9.0) | 31분 (vcpkg 9, Rust 11, Flutter 7) |
-| iOS | 15분 | **5.7–7.8분** | 16.7분 (1.9.0) | 22분 (vcpkg 8, Rust 8, Flutter 4) |
+| 잡 | 첫 실행 (캐시 없음) | 1.9.x (캐시 있음) | 1.9.x (캐시를 못 씀) | 1.9.2 확인 빌드 (Rust 캐시 없음) | upstream 참고 |
+|---|---|---|---|---|---|
+| Checks | 없음 | 1분 안 (1.9.2부터) | 같음 | 0.1분 | 없음 |
+| Bridge codegen | 7분 | **2.7–4.2분** | 9.7분 (1.9.0) | 10.0분 | 7분 |
+| Dart tests | 없음 | **2.8–3.1분** | 같음 | 3.1분 | 없음 |
+| Windows x64 | 72분 | **24–29분** | 53.5분 (1.9.1: Rust 캐시 없음, vcpkg 16개를 다시 빌드) | 53.8분 (bridge 대기 4.9분, Rust 캐시 저장 3.5분) | 52분 (vcpkg 16, 빌드 22, exe 4, 서명·MSI 5) |
+| Android arm64 | 51분 | **18–27분** | 49.4분 (1.9.0) | 34.8분 (bridge 대기 5.8분) | 31분 (vcpkg 9, Rust 11, Flutter 7) |
+| iOS | 15분 | **5.7–7.8분** | 16.7분 (1.9.0) | 10.2분 | 22분 (vcpkg 8, Rust 8, Flutter 4) |
 
 1.9.1 결과물 크기는 Windows exe 28MB, Android APK 68MB, App Store용 iOS IPA 48MB입니다.
 
 - **러너 사양 차이**: 비공개 저장소의 Linux·Windows 러너는 2코어/8GB로, 공개 저장소(4코어/16GB)의 절반입니다. 그래서 컴파일이 upstream보다 오래 걸립니다. macOS는 공개·비공개 모두 3코어 M1입니다.
-- **전체 시간**: 플랫폼 잡이 병렬로 돌기 때문에 가장 긴 Windows 잡이 결정합니다. 1.8.0의 세 플랫폼 실행(39103875181)은 29.9분이었습니다. 1.9.1은 플랫폼마다 실행을 나눠 Windows 57.2분, 게이트 약 15분, Android 32.1분, iOS 13.4분이 걸렸고, 그중 약 35분이 캐시를 못 쓴 시간이었습니다. 1.9.2부터는 세 플랫폼을 한 실행에서 함께 빌드하고, Windows·Android 잡이 Bridge codegen과 함께 시작합니다. 게이트 뒤의 TestFlight 업로드 실행은 몇 분입니다.
+- **전체 시간**: 플랫폼 잡이 병렬로 돌기 때문에 가장 긴 Windows 잡이 결정합니다. 1.8.0의 세 플랫폼 실행(39103875181)은 29.9분이었습니다. 1.9.1은 플랫폼마다 실행을 나눠 Windows 57.2분, 게이트 약 15분, Android 32.1분, iOS 13.4분이 걸렸고, 그중 약 35분이 캐시를 못 쓴 시간이었습니다. 1.9.2부터는 세 플랫폼을 한 실행에서 함께 빌드하고, Windows·Android 잡이 Bridge codegen과 함께 시작합니다. 그 확인 빌드는 54.2분이었습니다. Windows 잡이 길이를 정했고, Rust 캐시 없이 10분 걸린 Bridge codegen을 Windows·Android가 4.9분, 5.8분 기다렸습니다. 게이트 뒤의 TestFlight 업로드 실행은 몇 분입니다.
 - **실행 요약**: 실행마다 Run summary 잡이 잡과 단계의 시간, 러너 이미지, 캐시 결과를 적습니다. 이 표는 그 요약으로 고칩니다.
 - **Google Play 경로**: 비공개 서명 빌드의 Android 잡은 번들을 만들고 서명·검사해 올리는 단계 셋으로 약 3분 15초 늘어납니다(1.6.0, 1.6.1 출시 실행의 실측). Play 업로드는 빌드 실행이 아니라 스토어 실행에서 돕니다(Linux 3–5분, [store-release.md](store-release.md)의 "비용").
 
@@ -882,7 +890,9 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 - Windows 약 24분: $0.24
 - macOS 약 7분: $0.43
 
-합계는 약 $0.8입니다. macOS가 분당 가장 비싸므로 iOS가 필요할 때만 `ios`나 `all`을 고르세요. 실제 출시는 1.9.1(2026-10-26, 플랫폼마다 실행 하나)이 Linux 51분, Windows 54분, macOS 8분으로 $1.34였습니다(포함 시간 안). 1.9.2부터는 Bridge codegen과 Dart tests가 한 번씩만 돌고, TestFlight 업로드 실행이 macOS 몇 분을, Checks 잡과 Run summary 잡이 실행마다 Linux 1분씩을 더합니다.
+합계는 약 $0.8입니다. macOS가 분당 가장 비싸므로 iOS가 필요할 때만 `ios`나 `all`을 고르세요. 실제 출시는 1.9.1(2026-10-26, 플랫폼마다 실행 하나)이 Linux 51분, Windows 54분, macOS 8분으로 $1.34였습니다(포함 시간 안). 1.9.2부터는 Bridge codegen과 Dart tests가 한 번씩만 돌고, TestFlight 업로드 실행이 macOS 몇 분을, Checks 잡과 Run summary 잡이 실행마다 Linux 1분씩을 더합니다. 1.9.2의 확인 빌드(2026-10-27, 세 플랫폼 한 실행, Rust 캐시 없음)는 잡마다 올려 Linux 53분, Windows 54분, macOS 11분, 분당 요금으로 약 $1.54였고, 포함 시간 안이라 청구액은 0이었습니다.
+
+분을 셀 때 실행의 timing API(`gh api repos/<저장소>/actions/runs/<ID>/timing`)는 쓰지 않습니다. 빌드 저장소의 실행에도 billable을 모두 0으로 답합니다. 분은 잡 API의 시작·끝 시각(Run summary와 `scripts/run-summary.py`의 표)을 잡마다 분 단위로 올려 세거나, 조직의 사용량(`gh api /organizations/<조직>/settings/billing/usage`: 잡마다 분과 요금이 한 줄씩, 끝난 뒤 조금 늦게 나타남)으로 봅니다. 1.9.1의 세 실행은 두 값이 같았습니다.
 
 Google Play 경로는 Android 실행마다 Linux 약 4분(AAB 단계), 약 $0.03을 더하고, 업로드하는 스토어 실행이 3–5분을 더합니다. AAB 단계(약 3분 15초)는 1.6.0, 1.6.1 출시 실행에서 잰 값입니다. AAB 아티팩트(약 30MB)는 30일 동안 저장 공간을 씁니다.
 
@@ -898,20 +908,28 @@ Google Play 경로는 Android 실행마다 Linux 약 4분(AAB 단계), 약 $0.03
 
 ## 캐시
 
-- **삭제 규칙**: 7일 동안 쓰지 않은 캐시는 지워집니다. 저장소당 10GB를 넘으면 GitHub가 가장 오래 쓰지 않은 것부터 지웁니다. 1.9.0에서는 Windows만 빌드한 실행들이 새 캐시를 쌓는 사이 Android·iOS의 vcpkg 캐시가 지워져 다시 빌드했습니다(17–21분). 그래서 아래처럼 두고(2026-10-27 CI 점검 GHA-01·02·03·06·10), 세 플랫폼을 한 실행에서 빌드해 모든 캐시를 함께 씁니다.
-- **Rust** (`Swatinem/rust-cache`, 잡마다): 키에는 그 잡이 아는 툴체인의 `rustc -vV`, `CARGO`·`RUST`로 시작하는 환경 변수, `Cargo.lock`(작업공간 크레이트의 버전은 빼고)이 들어갑니다.
+- **삭제 규칙**: 7일 동안 쓰지 않은(받지도 저장하지도 않은) 항목은 지워집니다. 빌드가 일주일 넘게 없으면 모든 항목이 지워져 다음 실행이 캐시 없이 돕니다(2026-10-27 확인 빌드가 쓴 항목은 다음 실행이 없으면 11-03 17:05Z, 11-04 02:05 KST부터 지워짐). 저장소당 10GB를 넘으면 GitHub가 가장 오래전에 쓰인 항목부터 지웁니다. 만든 순서가 아니라 마지막으로 받거나 저장한 순서입니다. 2026-10-27 확인 빌드는 새 항목 여섯(5.8GB)을 저장하는 동안 1.9.1의 Windows·Android Rust 항목(2194.4MiB, 1339.8MiB)과 옛 vcpkg-windows 항목 하나(82.0MiB)를 밀어냈습니다. 1.9.0에서는 Windows만 빌드한 실행들이 새 캐시를 쌓는 사이 Android·iOS의 vcpkg 캐시가 지워져 다시 빌드했습니다(17–21분). 그래서 아래처럼 두고(2026-10-27 CI 점검 GHA-01·02·03·06·10), 세 플랫폼을 한 실행에서 빌드해 모든 캐시를 함께 씁니다.
+- **Rust** (`Swatinem/rust-cache`, 잡마다): 키는 `<prefix-key>[-<key>]-<잡 ID>-<OS>-<아키텍처>-<환경 해시>-<lock 해시>`이고, 대체 키는 lock 해시를 뺀 것입니다.
+  - 환경 해시: rustup이 아는 툴체인마다의 `rustc -vV`(판, 호스트, 커밋. 로그의 "Rust Versions")와, 이름이 `CARGO`·`CC`·`CFLAGS`·`CXX`·`CMAKE`·`RUST`로 시작하고 값이 있는 환경 변수(로그의 "Environment considered")입니다.
+  - lock 해시: 작업공간 멤버의 `Cargo.toml`(패키지의 `version`과 경로 의존성의 버전·경로를 지운 것), `Cargo.lock`의 작업공간 밖 패키지, `.cargo/config.toml`(과 `rust-toolchain` 파일)의 바이트입니다. Windows 잡은 upstream을 CRLF로 꺼내므로 `.cargo/config.toml`의 바이트가 달라 lock 해시가 `64750db3`이고, 다른 잡은 `44035dd1`입니다.
+  - 2026-10-27의 키: Bridge `bridge-ubuntu-22.04-generate-bridge-Linux-x64-09818000-44035dd1`, Windows `windows-2022-windows-Windows_NT-x64-3e129d69-64750db3`, Android `rustdesk-lib-cache-aarch64-linux-android-android-Linux-x64-2e0935d5-44035dd1`, iOS `rustdesk-lib-cache-ios-aarch64-apple-ios-ios-Darwin-arm64-01e697cb-44035dd1`.
   - 러너 이미지에는 자기 stable Rust가 있고 이미지마다 판이 다릅니다. GitHub는 이미지를 한꺼번에 바꾸지 않아 며칠 동안 옛것과 새것이 섞이므로, 1.9.1에서는 키가 바뀌어 Windows·Android가 Rust 캐시 없이 빌드했습니다(약 17.5분). 그래서 Rust를 빌드하는 잡은 툴체인을 설치하기 전에 `RUSTUP_HOME`을 잡의 임시 폴더로 바꿉니다("Runner image and rustup directory"). rustup은 고정한 1.75만 압니다.
   - 한 잡만 쓰는 도구의 버전(cargo-ndk는 Android, cargo-expand와 flutter_rust_bridge는 Bridge codegen)은 그 잡의 `env`에 둡니다. 워크플로 맨 위에 두면 모든 잡의 키가 함께 바뀝니다.
   - 앱 버전만 올린 빌드는 키가 같아 새로 저장하지 않습니다. 의존성이 바뀐 빌드는 잡마다 새 항목을 만듭니다(Windows 2.1GB, Android·iOS 1.3GB, Bridge 0.9GB). 옛 항목은 그 뒤 쓰이지 않아 7일 뒤 지워집니다.
+  - Bridge codegen의 Rust 캐시는 생성된 bridge의 캐시(아래)가 빗나간 실행에서만 씁니다. 맞으면 생성 단계와 함께 건너뛰므로, 같은 커밋을 다시 돌린 실행은 그 Rust 항목을 쓰지 않고, 그 항목의 마지막으로 쓴 때도 그대로입니다.
+  - Android·iOS 잡은 Rust 툴체인과 Rust 캐시를 vcpkg 캐시보다 먼저 받습니다(1.9.2부터. Windows는 처음부터 그 순서). 새 Rust 항목을 저장하는 실행에서, 10GB를 넘을 때 지우는 순서가 그 항목이 대신하는 옛 Rust 항목보다 vcpkg 항목을 뒤에 두게 하기 위해서입니다. 사이의 단계(vcpkg, Android의 bridge 파일 기다리기와 받기)는 환경 변수를 내보내지 않으므로 키는 그대로입니다. 실행 40546626686의 로그(그 단계들 앞뒤의 env가 같음)와 `actions/cache`·`download-artifact`의 코드(`exportVariable`·`addPath`를 부르지 않음)로 확인했습니다.
+  - Windows·Android 잡은 bridge 파일을 기다리기 전에 `cargo fetch --locked --target <타깃>`으로 크레이트와 git 의존성을 받습니다(1.9.2부터). Rust 캐시를 받은 뒤라 키를 바꾸지 않습니다. `cargo fetch`는 그 타깃이 쓸 수 있는 크레이트를 선택 기능과 dev 의존성까지 받으므로, 새 Rust 항목을 저장하는 실행은 빌드만 받던 때보다 크레이트를 조금 더 담습니다(rust-cache는 `cargo metadata --all-features`에 드는 크레이트를 남김).
 - **vcpkg** (`files` 제공자와 `actions/cache`, 트리플릿마다): 그 실행이 설치한 패키지만 남깁니다(0.1GB 안팎).
   - Windows는 키에 이미지의 Visual Studio와 PowerShell 버전을 넣습니다. vcpkg가 둘을 모든 패키지의 ABI에 넣으므로, 1.9.1처럼 둘이 바뀐 이미지에서는 16개를 모두 다시 빌드합니다(17.8분). 키에 넣어 두면 이미지마다 자기 항목이 남아, 옛 이미지에 다시 걸린 잡이 다시 빌드하지 않습니다. 새 이미지는 가장 최근 항목에서 시작합니다.
   - 세 잡은 캐시에서 받은 패키지 수와, 패키지마다 vcpkg가 ABI에 넣은 것(`vcpkg_abi_info.txt`)을 로그에 접어 남깁니다. 모두 다시 빌드한 실행은 그 로그를 앞 실행과 비교해 까닭을 찾습니다. 스크립트만 든 포트(`vcpkg-cmake-config` 등)의 것이 모든 포트가 함께 쓰는 입력(컴파일러 해시가 든 `triplet_abi`, cmake, Windows의 powershell)입니다.
   - `lukka/run-vcpkg`의 자체 캐시(vcpkg 체크아웃)는 끕니다(`doNotCache: true`). 그 액션은 없어진 캐시 서비스를 불러 매번 실패했고, 되더라도 이미지마다 수백 MB를 저장합니다.
-- **생성된 bridge** (Bridge codegen): 소스 커밋과 생성 도구 버전의 정확한 키(약 80KB). 같은 커밋의 두 번째 실행(확인 빌드 뒤의 출시 빌드 등)은 생성 단계를 건너뜁니다.
+- **생성된 bridge** (Bridge codegen): 소스 커밋과 생성 도구 버전의 정확한 키(약 80KB). 같은 커밋의 두 번째 실행(확인 빌드 뒤의 출시 빌드 등)은 생성 단계를 건너뜁니다. Run summary의 Bridge codegen 줄에 "bridge files from the cache"나 "bridge files generated"가 나옵니다.
+- **`actions/cache`의 판**: 1.9.2에서 v3.5.0(node16)을 v6.1.0(node24)으로 올렸습니다. 항목의 버전을 셈하는 법(`path`의 줄들, 압축 방식, Windows 전용 표시, salt `1.0`), 키를 찾는 요청(키, 대체 키, 버전), tar의 인자가 v3.5.0에 든 `@actions/cache` 4.1.0과 같으므로, v3.5.0이 저장한 bridge와 vcpkg 항목을 그대로 받습니다. 캐시 단계의 `path` 줄은 버전에 들어가므로, 바꾸면 옛 항목을 받지 못합니다.
 - **Flutter**: 캐시하지 않습니다. Bridge codegen의 SDK·pub 캐시(약 1GB)는 실행마다 30초 안쪽을 아꼈을 뿐입니다.
-- **크기**: 평소 쓰는 양은 약 6GB입니다. 의존성이 바뀐 빌드는 잡마다 새 Rust 항목(모두 약 5.6GB)을 더하므로 잠시 10GB를 넘습니다. 그때 GitHub는 가장 오래전에 쓰인 항목부터 지웁니다. 그 실행이 처음에 받은 옛 Rust 항목(새 항목의 바탕)이 대개 먼저 지워지지만, 비슷한 때에 받은 vcpkg 항목(특히 Android)도 지워질 수 있고, 그러면 다음 빌드가 그 플랫폼의 패키지를 다시 빌드합니다(5–18분). 실행 안에서 옛 항목을 바로 지우려면 빌드 저장소가 `actions: write`를 허락해야 하므로, 사용자가 정할 때까지 넣지 않았습니다(2026-10-27 CI 점검 GHA-02). 1.9.2의 첫 실행은 Rust 캐시 없이 한 번 빌드해 새 키로 저장하고(vcpkg는 옛 항목에서 받음), 옛 Rust 키의 항목은 쓰이지 않아 먼저 지워집니다.
+- **크기**: 평소 쓰는 양은 약 6GB입니다. 의존성이 바뀐 빌드는 잡마다 새 Rust 항목(모두 약 5.6GB)을 더하므로 잠시 10GB를 넘습니다. 그때 GitHub는 가장 오래전에 쓰인 항목부터 지웁니다. 그 실행이 처음에 받은 옛 Rust 항목(새 항목의 바탕)이 대개 먼저 지워지지만, 비슷한 때에 받은 vcpkg 항목(특히 Android)도 지워질 수 있고, 그러면 다음 빌드가 그 플랫폼의 패키지를 다시 빌드합니다(5–18분). 1.9.2부터는 Android·iOS도 Rust를 vcpkg보다 먼저 받으므로, 같은 실행이 받은 vcpkg 항목은 옛 Rust 항목보다 뒤에 지워집니다. 실행 안에서 옛 항목을 바로 지우려면 빌드 저장소가 `actions: write`를 허락해야 하므로, 사용자가 정할 때까지 넣지 않았습니다(2026-10-27 CI 점검 GHA-02). 바뀐 키의 첫 실행은 2026-10-27 확인 빌드였습니다. 네 Rust 잡이 캐시 없이 빌드해 새 키로 저장했고(vcpkg는 옛 항목에서 받음), 쓰이지 않게 된 옛 항목 다섯(약 3.3GB: 옛 키의 Bridge·iOS Rust, Flutter SDK·pub, 옛 형식의 vcpkg-windows)은 10GB를 넘을 때 먼저 밀려나거나 11-02–11-03에 7일 규칙으로 지워집니다.
 - **태그 빌드**: 다른 태그의 캐시는 쓸 수 없고, 기본 브랜치의 캐시만 씁니다. 태그를 붙이기 전에 기본 브랜치에서 수동 실행을 한 번 해 두면 빨라집니다.
-- 실행마다 Run summary 잡이 Rust 캐시 적중, vcpkg가 캐시에서 받은 패키지 수, 러너 이미지를 실행 요약에 적습니다.
+- 실행마다 Run summary 잡이 Rust 캐시 적중, vcpkg가 캐시에서 받은 패키지 수, 생성된 bridge를 캐시에서 받았는지, 러너 이미지를 실행 요약에 적습니다. Rust 칸의 "miss or fallback"은 미스와 대체 키 적중을 가르지 않으므로 그 잡의 rust-cache 로그로 봅니다.
+- **러너 이미지**: Linux 잡 로그 맨 위의 "Runner Image" 판은 실제 이미지보다 낡게 나올 때가 있습니다(2026-10-27: 로그 머리 20261012.x, 잡의 `$ImageVersion` ubuntu22 20261023.322.3, ubuntu24 20261023.334.3). 이미지를 비교할 때는 Run summary의 러너 이미지 칸(잡이 `$ImageOS $ImageVersion`을 적음)을 씁니다.
 
 ## upstream 버전을 올릴 때
 
@@ -933,14 +951,14 @@ Google Play 경로는 Android 실행마다 Linux 약 4분(AAB 단계), 약 $0.03
 - Google Play용 AAB의 빌드·서명·검사: 1.6.0과 1.6.1의 출시 실행(38559428611, 38568720786)이 러너에서 번들을 만들고 서명해 그때의 검사를 모두 통과했습니다(minSdk 검사는 그 뒤에 더함). `PLAY_MANIFEST`는 그대로였고, Play 전용 매니페스트의 표지가 있었고, targetSdk는 36, 번들 설정의 zip 페이지 정렬은 `PAGE_ALIGNMENT_16K`였으며, R8 매핑도 들어 있었습니다. 번들 단계 셋은 약 3분 15초 걸렸습니다.
 
 아래는 아직 실행하지 않은 경로입니다.
-- **1.9.2의 워크플로 변경(2026-10-27 CI 점검)**: GitHub 실행에서만 보입니다. 첫 실행(확인 빌드로 충분)과 첫 TestFlight 업로드 실행에서 봅니다.
-  - 세 OS에서 `RUSTUP_HOME`을 바꾼 뒤 1.75가 그 폴더에 설치되고, rust-cache 로그의 "Rust Versions"에 1.75.0만 나오는지. 첫 실행은 새 키라 Rust 캐시 없이 빌드하고, 그다음 실행부터 Run summary의 Rust 캐시 칸이 hit여야 합니다.
-  - Windows의 vcpkg 캐시 키에 Visual Studio·PowerShell 버전이 들어가고, 처음에는 옛 항목에서 패키지를 받는지. 세 vcpkg 잡이 받은 패키지 수와 ABI 정보를 남기는지.
-  - Windows·Android의 "Wait for the bridge files"가 진행 중인 실행의 `bridge-artifact`를 API에서 보는지(upload-artifact v4부터의 산출물은 올리자마자 보인다고 문서에 있음), Bridge codegen이 실패하면 바로 멈추는지.
+- **1.9.2의 워크플로 변경(2026-10-27 CI 점검)**: GitHub 실행에서만 보입니다.
+  - **확인 빌드에서 본 것**(2026-10-27, 실행 40546626686, 세 플랫폼을 한 실행에서): 세 OS에서 `RUSTUP_HOME`을 바꾼 뒤 1.75가 그 폴더에 설치되고 rust-cache 로그의 "Rust Versions"에 1.75.0만 나옴(새 키라 Rust 캐시 없이 빌드해 저장). Windows의 vcpkg 캐시 키에 Visual Studio·PowerShell 버전이 들어가고 세 잡이 옛 항목에서 패키지를 모두 받음(Windows 16/16, Android 18/18, iOS 17/17), 받은 패키지 수와 ABI 정보도 남김. Windows·Android의 "Wait for the bridge files"가 진행 중인 실행의 `bridge-artifact`를 API에서 보고 4.9분, 5.8분 뒤에 이어 감. Run summary 잡의 표와 Android 잡의 남은 디스크(2.9G). 그 표에 Bridge codegen의 캐시 줄이 빠졌던 것은 그 뒤에 고쳤습니다.
+  - 확인 빌드 뒤에 고친 것(2026-10-28): node24 판의 액션(Node 20 경고는 `install-llvm-action`의 것만 남아야 함), `actions/cache` v6.1.0이 10-27의 항목을 받는지(Run summary의 Rust 칸 hit, vcpkg 16/16·18/18·17/17), apksigner를 직접 부르는 APK 서명(서명 방식 줄이 v2·v3이고, 인증서 SHA-256이 Play 번들 단계의 업로드 인증서 SHA-256과 같은지), Android·iOS가 Rust 캐시를 vcpkg보다 먼저 받아도 키가 그대로인지(`…-2e0935d5-44035dd1`, `…-01e697cb-44035dd1`), Windows·Android의 `cargo fetch`가 걸린 시간, TestFlight upload 잡이 고른 Xcode와 altool의 경로.
+  - 다음 실행부터 Run summary의 Rust 캐시 칸이 hit인지(10-27에 저장한 키, 위 "캐시").
+  - Bridge codegen이 실패하면 bridge 파일을 기다리던 잡이 바로 멈추는지.
   - 같은 커밋의 두 번째 실행에서 Bridge codegen이 생성 단계를 건너뛰고 같은 여섯 파일을 올리는지.
   - TestFlight 업로드 실행 전체: `store-record.py check-run --store appstore`, 다른 실행의 IPA 받기(`download-artifact`의 `run-id`), IPA 안 프로파일의 판정, altool 업로드.
   - Windows Git Bash에서 `package-notices.sh`가 python3를 한 번 부르는 새 방식. `THIRD_PARTY_NOTICES.txt`를 앞 실행의 것과 비교하고 단계의 시간을 봅니다(개발 PC에서는 클라이언트·서버·hjv-relay의 출력이 이전과 바이트까지 같았습니다).
-  - Run summary 잡의 표와 Android 잡의 남은 디스크.
 - **Google Play 경로**: 스토어 실행의 Play 업로드(`dry_run`의 validate, completed)와 status, alpha 출시의 심사 시간, Google Play 잡만 다시 실행하기. 개발 PC에서는 가짜 Play API로 업로드 스크립트를 시험했습니다.
 - **스토어 실행 전체**: environment `store`의 시크릿이 이름으로 넘긴 재사용 워크플로 잡에 오는지, `job.workflow_repository`·`job.workflow_sha` 체크아웃, 다른 실행의 아티팩트 받기, App Store Connect의 prepare·submit·release(처음은 1.9.1). 개발 PC에서는 가짜 서버로 스크립트를, 오프라인 시험으로 워크플로의 규칙을 시험했습니다([store-release.md](store-release.md)).
 - **의존성 변경**: 모든 빌드가 `--locked`이므로, 패치가 의존성을 바꾸면 `Cargo.lock`도 패치에 포함해야 합니다.

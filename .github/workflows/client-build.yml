@@ -2122,8 +2122,10 @@ jobs:
             s/^(\s*)CODE_SIGN_ENTITLEMENTS = Runner\/Runner\.entitlements;$/$&\n${1}CODE_SIGN_STYLE = Manual;\n${1}CODE_SIGN_IDENTITY = "$ENV{IDENTITY}";\n${1}"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "$ENV{IDENTITY}";\n${1}PROVISIONING_PROFILE_SPECIFIER = "$ENV{PROFILE}";/;
           ' "$pbx"
 
-          # Runner.entitlements asks for push and Wi-Fi info, which the app does not use. Keep each only
-          # if the profile grants it (signing fails otherwise) and take aps-environment from the profile.
+          # Upstream's Runner.entitlements asks for push and Wi-Fi info, which the app does not use; from
+          # 1.9.2 a client patch takes both out, so this finds neither. Should one come back (with an
+          # upstream update), keep it only if the profile grants it (signing fails otherwise) and take
+          # aps-environment from the profile.
           ent=flutter/ios/Runner/Runner.entitlements
           for key in aps-environment com.apple.developer.networking.wifi-info; do
             /usr/libexec/PlistBuddy -c "Print :$key" "$ent" > /dev/null 2>&1 || continue
@@ -2132,7 +2134,7 @@ jobs:
                 /usr/libexec/PlistBuddy -c "Set :$key $value" "$ent"
               fi
             else
-              echo "::warning::The provisioning profile does not grant $key, so it is removed from Runner.entitlements. Enable that capability on the App ID to keep it."
+              echo "::warning::The provisioning profile does not grant $key, so it is removed from Runner.entitlements. The app uses neither push nor Wi-Fi information: take the key out in client/patches (docs/ci.md, iOS)."
               /usr/libexec/PlistBuddy -c "Delete :$key" "$ent"
             fi
           done
