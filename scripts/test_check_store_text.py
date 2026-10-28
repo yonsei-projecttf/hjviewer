@@ -203,11 +203,15 @@ class StoreTextTest(unittest.TestCase):
             paragraphs[1] += " " + permission
             return "\n\n".join(paragraphs)
 
-        def with_both(text):
-            paragraphs = with_permission(text).split("\n\n")
+        def with_approval(text):
+            paragraphs = text.split("\n\n")
+            self.assertEqual(paragraphs[0], UNLISTED)
             # after Apple's approval: a paragraph of its own right after Apple's unlisted sentence
             paragraphs.insert(1, approved.replace("<date>", longest_date))
             return "\n\n".join(paragraphs)
+
+        def with_both(text):
+            return with_approval(with_permission(text))
 
         self.assertLessEqual(self.worst_size(copy, with_both(notes)), cst.REVIEW_NOTES_BYTES)
         self.assertEqual(cst.PC_PASSWORD_MAX, 32, "store/README.md and the store run say 32 bytes")
@@ -242,9 +246,11 @@ class StoreTextTest(unittest.TestCase):
                 text = text.replace(name, value)
             return text
 
-        # 1.9.2's submission by hand: the one-PC template, the university's permission and the
-        # devices tested on (3929 bytes on 2026-10-29)
-        self.assertLessEqual(self.worst_size(copy, with_permission(hand(notes, tested_on=True))),
+        # 1.9.2's submission by hand: the one-PC template and the devices tested on, also once
+        # Apple has approved (3846 and 3926 bytes on 2026-10-29). No permission sentence: the
+        # owner decided on 2026-10-29 to attach no written permission
+        self.assertLessEqual(self.worst_size(copy, hand(notes, tested_on=True)), cst.REVIEW_NOTES_BYTES)
+        self.assertLessEqual(self.worst_size(copy, with_approval(hand(notes, tested_on=True))),
                              cst.REVIEW_NOTES_BYTES)
         # the longest two-PC form store/README.md says fits: two PCs, the university's permission
         # and Apple's approval, without Tested on (3989 bytes on 2026-10-29)

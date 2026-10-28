@@ -1,1 +1,1 @@
-HJViewer: 연세행정 PC 원격 제어
+HJViewer: PC 원격 제어
