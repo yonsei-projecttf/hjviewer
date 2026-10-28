@@ -1322,11 +1322,11 @@ fi
         self.assertNotEqual(code, 0)
         self.assertEqual((output, env, keystore), ("", "", "600\nthe keystore"))
         self.assertFalse(os.path.exists(ks))
-        # one APK, the build's: none or two are a mistake of the build
+        # one APK, the build's: none or two are a mistake of the build, and the error counts them
         for apks in ([], [name + ".apk", "other.apk"]):
             code, out, output, *_ = self.sign_apk(apks)
             self.assertEqual((code, output), (1, ""), apks)
-            self.assertIn("::error::upstream/rustdesk/signed-apk holds", out)
+            self.assertIn(f"::error::upstream/rustdesk/signed-apk holds {len(apks)} APKs, not the one of this build.", out)
         # the next step removes the keystore also when this one failed or the run was cancelled
         steps = [s.get("name") for s in self.steps("android")]
         remove = self.step("android", "Remove the APK keystore")

@@ -1435,8 +1435,10 @@ jobs:
           tools="$ANDROID_HOME/build-tools/$ANDROID_SIGN_TOOL_VERSION"
           ks="$RUNNER_TEMP/apk-release.keystore"
           trap 'rm -f "$ks"' EXIT
+          # no match is no APK, not the pattern as one
+          shopt -s nullglob
           apks=(upstream/rustdesk/signed-apk/*.apk)
-          if [ ${#apks[@]} != 1 ] || [ ! -f "${apks[0]}" ]; then
+          if [ ${#apks[@]} != 1 ]; then
             echo "::error::upstream/rustdesk/signed-apk holds ${#apks[@]} APKs, not the one of this build."
             exit 1
           fi
