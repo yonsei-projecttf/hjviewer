@@ -408,12 +408,13 @@ the PC accepts. All of it is end-to-end encrypted, and the server stores none of
 
 **Recordings.** The device that controls a PC can record the session's screen (on a camera
 connection, the camera's picture) as a video file without sound: when its user starts a
-recording, or for every outgoing session once its user turned on automatic recording. A PC can
-likewise record the sessions it accepts once someone at it turned on automatic recording of
-incoming sessions. The file stays on the device that recorded it until someone deletes it: on
-Windows in the user's Videos\HJViewer folder (an installed PC's recordings of incoming sessions
-in C:\ProgramData\HJViewer\recording), on a phone in the app's own folder, unless its user chose
-another folder. HJViewer sends it nowhere and the server never sees it. The PC's owner can switch
+recording, or for every outgoing session once its user turned on automatic recording. Of the
+phone apps, only the Android app records; the iPhone and iPad app does not. A PC can likewise
+record the sessions it accepts once someone at it turned on automatic recording of incoming
+sessions. The file stays on the device that recorded it until someone deletes it: on Windows in
+the user's Videos\HJViewer folder or another folder its user chose (an installed PC's recordings
+of incoming sessions in C:\ProgramData\HJViewer\recording), on an Android phone in the app's own
+folder. HJViewer sends it nowhere and the server never sees it. The PC's owner can switch
 recording off in the PC's permission settings, also during a session. From version 1.9.0 the
 PC's connection window shows "Recording" while the connected device reports that it records; a
 modified app, or a recording made with another program, does not show there.
@@ -583,7 +584,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 원격 접속을 받는 Windows PC에서는, 연결한 기기가 그 PC의 화면을 보고, PC의 권한 설정이 허락하는 만큼 카메라 영상과 소리도 받으며, PC 앞 사람이 받아들인 음성 통화를 할 수 있습니다. 모두 종단 간 암호화되고, 서버는 아무것도 저장하지 않습니다.
 
-**녹화.** PC를 제어하는 기기는 세션의 화면(카메라 연결이면 카메라 영상)을 소리 없는 영상 파일로 녹화할 수 있습니다. 그 기기의 사용자가 녹화를 시작할 때, 또는 나가는 세션 자동 녹화를 켜 두었을 때입니다. PC도 그 앞의 사람이 들어오는 세션 자동 녹화를 켜 두면 받은 세션을 녹화합니다. 파일은 누가 지울 때까지 녹화한 그 기기에 남습니다. Windows는 그 사용자의 '동영상\HJViewer' 폴더(설치한 PC가 들어오는 세션을 녹화하면 C:\ProgramData\HJViewer\recording), 휴대폰은 앱 자신의 폴더이고, 사용자가 다른 폴더를 고를 수 있습니다. HJViewer는 이 파일을 어디로도 보내지 않고, 서버는 보지 못합니다. PC 주인은 PC의 권한 설정에서 녹화를 끌 수 있고, 세션 중에도 끌 수 있습니다. 1.9.0부터는 연결한 기기가 녹화한다고 알리는 동안 PC의 연결 창에 '녹화 중'이 보입니다. 고친 앱이나 다른 프로그램으로 하는 녹화는 보이지 않습니다.
+**녹화.** PC를 제어하는 기기는 세션의 화면(카메라 연결이면 카메라 영상)을 소리 없는 영상 파일로 녹화할 수 있습니다. 그 기기의 사용자가 녹화를 시작할 때, 또는 나가는 세션 자동 녹화를 켜 두었을 때입니다. 휴대폰 앱 가운데 녹화하는 것은 Android 앱뿐이고, iPhone·iPad 앱은 녹화하지 않습니다. PC도 그 앞의 사람이 들어오는 세션 자동 녹화를 켜 두면 받은 세션을 녹화합니다. 파일은 누가 지울 때까지 녹화한 그 기기에 남습니다. Windows는 그 사용자의 '동영상\HJViewer' 폴더나 사용자가 고른 다른 폴더(설치한 PC가 들어오는 세션을 녹화하면 C:\ProgramData\HJViewer\recording), Android 휴대폰은 앱 자신의 폴더입니다. HJViewer는 이 파일을 어디로도 보내지 않고, 서버는 보지 못합니다. PC 주인은 PC의 권한 설정에서 녹화를 끌 수 있고, 세션 중에도 끌 수 있습니다. 1.9.0부터는 연결한 기기가 녹화한다고 알리는 동안 PC의 연결 창에 '녹화 중'이 보입니다. 고친 앱이나 다른 프로그램으로 하는 녹화는 보이지 않습니다.
 
 ### 7. 처리 목적과 근거
 
