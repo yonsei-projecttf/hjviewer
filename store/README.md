@@ -35,6 +35,7 @@ App Store Connect와 Google Play Console에 그대로 보일 글의 원본입니
 | `<언어>/marketing_url.txt` | 버전 페이지 → 마케팅 URL(선택, 빈 파일이면 비움) | https URL |
 | `<언어>/privacy_url.txt` | 앱 정보 → 개인정보 처리방침 URL | https URL |
 
+- **이름**: 한국어 이름 `HJViewer: 연세행정 PC 원격 제어`는 학교의 이름을 씁니다. 그 허락을 내주는 자리인 프로젝트TF 팀장으로서 소유자가 2026-10-28에 낸 서면 허락서가 이 이름도 허락하고([docs/store-release.md](../docs/store-release.md)의 B4), 그 허락서는 제출에 첨부합니다. 영어 이름은 `HJViewer: Remote Desktop`입니다.
 - **언어**: `ko`(기본)와 `en-GB`. 한국 App Store의 언어는 한국어와 English (U.K.)이므로 영어 글은 영국식 철자(colour, favourites, centred)로 씁니다. 영어 글에 한글은 팀 이름 `프로젝트TF` 하나만 씁니다.
 - **첫 App Store 버전에는 What's New 칸이 없습니다.** 첫 버전에서는 `whats_new.txt`를 보내지 않습니다(스토어 실행이 App Store Connect의 버전 상태로 첫 버전인지 압니다). 파일은 다음 버전과 TestFlight 안내를 위해 그 판의 바뀐 것으로 둡니다.
 - **지원 URL**은 처리방침의 10절(문의와 변경)로 바로 갑니다. 한국어 현지화는 한국어 절(`#10-문의와-변경`, 퍼센트 인코딩), 영어 현지화는 영어 절(`#10-contact-and-changes`)입니다. 심사 지침 1.5가 지원 URL에서 연락 방법을 쉽게 찾을 수 있어야 한다고 하고, 저장소 첫 화면에는 연락처가 없기 때문입니다.
