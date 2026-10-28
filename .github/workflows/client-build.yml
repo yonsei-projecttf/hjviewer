@@ -1225,6 +1225,34 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: true # GHA-10, see the top of this file
 
+      # Not upstream: as in the Bridge codegen job. These three steps come before the vcpkg cache:
+      # above 10 GiB GitHub removes the entries used least recently first, and restoring the Rust
+      # entry after the vcpkg entry left the vcpkg entry the older of the two in a run that saves a
+      # new Rust entry in place of the one it restored. The steps from the vcpkg cache to cargo
+      # (vcpkg, the wait for the bridge files and their download) export no environment variable,
+      # so the Rust cache's key is the one it had after them (docs/ci.md, "캐시").
+      - name: Runner image and rustup directory
+        id: image
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      # upstream's prefix-key is rustdesk-lib-cache-android, with "TODO: drop '-android' part after
+      # caches are invalidated": done here, where the rustup directory above gave new keys anyway
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: rustdesk-lib-cache
+          key: aarch64-linux-android
+          workspaces: upstream/rustdesk -> target
+
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1319,29 +1347,6 @@ jobs:
         with:
           name: bridge-artifact
           path: upstream/rustdesk
-
-      # Not upstream: as in the Bridge codegen job
-      - name: Runner image and rustup directory
-        id: image
-        working-directory: ${{ github.workspace }}
-        run: |
-          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
-          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: "rustfmt"
-
-      # upstream's prefix-key is rustdesk-lib-cache-android, with "TODO: drop '-android' part after
-      # caches are invalidated": done here, where the rustup directory above gave new keys anyway
-      - id: rust-cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          prefix-key: rustdesk-lib-cache
-          key: aarch64-linux-android
-          workspaces: upstream/rustdesk -> target
 
       # L1194-1206
       - name: Build rustdesk lib
@@ -1903,6 +1908,31 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: true # GHA-10, see the top of this file
 
+      # Not upstream: as in the Bridge codegen job. These three steps come before the vcpkg cache, as
+      # in the Android job, which says why; the vcpkg steps export no environment variable, so the
+      # Rust cache's key is the one it had after them (docs/ci.md, "캐시").
+      - name: Runner image and rustup directory
+        id: image
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+
+      # L692-713
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-apple-ios
+          components: "rustfmt"
+
+      - id: rust-cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: rustdesk-lib-cache-ios
+          key: aarch64-apple-ios
+          workspaces: upstream/rustdesk -> target
+
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1963,29 +1993,6 @@ jobs:
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
-
-      # Not upstream: as in the Bridge codegen job
-      - name: Runner image and rustup directory
-        id: image
-        working-directory: ${{ github.workspace }}
-        run: |
-          echo "image=$ImageOS $ImageVersion" >> "$GITHUB_OUTPUT"
-          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
-
-      # L692-713
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          targets: aarch64-apple-ios
-          components: "rustfmt"
-
-      - id: rust-cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          prefix-key: rustdesk-lib-cache-ios
-          key: aarch64-apple-ios
-          workspaces: upstream/rustdesk -> target
 
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
