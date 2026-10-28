@@ -4,7 +4,8 @@ read as text like test_play_upload.py's PlayBundleListsTest: what only a run on 
 
     python3 -I -B -m unittest discover -s scripts -p 'test_store_workflows.py'
 
-store-release.yml: called only (workflow_call), Linux only, read permissions but the record job's,
+Every workflow: each action pinned by a 40-digit commit (EveryWorkflowTest). store-release.yml:
+called only (workflow_call), Linux only, read permissions but the record job's,
 every checkout of this file's own repository and commit without credentials, the environment
 `store` and the secrets in the play and appstore jobs alone (by name, never inherit), status out
 of the editing jobs' concurrency groups. client-build.yml: no Google Play job, play refused, the
@@ -27,7 +28,7 @@ WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
 _spec = importlib.util.spec_from_file_location("run_summary", os.path.join(ROOT, "scripts", "run-summary.py"))
 rs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rs)
-SHA_PIN = re.compile(r"uses: [\w./-]+@[0-9a-f]{40}(?: #.*)?$")
+SHA_PIN = re.compile(r"uses: [\w./-]+@[0-9a-f]{40}(?:\s+#.*)?$")
 
 
 def read(name):
@@ -99,6 +100,26 @@ def block(lines, name):
     return out
 
 
+class EveryWorkflowTest(unittest.TestCase):
+    def test_actions_are_pinned_by_sha(self):
+        """Every `uses:` of every workflow names a 40-digit commit, so that the setting that requires SHA
+        pins can be on (docs/store-release.md, the repository settings): server.yml's
+        dtolnay/rust-toolchain was the last tag pin until 1.9.2. The actions that a composite action
+        calls are not in these files (docs/store-release.md)."""
+        counts = {}
+        for name in sorted(os.listdir(WORKFLOWS)):
+            if not name.endswith((".yml", ".yaml")):
+                continue
+            uses = [line.strip().removeprefix("- ") for line in read(name).splitlines()
+                    if line.strip().startswith(("uses:", "- uses:"))]
+            for line in uses:
+                self.assertRegex(line, SHA_PIN, f"{name}: {line}")
+            counts[name] = len(uses)
+        # the workflows that call actions today, each read
+        for name in ("client-build.yml", "server.yml", "store-release.yml"):
+            self.assertTrue(counts.get(name), counts)
+
+
 class StoreReleaseWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.text = read("store-release.yml")
@@ -144,11 +165,6 @@ class StoreReleaseWorkflowTest(unittest.TestCase):
         self.assertEqual(checkouts, 4)
         self.assertIn("  PUBLIC_REPOSITORY: yonsei-projecttf/hjviewer\n", self.text)
         self.assertNotRegex(self.text, r"github\.sha|ref: \$\{\{ github\.")
-
-    def test_actions_are_pinned_by_sha(self):
-        for line in self.text.splitlines():
-            if line.strip().startswith(("uses:", "- uses:")):
-                self.assertRegex(line.strip().removeprefix("- "), SHA_PIN, line)
 
     def test_environment_and_secrets_only_where_they_are_needed(self):
         self.assertNotIn("secrets: inherit", self.text)
