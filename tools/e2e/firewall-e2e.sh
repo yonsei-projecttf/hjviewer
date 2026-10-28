@@ -76,6 +76,14 @@
 # account; and neither door 2's page (HJV_API_DOOR2_FILE, written here) nor the support link page
 # has a pilot sentence any more.
 #
+# 1.9.2 (docs/e2e.md, RP0-RP8), after DEL4: the PC, in no account since DEL1, logs in with the App
+# Review account, whose file has it on its PC= line: hjv-api binds it, and it registers on its
+# syncs' staff/pc tickets while hbbs enforces the tickets; the second PC of X4, off the line, stays
+# unbound and refused; the account's own devices see no PC and take none out, its deletion in the
+# app, the operator's revoke-all and the next login leave the PC bound and online, the PC's own
+# [계정 삭제] is refused, and the file's UNTIL ends the PC's registration. The end puts back
+# MODE=off and the PC in no account for the parts after it.
+#
 # HJV_E2E_HOLD=<seconds> (at most 3600): a run that fails keeps its namespaces, servers and
 # clients up that long, or until $RUN/release exists, before it cleans up, so that the state can
 # be looked at (logs, --hjv-e2e-option through in_ns) without running it again.
@@ -247,7 +255,7 @@ skips_ahead() {
   if [ -n "$ACCESS" ] && part access; then
     [ -n "$POLICY" ] || echo "W6-E2 (no version policy: HJV_RELEASE)"
     client_has hjv-e2e-support-pc || echo "W6-E4, W6-E4b, W6-E5 (no hjv-e2e-support-pc in $CLIENT)"
-    client_has 'after delete-account' || echo "DEL1-DEL3 (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
+    client_has 'after delete-account' || echo "DEL1-DEL3 and RP0-RP8 (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
   fi
   if [ -n "$KEYED" ] && [ -z "$POLICY" ] && part policy; then echo "V5-V7 and V9 (no HJV_RELEASE)"; fi
   if [ -n "$PARTS_ONLY" ]; then echo "the strict parts other than $PARTS_ONLY (HJV_E2E_PARTS)"; fi
@@ -2679,6 +2687,235 @@ delete_part() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# 1.9.2's demo PC of the App Review account (server/api/src/review.rs; docs/e2e.md, RP0-RP8),
+# after the deletion's part: MODE=off since A14, PC B stopped, and the PC released from alice's
+# account (DEL1), so that it is in no account. The PC logs in with the App Review account, whose
+# file has the PC on its PC= line since A10: hjv-api binds it, and its syncs carry a staff/pc
+# ticket, on which it registers while hbbs enforces the tickets. The second PC of X4 (pc2,
+# installed, logged in as alice before DEL1) logs in with it too and stays unbound and refused.
+# The account's devices are the access part's rev and DEL3's rev2: its list stays empty, it takes
+# the PC out with no request, its deletion leaves the PC bound and online, and so do the
+# operator's revoke-all and the next login; the PC's own [계정 삭제] is refused. The file's UNTIL
+# ends the PC's tickets, and with them its registration. Every client call ends within 30 s or
+# fails the run.
+# ---------------------------------------------------------------------------------------------
+# <UNTIL> <PC ID>[,<PC ID>]: the App Review account's file with that line, put in place as the
+# runbook puts it (7-17)
+review_conf() {
+  printf 'ID=%s\nHASH=%s\nUNTIL=%s\nPC=%s\n' "$REVIEW_ID" "$(pbkdf2_of "$REVIEW_PW")" "$1" "$2" \
+    >"$RUN/api/review.conf.new"
+  mv -f "$RUN/api/review.conf.new" "$RUN/api/review.conf"
+}
+pc_access_is() { # <state>: the PC's hjv-access-pc, from its service: ok or refused
+  run pc --hjv-e2e-option hjv-access-pc >/dev/null
+  PC_ACCESS=$OUT
+  [ "$OUT" = "$1" ]
+}
+pc_offline() { ! online "$PC_ID" ctl; }
+sync_pcs() { # the demo PCs' tickets hjv-api signed since its start (admin ticket status, sync pc)
+  local n
+  n=$(admin ticket status | sed -n 's/.*sync pc \([0-9]*\).*/\1/p')
+  echo "${n:-0}"
+}
+sync_pcs_above() { [ "$(sync_pcs)" -gt "$1" ]; } # <count before>
+review_tag() { # the App Review account's tag, from the journal's line of the demo PC that joined it
+  grep -o 'login: a demo PC joined the App Review account (acct=[0-9a-f]*' "$RUN/hjv-api.log" | tail -n 1 | sed 's/.*acct=//'
+}
+# <what> <binding>: for 15 s (three syncs) the PC keeps that binding, its disabled list and its
+# registration (hjv-access-pc ok, online), and hjv-api signs it new tickets meanwhile
+stays_online() {
+  local s0
+  s0=$(sync_pcs)
+  sleep 16
+  [ "$(binding Binding)" = "$2" ] || fail "$1: the PC's binding is '$(binding Binding)', not '$2'"
+  state_is disabled || fail "$1: the PC's hjv-pwless-state is '$STATE', not disabled"
+  pc_access_is ok || fail "$1: the PC's hjv-access-pc is '$PC_ACCESS', not ok"
+  online "$PC_ID" ctl || fail "$1: hbbs has the PC offline"
+  [ "$(sync_pcs)" -gt "$s0" ] || fail "$1: no sync pc ticket in 16 s (sync pc $(sync_pcs))"
+}
+pc2_binding() { # the second PC's binding, from its HJViewer_binding
+  python3 -I -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("Binding", ""))
+except FileNotFoundError:
+    print("")' "$RUN/pc2/home/.config/hjviewer/HJViewer_binding"
+}
+pc2_access_is() { # <state>: the second PC's hjv-access-pc
+  arun hjv-pc2 pc2 "$PC_CLIENT" --hjv-e2e-option hjv-access-pc
+  [ "$OUT" = "$1" ]
+}
+pc_closed() { # <reason>: hbbs's lines of an admitted registration of the PC that it closed for it
+  grep -cE "access closed reg [^ ]* for \"$PC_ID\": $1\$" "$RUN/hbbs.log" || true
+}
+# <count before> <reason>: hbbs closed an admitted registration of the PC for that reason since: at
+# its heartbeat, once the ticket the registration came with lapsed (NOT_BEFORE: revoked; its exp:
+# expired)
+pc_closed_above() { [ "$(pc_closed "$2")" -gt "$1" ]; }
+
+review_pc_part() {
+  local nb n0 s0 t0 tag binding keys until until_s line ms ops0 closed0 expired0
+  if ! client_has 'after delete-account'; then
+    echo "skipped: RP0-RP8, the App Review account's demo PC (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
+    return 0
+  fi
+  log "RP0: MODE=enforce with NOT_BEFORE=now: the PC, in no account, has no ticket that holds: refused, offline"
+  pc_unbound || fail "RP0: the PC holds a binding before its login: '$(binding Binding)'"
+  nb=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  sleep 1
+  access_conf enforce "$nb"
+  until_ok 13 "RP0: hbbs's line 'access enforce: keys 1, not before $nb'" hbbs_has "access enforce: keys 1, not before $nb"
+  until_ok 45 "RP0: the PC's hjv-access-pc refused" pc_access_is refused
+  until_ok 30 "RP0: hbbs has the PC offline" pc_offline
+  pass "RP0: enforce, not before $nb: the PC in no account is refused (hjv-access-pc refused) and offline, as the owner's demo PC was before 1.9.2"
+
+  log "RP1: the PC logs in with the App Review account (its file's PC= line): bound, registered on a staff/pc ticket"
+  n0=$(console_count reg.ok)
+  s0=$(sync_pcs)
+  arun hjv-pc pc "$PC_CLIENT" --hjv-e2e-login "$REVIEW_ID" "$REVIEW_PW"
+  [ "$RC" = 0 ] || fail "RP1: the App Review account's login on the PC: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+  binding=$(sed -n 's/^hjv-e2e: bind request \([0-9a-f]*\)\..*/\1/p' <<<"$OUT")
+  [ ${#binding} = 32 ] || fail "RP1: no bind request in the login's answer: $(grep '^hjv-e2e: \(bind\|no bind\)' <<<"$OUT")"
+  ahas "hjv-e2e: this device: added disabled" || fail "RP1: not 'this device: added disabled': $(grep '^hjv-e2e: this device' <<<"$OUT")"
+  until_ok 15 "RP1: the PC wrote the binding" eval '[ "$(binding Binding)" = "$binding" ]'
+  until_ok 15 "RP1: the PC's list disabled (no key)" state_is disabled
+  t0=$(date +%s%N)
+  until_ok 30 "RP1: the PC's hjv-access-pc ok" pc_access_is ok
+  ms=$(ms_since "$t0")
+  until_ok 30 "RP1: the PC online" online "$PC_ID" ctl
+  [ "$(console_count reg.ok)" -gt "$n0" ] || fail "RP1: the console's reg.ok did not grow"
+  sync_pcs_above "$s0" || fail "RP1: admin ticket status has no sync pc ticket"
+  [ "$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["use"])' "$RUN/pc/home/.config/hjviewer/HJViewer_ticket.json")" = pc ] ||
+    fail "RP1: the PC's HJViewer_ticket.json is not a ticket for pc"
+  tag=$(review_tag)
+  [ -n "$tag" ] || fail "RP1: no journal line 'login: a demo PC joined the App Review account (acct=…'"
+  line=$(admin binding list | awk -v t="$tag" '$3 == t {print $4, $5}')
+  [ "$line" = "disabled present" ] || fail "RP1: admin binding list's row of the account $tag: '$line', not 'disabled present'"
+  pass "RP1: bind request and 'this device: added disabled'; the PC wrote the binding, its list disabled, and registered ${ms} ms later (hjv-access-pc ok, reg.ok up, online) on its sync's ticket for pc (HJViewer_ticket.json, sync pc $(sync_pcs)); binding list: the account $tag's PC disabled present"
+
+  log "RP2: the second PC, installed, off the PC= line, logs in with the account: unbound, refused, offline"
+  in_ns hjv-pc2 pc2 bash -c 'Xvfb :98 -screen 0 1280x720x24 -nolisten tcp >/dev/null 2>&1 &
+    for _ in $(seq 50); do [ -e /tmp/.X11-unix/X98 ] && break; sleep 0.1; done
+    DISPLAY=:98 exec "$1" --server' _ "$PC_CLIENT" >>"$RUN/pc2-server.log" 2>&1 &
+  until_ok 20 "RP2: the second PC's service" pc2_id
+  arun hjv-pc2 pc2 "$PC_CLIENT" --hjv-e2e-login "$REVIEW_ID" "$REVIEW_PW"
+  [ "$RC" = 0 ] || fail "RP2: the App Review account's login on the second PC: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+  ahas "hjv-e2e: no bind request" || fail "RP2: a bind request for the second PC: $(grep '^hjv-e2e: bind' <<<"$OUT")"
+  ahas "hjv-e2e: this device: not_eligible" || fail "RP2: not 'this device: not_eligible': $(grep '^hjv-e2e: this device' <<<"$OUT")"
+  until_ok 30 "RP2: the second PC's hjv-access-pc refused" pc2_access_is refused
+  [ -z "$(pc2_binding)" ] || fail "RP2: the second PC holds a binding: $(pc2_binding)"
+  if online "$PC2_ID" ctl; then fail "RP2: hbbs has the second PC online"; fi
+  pass "RP2: no bind request, 'this device: not_eligible': a PC off the PC= line stays in no account (no binding), refused and offline"
+
+  log "RP3: the reviewer's device: My PCs empty, the demo PC by its ID and password, no password-less way, no [내 PC에서 빼기]"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-login "$REVIEW_ID" "$REVIEW_PW"
+  [ "$RC" = 0 ] || fail "RP3: rev's login: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-devices
+  [ "$RC" = 0 ] && [ "$(pc_count)" = 0 ] || fail "RP3: rev's device list (exit $RC): $(pc_count) PCs"
+  ascreen rev "$PC_ID" rp3
+  screen_ok "RP3: rev to the demo PC with its password" rp3
+  ms=$MS
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-screenshot "$PC_ID" "" "$RUN/rp3b.ppm"
+  [ "$RC" = 3 ] && ahas 'password required Password Required' ||
+    fail "RP3: rev without a password: exit $RC, not the plain password box (exit 3): $(grep '^hjv-e2e: \(password\|logged\)' <<<"$OUT")"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-remove "$PC_ID"
+  [ "$RC" = 1 ] && ahas 'hjv-e2e: remove: HTTP 404' || fail "RP3: rev's remove: exit $RC ($(grep '^hjv-e2e: remove' <<<"$OUT"))"
+  [ "$(binding Binding)" = "$binding" ] || fail "RP3: the PC lost its binding"
+  pass "RP3: rev's device list 0 PCs; the PC's screen with its password ($ms ms); without one the plain password box (no proof sent); remove HTTP 404, the binding as it was"
+
+  log "RP4a: the demo PC's own [계정 삭제]: 403 demo_pc, nothing deleted, the PC stays"
+  ops0=$(oplog_count 'cmd="app account-delete"')
+  arun hjv-pc pc "$PC_CLIENT" --hjv-e2e-delete-account
+  line=$(sed -n 's/^hjv-e2e: delete-account: //p' <<<"$OUT")
+  [ "$RC" = 1 ] && [[ $line == "HTTP 403 "* ]] && jq -e '.hjv == "demo_pc"' <<<"${line#HTTP 403 }" >/dev/null ||
+    fail "RP4a: exit $RC, '$line', not 403 demo_pc"
+  ahas "hjv-e2e: after delete-account: access_token kept" || fail "RP4a: the PC logged out: $(grep '^hjv-e2e: after delete-account' <<<"$OUT")"
+  [ "$(binding Binding)" = "$binding" ] || fail "RP4a: the PC lost its binding"
+  pc_access_is ok || fail "RP4a: the PC's hjv-access-pc is '$PC_ACCESS'"
+  [ "$(oplog_count 'cmd="app account-delete"')" = "$ops0" ] || fail "RP4a: the operator record has a line of a deletion"
+  pass "RP4a: $line; the PC still logged in and bound, hjv-access-pc ok; no deletion in the operator record"
+
+  log "RP4: the reviewer deletes the account (rev; rev2 logged in too): the demo PC stays bound and online"
+  arun hjv-ctl2 rev2 "$CLIENT" --hjv-e2e-login "$REVIEW_ID" "$REVIEW_PW"
+  [ "$RC" = 0 ] || fail "RP4: rev2's login: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-keys
+  keys=$(key_lines)
+  [ "$RC" = 0 ] && [ "$keys" -ge 3 ] || fail "RP4: the account's key list (exit $RC) has $keys keys, not at least the PC's, rev's and rev2's"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-delete-account
+  deleted_with RP4 0 "$keys"
+  grep -F 'account: deleted at its own request (acct=' "$RUN/hjv-api.log" | tail -n 1 | grep -qF ", the App Review account): 0 PCs, $keys account keys, $keys tokens, 0 relays, allowlist entry kept, 1 demo PCs kept" ||
+    fail "RP4: the journal's line: $(grep -F 'account: deleted at its own request (acct=' "$RUN/hjv-api.log" | tail -n 1 | sed 's/^.*account: //')"
+  arun hjv-ctl2 rev2 "$CLIENT" --hjv-e2e-devices
+  [ "$RC" = 1 ] && ahas 'devices failed: HTTP 401' || fail "RP4: rev2 after the deletion: exit $RC ($(grep 'devices failed' <<<"$OUT"))"
+  arun hjv-pc pc "$PC_CLIENT" --hjv-e2e-devices
+  [ "$RC" = 1 ] && ahas 'devices failed: HTTP 401' || fail "RP4: the PC's login after the deletion: exit $RC ($(grep 'devices failed' <<<"$OUT"))"
+  stays_online RP4 "$binding"
+  pass "RP4: 200 ${DEL_FIRST#HTTP 200 }; rev logged out, rev2 and the PC's login 401; the journal: '…, 1 demo PCs kept'; the PC kept its binding, its list and its registration 16 s on (sync pc $(sync_pcs))"
+
+  log "RP5: the next login: no key of before, no PC in its list, the demo PC by its password"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-login "$REVIEW_ID" "$REVIEW_PW"
+  [ "$RC" = 0 ] || fail "RP5: rev's login: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-keys
+  [ "$RC" = 0 ] && [ "$(key_lines)" = 1 ] && ahas 'current=true' || fail "RP5: the key list (exit $RC): $(key_lines) keys, not this login's one"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-devices
+  [ "$RC" = 0 ] && [ "$(pc_count)" = 0 ] || fail "RP5: the device list (exit $RC): $(pc_count) PCs"
+  ascreen rev "$PC_ID" rp5
+  screen_ok "RP5: rev to the demo PC after the deletion" rp5
+  pass "RP5: one key (this login's), 0 PCs; the demo PC's screen with its password ($MS ms)"
+
+  log "RP6: the operator's revoke-all of the account: its logins end, the demo PC stays online"
+  admin user revoke-all "tag:$tag" | sed 's/^/    /'
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-devices
+  [ "$RC" = 1 ] && ahas 'devices failed: HTTP 401' || fail "RP6: rev after revoke-all: exit $RC ($(grep 'devices failed' <<<"$OUT"))"
+  stays_online RP6 "$binding"
+  pass "RP6: rev's next request 401; the PC kept its binding and registration 16 s on (sync pc $(sync_pcs))"
+
+  log "RP7: the file's UNTIL 75 s on (NOT_BEFORE=now ends the tickets of the later UNTIL): online until UNTIL, then refused and offline"
+  until_s=$(($(date +%s) + 75))
+  until=$(date -u -d "@$until_s" +%Y-%m-%dT%H:%M:%SZ)
+  review_conf "$until" "$PC_ID"
+  sleep 2
+  closed0=$(pc_closed revoked)
+  nb=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  sleep 1
+  access_conf enforce "$nb"
+  until_ok 13 "RP7: hbbs's line 'access enforce: keys 1, not before $nb'" hbbs_has "access enforce: keys 1, not before $nb"
+  # the registration of a ticket of before NOT_BEFORE closes at hbbs's next heartbeat (10 s); the
+  # PC registers again with its next sync's ticket, whose exp is the new UNTIL
+  until_ok 25 "RP7: hbbs closed the PC's registration of before NOT_BEFORE" pc_closed_above "$closed0" revoked
+  until_ok $((until_s - $(date +%s) - 5)) "RP7: the PC online again before UNTIL" online "$PC_ID" ctl
+  pc_access_is ok || fail "RP7: the PC's hjv-access-pc is '$PC_ACCESS' before UNTIL"
+  expired0=$(pc_closed expired)
+  while [ "$(date +%s)" -le "$until_s" ]; do sleep 1; done
+  until_ok 35 "RP7: the PC's hjv-access-pc refused after UNTIL" pc_access_is refused
+  until_ok 20 "RP7: hbbs has the PC offline after UNTIL" pc_offline
+  # UNTIL itself ends the registration: hbbs closes the one admitted on the last sync's ticket,
+  # whose exp is UNTIL, at its next heartbeat. The refusals that follow are the PC's service
+  # trying the ticket of an earlier login on it (alice's, of before NOT_BEFORE), which an installed
+  # Windows PC's service never holds: here the service shares the app's config (docs/e2e.md, RP7)
+  until_ok 15 "RP7: hbbs closed the PC's registration at UNTIL (expired)" pc_closed_above "$expired0" expired
+  s0=$(sync_pcs)
+  t0=$(date +%s.%N)
+  sleep 12
+  [ "$(sync_pcs)" = "$s0" ] || fail "RP7: hjv-api signed the PC $(($(sync_pcs) - s0)) tickets after UNTIL"
+  pc_syncs_match "$t0" '^200( 200)*$' || fail "RP7: the PC's syncs after UNTIL: '$(pc_syncs_since "$t0")', not 200s"
+  [ "$(binding Binding)" = "$binding" ] || fail "RP7: the PC lost its binding at UNTIL"
+  pass "RP7: back online after NOT_BEFORE on a ticket of the new UNTIL $until; at UNTIL hbbs closed its registration (access closed reg: expired), after it refused and offline (hbbs's last line: $(grep -oE "access (closed|refused) reg [^ ]* for \"$PC_ID\": [a-z_]+" "$RUN/hbbs.log" | tail -n 1 | sed 's/reg [^ ]* for .*: /reg: /')); no sync pc ticket in 12 s after (sync pc $s0), its syncs answered $(pc_syncs_since "$t0"), its binding kept"
+
+  log "RP8: the end as the runbook's: user delete releases the PC; the file goes, MODE=off; the PC registers again"
+  admin user delete "tag:$tag" | sed 's/^/    /'
+  until_ok 20 "RP8: the PC took the signed revoked" state_is revoked
+  pc_unbound || fail "RP8: the PC kept its binding"
+  rm -f "$RUN/api/review.conf"
+  n0=$(hbbs_count "access off")
+  access_conf off
+  until_ok 13 "RP8: hbbs's line 'access off'" hbbs_above "access off" "$n0"
+  until_ok 45 "RP8: the PC's hjv-access-pc ok" pc_access_is ok
+  until_ok 40 "RP8: the PC online" online "$PC_ID" ctl
+  sudo ip netns pids hjv-pc2 | xargs -r sudo kill 2>/dev/null || true
+  pass "RP8: user delete: the PC dropped its binding on a signed revoked; no file, MODE=off: the PC registered again (online); the second PC stopped"
+}
+
+# ---------------------------------------------------------------------------------------------
 # The minimum version (its design 2-2, 2-4, 2-5): hbbs's lowest controller version (V1, V2, V4),
 # and the signed policy refusing a controller below the minimum (V5-V7, V9). The ver side runs
 # the current CLIENT in its own profile without an account login; the test sets a minimum above
@@ -2901,6 +3138,7 @@ fi
 if [ -n "$ACCESS" ] && part access; then
   access_part
   delete_part
+  review_pc_part
 fi
 if [ -n "$MIN_HBBS" ] && part minver; then min_controller_part; fi
 if [ -n "$POLICY" ]; then

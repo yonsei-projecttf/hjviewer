@@ -460,6 +460,60 @@ PASS (strict): transport: relay
 - 503 `not_recorded`(운영자 기록이 없거나 첫 줄을 쓰지 못함), 409 `clock`, 400(다른 본문), 429(키마다 1분에 30번), 두 요청이 동시에 온 경우, 계정 ID를 다시 쓰는 경우, 중계기가 있는 계정: hjv-api의 시험(`server/api/tests/account.rs`, `tests/review.rs`)이 봅니다. E2E의 계정에는 NAS 중계기가 없어 `relays`는 늘 0입니다.
 - 백업에서 되살린 계정을 운영자가 기록의 꼬리표로 다시 지우는 절차(런북 7-14)는 운영 절차입니다.
 
+## 심사 계정의 데모 PC 단계 (1.9.2)
+
+App Review 계정이 `review.conf`의 `PC=` 줄에 적힌 데모 PC를 직접 가지는 것(소유자 결정 2026-10-28, [access-tickets.md](access-tickets.md) 1절과 2-4, 런북 7-17)을 실제 클라이언트, hjv-api, 출입증을 확인하는 hbbs로 봅니다. 데모 PC가 심사 계정의 로그인으로 묶이고, 동기화가 주는 `staff`/`pc` 출입증으로 등록해 온라인이 되는지, `PC=` 밖의 PC는 묶이지 않는지, 심사자 쪽에서 보이는 것(빈 내 PC, 비밀번호로만 연결, [내 PC에서 빼기] 없음), 심사자의 계정 삭제·운영자의 `revoke-all`·다음 로그인 뒤에도 데모 PC가 온라인으로 남는지, 데모 PC 자신의 [계정 삭제]는 거절되는지, 파일의 `UNTIL`에 등록이 끝나는지입니다. strict 모드에서 계정 삭제 단계 바로 뒤(DEL4 다음), 최소 버전 단계 앞에 돕니다(`tools/e2e/firewall-e2e.sh`의 `review_pc_part`).
+
+**구성**
+- PC: 처음부터 쓰는 PC(`pc`, 설치형, 리눅스)입니다. DEL1이 alice의 계정과 함께 풀었으므로 아무 계정에도 없습니다. 심사 계정의 파일은 A10부터 `PC=<PC의 ID>`이고 내일까지입니다. 둘째 PC는 X4의 `pc2`(설치형, DEL1 전에 alice로 묶였던 PC)를 `hjv-pc2` 네트워크에서 다시 띄워 씁니다. `PC=`에 없는 설치형 PC입니다.
+- 심사자의 기기: 출입 제한 단계의 `rev`(`hjv-ctl`)와 DEL3의 `rev2`(`hjv-ctl2`)입니다. 심사 계정의 로그인과 삭제는 클라이언트의 `--hjv-e2e-login`, `-devices`, `-keys`, `-remove`, `-screenshot`, `-delete-account`(1.9.2 클라이언트에 모두 있음)로 합니다. 클라이언트는 바꾸지 않습니다.
+- hbbs: 처음에 `MODE=enforce`와 `NOT_BEFORE=<지금>`으로 바꿉니다. 앞 단계들이 PC의 서비스에 남긴 출입증(alice의 로그인 출입증 등)이 등록에 쓰이지 않게 하기 위해서입니다. 이 리눅스 PC의 서비스는 앱과 같은 설정 폴더를 써서 앱의 로그인 출입증도 등록에 씁니다. 설치된 Windows PC의 서비스는 그러지 않으므로([access-tickets.md](access-tickets.md) 3-3의 고르기: 로그인의 출입증은 설치하지 않은 실행본만) 실제 데모 PC에는 이 출입증이 없습니다. RP7은 `NOT_BEFORE`를 한 번 더 지금으로 옮깁니다. 끝(RP8)에 `MODE=off`로 되돌립니다.
+- 서버 타이머는 줄이지 않습니다. 데모 PC 출입증의 수명(24시간)은 그대로이고, RP7은 파일의 `UNTIL`을 75초 뒤로 바꿔 끝을 봅니다.
+
+**시나리오**(실행 순서대로)
+
+| # | 단계 | 기대 |
+|---|---|---|
+| RP0 | `MODE=enforce`, `NOT_BEFORE=<지금>` | 아무 계정에도 없는 PC의 `hjv-access-pc`가 `refused`, hbbs가 오프라인으로 봄(1.9.2 전에 소유자가 본 데모 PC의 모습) |
+| RP1 | PC에서 심사 계정으로 로그인(`--hjv-e2e-login`) | 출력에 `bind request`와 `this device: added disabled`, PC가 그 묶음을 씀(`HJViewer_binding`), `hjv-pwless-state` `disabled`(키 없는 목록), `hjv-access-pc` `ok`, hbbs 콘솔의 `reg.ok`가 늚, 온라인, `admin ticket status`의 `sync pc`가 늚, 서비스의 `HJViewer_ticket.json`의 `use`가 `pc`, 저널에 `login: a demo PC joined the App Review account (acct=<T>, dev=<D>)`, `admin binding list`의 그 계정 행이 `disabled present` |
+| RP2 | 둘째 PC(`PC=` 밖, 설치형)의 서비스를 다시 띄우고 심사 계정으로 로그인 | `no bind request`, `this device: not_eligible`, 둘째 PC에 묶음 없음, `hjv-access-pc` `refused`, 오프라인 |
+| RP3 | `rev`가 심사 계정으로 로그인 | 기기 목록 0개, PC 비밀번호로 화면을 받음, 비밀번호 없이는 평범한 비밀번호 창(종료 3, 증명을 보내지 않음), `--hjv-e2e-remove <PC>`는 `HTTP 404`, PC의 묶음 그대로 |
+| RP4a | PC가 `--hjv-e2e-delete-account` | `HTTP 403`, `"hjv":"demo_pc"`, PC는 로그아웃하지 않고(`access_token kept`) 묶음과 등록이 그대로, 운영자 기록에 삭제 줄 없음 |
+| RP4 | `rev2`도 로그인한 뒤 `rev`가 `--hjv-e2e-delete-account` | `200 {"deleted":true,"pcs":0,"devices":<키 수>,"relays":0}`, `rev`는 로그아웃, `rev2`와 PC의 로그인은 다음 요청에서 401, 저널 줄 끝 `, 1 demo PCs kept`. PC는 16초 뒤에도 같은 묶음, `disabled`, `hjv-access-pc` `ok`, 온라인, 그동안 `sync pc`가 늚 |
+| RP5 | `rev`가 다시 로그인 | 키 하나(`current=true`), 기기 0개, PC 비밀번호로 화면 |
+| RP6 | `admin user revoke-all tag:<T>` | `rev`의 다음 요청 401. PC는 16초 뒤에도 RP4와 같음 |
+| RP7 | 파일의 `UNTIL`을 75초 뒤로(같은 `PC=`), 그다음 `NOT_BEFORE=<지금>` | hbbs가 PC의 등록을 닫고(`access closed reg … revoked`), PC는 다음 동기화의 출입증(`exp`가 새 `UNTIL`)으로 `UNTIL` 전에 다시 온라인. `UNTIL` 뒤에는 `hjv-access-pc` `refused`, 오프라인, hbbs가 그 출입증으로 받은 등록을 다음 심장 박동(10초 안)에 닫음(`access closed reg … expired`가 늚: `NOT_BEFORE`가 아니라 `UNTIL`이 끝냄), 12초 동안 `sync pc`가 늘지 않고 동기화는 200, 묶음은 그대로 |
+| RP8 | 끝: `admin user delete tag:<T>`, 파일 지움, `MODE=off` | PC가 서명된 `revoked`로 묶음을 버림, 다시 등록해 온라인(뒤 단계가 씀), 둘째 PC는 멈춤 |
+
+**결과**(2026-10-28, WSL2 Ubuntu 24.04, `scripts/ci.sh prepush server:api e2e` 한 번, 커밋 `e501950`, 클라이언트 패치 0001–0167): 열 줄 모두 PASS, strict 전체 PASS 139줄(하한 139), open 2줄, 건너뜀 0, 다시 돌린 시험 0. 이 단계는 3분쯤(RP7이 92초)이고, strict 전체는 684초, 그 prepush 전체(hjv-api 시험 86초, 바뀌지 않은 클라이언트 빌드 34초, e2e 722초)는 842초였습니다.
+
+| # | 본 것 |
+|---|---|
+| RP0 | `enforce`, `NOT_BEFORE`를 지금으로: 아무 계정에도 없는 PC가 `refused`, 오프라인 |
+| RP1 | `bind request`와 `this device: added disabled`. PC가 묶음을 쓰고 목록이 `disabled`, 출입증을 받은 뒤 106 ms에 등록(`hjv-access-pc` `ok`, `reg.ok`가 늚, 온라인), `HJViewer_ticket.json`의 `use`가 `pc`, `sync pc 1`, `binding list`의 그 계정 행이 `disabled present` |
+| RP2 | `no bind request`, `this device: not_eligible`, 둘째 PC에 묶음 없음, `refused`, 오프라인 |
+| RP3 | `rev`의 기기 0개, PC 비밀번호로 화면(3.1초, 기본 중계 대기 2.5초 포함), 비밀번호 없이는 평범한 비밀번호 창(종료 3), `remove`는 `HTTP 404`, 묶음 그대로 |
+| RP4a | `HTTP 403 {"error":"이 PC는 App Review 계정의 데모 PC라서 …","hjv":"demo_pc"}`, PC의 로그인과 묶음 그대로, `hjv-access-pc` `ok`, 운영자 기록에 삭제 줄 없음 |
+| RP4 | `200 {"deleted":true,"devices":4,"pcs":0,"relays":0}`(키 넷: PC, 둘째 PC, `rev`, `rev2`), `rev2`와 PC의 로그인 401, 저널 줄 끝 `, 1 demo PCs kept`, 16초 뒤에도 같은 묶음·`disabled`·`ok`·온라인(`sync pc 5`) |
+| RP5 | 키 하나(`current=true`), 기기 0개, 비밀번호로 화면(3.1초) |
+| RP6 | `rev` 401, 16초 뒤에도 RP4와 같음(`sync pc 9`) |
+| RP7 | `NOT_BEFORE` 뒤 새 `UNTIL`의 출입증으로 다시 온라인. `UNTIL` 뒤에는 `refused`, 오프라인, 12초 동안 `sync pc 21` 그대로, 동기화 답은 200 둘, 묶음 그대로. hbbs 로그로는 `UNTIL` 4초 뒤 `access closed reg … expired`(마지막 동기화 출입증의 등록을 닫음), 바로 뒤 `access refused reg … revoked`(서비스가 앞 로그인의 출입증으로 다시 등록해 보다 `NOT_BEFORE`에 거절됨, 이 리눅스 PC에만 있는 길: 위 구성의 hbbs). 이 실행의 RP7은 닫힘이나 거절 줄이 는 것만 보았고, 다음 실행부터 `expired` 닫힘을 따로 봅니다 |
+| RP8 | `user delete` 뒤 PC가 서명된 `revoked`로 묶음을 버림, 파일을 지우고 `MODE=off`로 다시 온라인, 둘째 PC 멈춤 |
+
+- 뒤 단계(V1–V9, `relay window`)는 이 단계가 남긴 상태(`MODE=off`, 아무 계정에도 없는 PC)에서 그대로 통과했습니다. `relay window` 줄의 `rev` 4번은 A10의 화면 하나와 RP3의 둘(비밀번호로 받은 화면, 비밀번호 없는 시도), RP5의 하나이고, 모두 기본 대기(2.5초)를 지났습니다.
+- 리뷰 수정 뒤의 실행(2026-10-28, 커밋 `dc9aa61`, 같은 명령): 열 줄 모두 PASS, strict PASS 139줄(하한 139), open 2줄, 건너뜀 0, 다시 돌린 시험 0. RP7은 이번부터 `UNTIL` 뒤에 `access closed reg … expired`가 느는 것을 따로 보았습니다(PASS 줄의 `at UNTIL hbbs closed its registration (access closed reg: expired)`). hbbs 로그로는 `UNTIL` 그 초에 서비스가 같은 연결에서 앞 로그인의 출입증으로 다시 등록해 보다 `revoked`로 거절되었고, 4초 뒤 심장 박동이 마지막 동기화 출입증으로 받은 등록을 `expired`로 닫았습니다. 거절된 재등록은 받아 둔 등록을 바꾸지 않으므로(서버 패치 0006: 연결의 출입증은 받아들인 등록만 바꿈) 이 순서에서도 `expired` 닫힘이 남습니다. 이 단계는 3분쯤(RP7 92초), strict 전체는 705초, 그 prepush 전체(hjv-api 시험 496개 84초, 바뀌지 않은 클라이언트 빌드 34초, e2e 725초)는 844초였습니다.
+
+**`scripts/ci.sh`가 하는 것**
+- 감지: 따로 없습니다. 이 단계는 출입 제한 단계(`HJV_E2E_ACCESS=1`) 안에서 돌고, 클라이언트에 0161의 `--hjv-e2e-delete-account`가 없으면 DEL1–DEL3과 함께 `skipped:`를 남깁니다(push 전 검사에서 실패).
+- 하한: `E2E_LEAST_STRICT`에 이 단계의 `PASS` 10줄(RP0–RP8과 RP4a)을 더해 strict 하한은 139입니다.
+
+### 심사 계정의 데모 PC 단계가 다루지 않는 것
+
+- Windows 서비스와 레지스트리(HKLM의 `HJViewer_binding`, 서비스 설정 폴더의 `HJViewer_ticket.json`): E2E의 PC는 리눅스에서 사용자 권한으로 돌므로 같은 코드의 다른 저장소를 씁니다. 실제 데모 PC의 확인은 런북 7-17의 "데모 PC 확인"입니다.
+- 실제 iPhone·iPad 앱의 화면(계정 삭제 창, 빈 내 PC 목록, 비밀번호 창): Dart 시험과 기기 시험, 그리고 PASS-PLAN의 자체 시험입니다.
+- 데모 PC 데스크톱의 [로그아웃]: 클라이언트가 요청 전에 스스로 묶음을 풀므로 서버가 막지 못합니다(소유자가 받아들인 위험, 런북 7-17). 로그인 직후의 [취소]는 서버가 거절하며(`undo`가 거짓), hjv-api의 시험(`server/api/tests/review.rs`)이 봅니다.
+- 교직원 계정에 묶인 `PC=`의 PC, 확인되지 않은 로그인의 삭제, hjv-api 재시작, 문 1의 기기 키, 출입증 수명(`HJV_API_TICKET_HOURS`)은 hjv-api의 시험(`tests/review.rs`, `src/db.rs`, `src/ticket.rs`)이 봅니다.
+
 ## 원격 켜기 단계 (1.6.0)
 
 꺼진 PC를 앱에서 켜는 길 전체를 실제 프로그램으로 확인합니다(설계 3판 8-10). 앱의 켜기 요청 → hjv-api가 서명한 명령 → NAS의 hjv-relay → PC 랜카드에 닿는 매직 패킷 → 깨어난 PC의 확인까지입니다. `tools/e2e/wol-e2e.sh`이고 `scripts/ci.sh wol`이 돌립니다(서버는 `scripts/ci.sh server`로 먼저 빌드하고, `hjv-probe`는 이 단계가 이 트리에서 빌드).
