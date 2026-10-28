@@ -336,6 +336,14 @@ class ClientBuildWorkflowTest(unittest.TestCase):
         self.assertIn("run-id: ${{ inputs.testflight_run }}\n", download)
         names = [name_of(s) for s in steps(job)]
         self.assertEqual(names[-3:], ["Download the IPA", "Upload to TestFlight", "Remove the API key"])
+        # altool is the one of the Xcode that the iOS job builds with, not the image's default
+        self.assertLess(names.index("Select Xcode"), names.index("Upload to TestFlight"))
+        (select,) = [s for s in steps(job) if name_of(s) == "Select Xcode"]
+        (built,) = [s for s in steps(self.jobs["ios"]) if name_of(s) == "Select Xcode"]
+        line = 'sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app"\n'
+        self.assertIn(line, select)
+        self.assertIn(line, built)
+        self.assertIn('*) echo "::error::Expected Xcode 26.x; see XCODE_VERSION."; exit 1 ;;', select)
         (upload,) = [s for s in steps(job) if name_of(s) == "Upload to TestFlight"]
         for needed in ("shasum -a 256 -c SHA256SUMS", "release.json", "ProvisionedDevices", "get-task-allow",
                        "ProvisionsAllDevices", "xcrun altool --upload-package", '"product-errors"'):
