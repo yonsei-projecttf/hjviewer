@@ -952,8 +952,22 @@ class WorkflowTest(unittest.TestCase):
             steps = self.steps(job)
             wait, restore = self.index(job, "Wait for the bridge files"), self.index(job, "Restore bridge files")
             self.assertEqual(restore, wait + 1, job)
-            # the bridge files are needed by cargo only: nothing before them builds Rust or the app
+            # the bridge files are needed by cargo's build only: before them cargo downloads the
+            # crates of the build's target (after the Rust cache's restore, whose key it does not
+            # change), and nothing builds Rust or the app
+            fetch = self.index(job, "Fetch the crates")
+            self.assertEqual(wait, fetch + 1, job)
+            self.assertLess([s.get("id") for s in steps].index("rust-cache"), fetch, job)
+            target = {"windows": "x86_64-pc-windows-msvc", "android": "aarch64-linux-android"}[job]
+            self.assertEqual(steps[fetch]["run"].strip(), f"cargo fetch --locked --target {target}", job)
+            self.assertNotIn("env", steps[fetch], job)
+            # the target the job's toolchain has (Windows) or adds before cargo ndk (Android)
+            built = self.step(job, "Install Rust toolchain")["with"].get("targets", "") + self.step(
+                job, "Build rustdesk lib" if job == "android" else "Build rustdesk")["run"]
+            self.assertIn(target, built, job)
             for step in steps[:restore]:
+                if step is steps[fetch]:
+                    continue
                 for builder in ("cargo", "build.py", "flutter build", "ndk_arm64"):
                     self.assertNotIn(builder, step.get("run", ""), f"{job}: {step.get('name')}")
             # and they are, a few steps (the toolchain, the cache) later

@@ -745,8 +745,16 @@ jobs:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
 
+      # Not upstream: Cargo.lock's crates and git dependencies for this job's target, downloaded
+      # while the Bridge codegen job may still run. A run without its Rust cache spent 2.6 minutes on
+      # them inside the build step (2026-10-27); with the cache, it checks what is there. After the
+      # Rust cache's restore, whose key it does not change: it only downloads, and exports nothing.
+      - name: Fetch the crates
+        shell: bash
+        run: cargo fetch --locked --target x86_64-pc-windows-msvc
+
       # Not upstream (GHA-11 of the 2026-10-27 CI audit). This job starts beside the Bridge codegen
-      # job and needs its files only here, right before cargo: it waits until the run has the
+      # job and needs its files only here, right before cargo builds: it waits until the run has the
       # bridge-artifact, and fails when the Bridge codegen job has ended without it. A job that
       # "Re-run failed jobs" starts again finds the artifact at once.
       - name: Wait for the bridge files
@@ -1311,8 +1319,16 @@ jobs:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
 
+      # Not upstream: Cargo.lock's crates and git dependencies for this job's target, downloaded
+      # while the Bridge codegen job may still run. A run without its Rust cache spent 1.3 minutes on
+      # them inside the build step (2026-10-27); with the cache, it checks what is there. After the
+      # Rust cache's restore, whose key it does not change: it only downloads, and exports nothing.
+      - name: Fetch the crates
+        shell: bash
+        run: cargo fetch --locked --target aarch64-linux-android
+
       # Not upstream (GHA-11 of the 2026-10-27 CI audit). This job starts beside the Bridge codegen
-      # job and needs its files only here, right before cargo: it waits until the run has the
+      # job and needs its files only here, right before cargo builds: it waits until the run has the
       # bridge-artifact, and fails when the Bridge codegen job has ended without it. A job that
       # "Re-run failed jobs" starts again finds the artifact at once.
       - name: Wait for the bridge files
