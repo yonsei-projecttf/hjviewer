@@ -10,10 +10,10 @@
 //! | `POST /api/logout` | revokes the token and its key; signed by the key, also takes the PC the login came from out of the list |
 //! | `POST /api/hjv/account/delete` | `{"deleted":true,"pcs","devices","relays"}`: the token's account deleted at its own request, as `admin user delete` does, body `{"confirm":"delete-account"}` (account.rs, 1.9.1) |
 //! | `GET /api/users` | `{"total":1,"data":[<user>]}` |
-//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol","wake","synced"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs), whether it can be woken (wake.rs `peer_wol`) and, from 1.9.0, `wake` and its last sync for the app's own words (U27) |
-//! | `GET /api/hjv/this-device` | what the token's login did with its device, whether it can be undone, and for a PC in the account its `binding`, `pwless` and `activation` |
+//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol","wake","synced"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs), whether it can be woken (wake.rs `peer_wol`) and, from 1.9.0, `wake` and its last sync for the app's own words (U27); none for the App Review account, whose PCs are the review's demo PCs (review.rs) |
+//! | `GET /api/hjv/this-device` | what the token's login did with its device, whether it can be undone (never a demo PC of the App Review account), and for a PC in the account its `binding`, `pwless` and `activation` |
 //! | `POST /api/hjv/this-device/undo` | takes that device out of the list again |
-//! | `DELETE /api/hjv/devices/{id}` | takes a device out of the list ("내 PC에서 빼기") |
+//! | `DELETE /api/hjv/devices/{id}` | takes a device out of the list ("내 PC에서 빼기"); the App Review account takes none out (404) |
 //! | `GET /api/hjv/keys`, `…/keys/{ckid}/ack`, `DELETE …/keys/{ckid}`, `POST …/keys/revoke-others` | the account keys (keys.rs) |
 //! | `GET /api/hjv/admin/overview` | the super operator's view of the service's users and PCs, read-only; for every other account the 404 of an unknown path (overview.rs) |
 //! | `POST /api/hjv/pc/sync` | a bound PC's sync, signed with its device key, no token (pcsync.rs) |
@@ -700,6 +700,12 @@ async fn peers(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         Ok(s) => s,
         Err(reply) => return reply,
     };
+    // the App Review account's PCs are its demo PCs (review.rs), which the reviewers reach by
+    // their ID and password: its list stays empty, as the app's own texts say of an account that
+    // was deleted and logged in again
+    if review::is_account(&s.account) {
+        return Reply::ok(&paged(Vec::new(), &req.query));
+    }
     let account_id = s.account.id;
     let found = state
         .db
@@ -786,10 +792,14 @@ async fn device_state(state: &Arc<AppState>, s: &Session) -> Result<DeviceState,
         (d, pwless)
     });
     // [취소] undoes what this login did; a PC that was in the list before leaves it through
-    // DELETE /api/hjv/devices/{id}
+    // DELETE /api/hjv/devices/{id}. A demo PC of the App Review account stays for the review
+    // (review.rs): the operator releases it
     Ok(DeviceState {
         status,
-        undo: in_account && s.device_verified && recorded == BindStatus::Added,
+        undo: in_account
+            && s.device_verified
+            && recorded == BindStatus::Added
+            && !review::is_account(&s.account),
         pc,
     })
 }
@@ -886,7 +896,9 @@ async fn remove_device(state: &Arc<AppState>, req: &ApiRequest, id: &str) -> Rep
         Ok(s) => s,
         Err(reply) => return reply,
     };
-    if !valid_device_id(id) {
+    // the App Review account's PCs are not in its list (peers), and it takes none out: they are
+    // the review's demo PCs, which the operator releases (review.rs)
+    if !valid_device_id(id) || review::is_account(&s.account) {
         return Reply::not_found();
     }
     let (device_id, account_id, at) = (id.to_owned(), s.account.id, now());

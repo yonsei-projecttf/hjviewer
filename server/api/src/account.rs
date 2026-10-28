@@ -26,7 +26,15 @@
 //! - The App Review account deletes itself as any other (it may not make support codes, but this
 //!   it may), and its allowlist entry stays (db.rs `delete_account_by_user`): its ID names no
 //!   person, and the next review login needs the entry (docs/server-runbook.md 7-17); that login
-//!   makes a new, empty account.
+//!   finds a new, empty account. From 1.9.2 (review.rs) the demo PCs it holds of its file's `PC=`
+//!   line stay bound, to that new account, made in the same transaction, so that a reviewer who
+//!   deletes the account (Apple tests it) still finds the demo PC online; the answer's `pcs` counts
+//!   the PCs that left, and the record and the journal add `, <n> demo PCs kept`. A deletion from a
+//!   demo PC's own login is refused before anything is recorded, with 403 `demo_pc` and
+//!   [`TEXT_DEMO_PC`]: the app there would let its PC go with the account it deleted (it does so on
+//!   `"deleted":true`, and on nothing else). The PC is found by the account's login key, which the
+//!   new account keeps, so that a request that authenticated just before another device's deletion
+//!   moved the PC is refused too.
 //! - The operator record (oplog.rs) takes a line before anything is deleted, under the service's
 //!   own user ID and no sudo user, with the account's tag (`cmd="app account-delete"
 //!   targets=<tag>`), and one after it with the tag again and the counts (`acct=<tag> done="ok:
@@ -54,7 +62,7 @@
 
 use crate::{
     api::{self, session, ApiRequest, Reply},
-    db::{self, Listing, Session},
+    db::{self, Keep, Listing, Session},
     keys::{CALLS_PER_MINUTE, TEXT_TOO_OFTEN},
     login::{self, Retry},
     oplog::{OpEntry, OpLog},
@@ -75,6 +83,8 @@ pub const COMMAND: &str = "app account-delete";
 pub const TEXT_NOT_RECORDED: &str =
     "삭제 기록을 남기지 못해 계정을 지우지 않았습니다. 잠시 뒤 다시 시도해 주세요.";
 const TEXT_BAD_REQUEST: &str = "요청을 이해하지 못했습니다.";
+/// The answer to a deletion from a demo PC's own login of the App Review account (1.9.2).
+pub const TEXT_DEMO_PC: &str = "이 PC는 App Review 계정의 데모 PC라서 여기서는 계정을 지울 수 없습니다. iPhone이나 iPad의 HJViewer에서 지우세요. (This PC is the App Review account's demo PC: delete the account in HJViewer on the iPhone or iPad.)";
 
 fn refusal(status: StatusCode, text: &str, code: &str) -> Reply {
     Reply::json(status, &json!({ "error": text, "hjv": code }))
@@ -110,7 +120,10 @@ fn request_hash(req: &ApiRequest) -> Option<[u8; 32]> {
 
 /// What a deletion took.
 struct Deleted {
+    /// the PCs that left the account
     pcs: usize,
+    /// the App Review account's demo PCs that stayed, bound to its new account (1.9.2)
+    kept: usize,
     /// the active account keys: the devices logged in
     devices: usize,
     tokens: usize,
@@ -131,10 +144,16 @@ impl Deleted {
         }
     }
 
-    /// `1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist entry removed`
+    /// `1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist entry removed`, and
+    /// `, 1 demo PCs kept` when the App Review account kept some
     fn counts(&self, keep_listing: bool) -> String {
+        let kept = if self.kept > 0 {
+            format!(", {} demo PCs kept", self.kept)
+        } else {
+            String::new()
+        };
         format!(
-            "{} PCs, {} account keys, {} tokens, {} relays, allowlist entry {}",
+            "{} PCs, {} account keys, {} tokens, {} relays, allowlist entry {}{kept}",
             self.pcs,
             self.devices,
             self.tokens,
@@ -242,6 +261,23 @@ async fn handle(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         }
         return refusal(StatusCode::BAD_REQUEST, TEXT_BAD_REQUEST, "bad_request");
     }
+    // the App Review account's demo PC keeps its account (review.rs): the app on it lets the PC
+    // go with an account it deleted, so its own login deletes nothing
+    match on_demo_pc(state, &s).await {
+        Ok(false) => {}
+        Ok(true) => {
+            if state.first_notice(
+                &format!("account-delete-demo-pc:{tag}"),
+                Duration::from_secs(600),
+            ) {
+                log_notice!(
+                    "account delete: refused from a demo PC of the App Review account (acct={tag}); the next ten minutes are not logged"
+                );
+            }
+            return refusal(StatusCode::FORBIDDEN, TEXT_DEMO_PC, "demo_pc");
+        }
+        Err(reply) => return reply,
+    }
     // a deletion that cannot be recorded is not made
     let Some((record, uid)) = state.operator_record.get().cloned() else {
         if state.first_notice("account-delete:no-record", Duration::from_secs(600)) {
@@ -267,6 +303,29 @@ async fn handle(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         let _ = first.send(Some(reply.clone()));
     }
     reply
+}
+
+/// Whether the request comes from a PC that the App Review account holds (review.rs): its
+/// login's device is one of the account's PCs, its demo PCs, whether or not that login proved the
+/// PC's key (a request that only claims the ID refuses its own deletion, nothing else). The PC is
+/// looked for by the account's login key, not its id: the new row that the account's own deletion
+/// makes for its demo PCs has the same key and another id (db.rs `delete_account_by_user`). A
+/// request that authenticated just before another device's deletion moved the PC to that row
+/// comes here after it; by the id it would find the PC in another account, go on, and find its
+/// own account gone: `"deleted":true`, on which the app there lets its PC go (tests/review.rs).
+async fn on_demo_pc(state: &Arc<AppState>, s: &Session) -> Result<bool, Reply> {
+    if s.device_id.is_empty() || !review::is_account(&s.account) {
+        return Ok(false);
+    }
+    let (id, key) = (s.device_id.clone(), s.account.login_key.clone());
+    state
+        .db
+        .call(move |c| Ok(db::bound_key(c, &id, &key)?.is_some()))
+        .await
+        .map_err(|e| {
+            log_err!("account delete: {e}");
+            Reply::server_error()
+        })
 }
 
 /// The deletion itself: the record's first line, the transaction, what memory holds of the
@@ -311,6 +370,15 @@ async fn delete_now(
     // only the App Review account's ID is outside the ID rule here: its tokens hold only while its
     // file names it (review.rs `admits`, checked by session())
     let keep_listing = review::is_review(&login_key);
+    // its demo PCs stay bound, to its new account (review.rs, db.rs `delete_account_by_user`)
+    let demo_pcs = if review::is_account(&s.account) {
+        review::active_for(state, &login_key, at)
+            .await
+            .map(|review| review.demo_pcs().to_vec())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let outcome = state
         .db
         .call(move |c| {
@@ -329,9 +397,14 @@ async fn delete_now(
                 let relays = db::active_relays_of(tx, id)?.len();
                 let tokens = db::revoke_tokens(tx, id)?;
                 let listing = db::listing(tx, &login_key)?;
-                db::delete_account_by_user(tx, id, keep_listing, at)?;
+                let keep = Keep {
+                    listing: keep_listing,
+                    demo_pcs: &demo_pcs,
+                };
+                let kept = db::delete_account_by_user(tx, id, keep, at)?.unwrap_or(0);
                 Ok(Outcome::Deleted(Deleted {
-                    pcs,
+                    pcs: pcs - kept,
+                    kept,
                     devices,
                     tokens,
                     relays,
@@ -493,6 +566,7 @@ mod tests {
     fn what_the_lines_say() {
         let deleted = |listing| Deleted {
             pcs: 1,
+            kept: 0,
             devices: 2,
             tokens: 2,
             relays: 0,
@@ -513,11 +587,29 @@ mod tests {
         );
         assert_eq!(deleted(Listing::Blocked).entry(true), "stays blocked");
         assert_eq!(deleted(Listing::Absent).entry(false), "none");
+        // the App Review account's demo PCs that stayed (1.9.2), said only when there are some
+        let review = Deleted {
+            pcs: 0,
+            kept: 3,
+            devices: 20,
+            tokens: 20,
+            relays: 0,
+            listing: Listing::Registered,
+        };
+        assert_eq!(
+            review.counts(true),
+            "0 PCs, 20 account keys, 20 tokens, 0 relays, allowlist entry kept, 3 demo PCs kept"
+        );
+        assert_eq!(
+            review.done(true),
+            "ok: 0 PCs, 20 account keys, 20 tokens, 0 relays, allowlist entry kept, 3 demo PCs kept (App Review)"
+        );
         // only what the record keeps as it is (oplog.rs `safe`), within its 160 characters
         let mut dones = vec![
             DONE_GONE.to_owned(),
             DONE_ENDED.to_owned(),
             DONE_FAILED.to_owned(),
+            review.done(true),
         ];
         for listing in [Listing::Registered, Listing::Blocked, Listing::Absent] {
             for keep in [false, true] {
@@ -536,7 +628,7 @@ mod tests {
 
     #[test]
     fn texts_never_say_disabled() {
-        for text in [TEXT_NOT_RECORDED, TEXT_BAD_REQUEST] {
+        for text in [TEXT_NOT_RECORDED, TEXT_BAD_REQUEST, TEXT_DEMO_PC] {
             assert!(!text.to_lowercase().contains("disabled"));
         }
     }

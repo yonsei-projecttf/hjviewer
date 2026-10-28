@@ -23,7 +23,7 @@
 //!    the rule that goes on is the App Review account's, while its file names it (review.rs):
 //!    steps 5, 7 and 8 as for any ID, then its file's hash in place of the SSO (no step 6, 9 or
 //!    10), a wrong password failing as one the SSO refused, and the rest, into no account that
-//!    is not its own;
+//!    is not its own, binding only a demo PC of its file's `PC=` line;
 //! 5. failures per ID, the same for every ID typed; a request signed by a PC already in that
 //!    account (devsig.rs) counts under a limit of its own, one for all the account's PCs, so that
 //!    someone who knows only the ID cannot lock the owner out of their PC. With
@@ -81,16 +81,19 @@
 //! in open mode (step 12), the account created or updated, the account key registered (keys.rs),
 //! the device added to the account when it is an installed Windows PC whose signature matches the
 //! key hbbs holds (D9, D10, v2 §5), and a token issued: 256 random bits, of which only the SHA-256
-//! is stored, bound to the account key. A new token replaces the account's token from the same
-//! device, and that token's key with it, and an account keeps at most [`MAX_TOKENS`]. The answer
-//! adds `"hjv":{"ks":<the key's serial>}`, and for a PC added by the login or already in the
-//! account also `"binding":"<32 hex>","login_at":<server time>` (design v3 §4-1), from which the
-//! PC's service takes up the binding (§4-4). While hjv-api has a ticket key, `hjv.access` is the
-//! app's access ticket (ticket.rs): `both` for an installed PC whose login signature matched the
-//! key hbbs holds for it, `ctl` for any other device, and for the App Review account `review`
-//! for the demo PCs of its file, or none without them. `hjv.support_code` is `true` for a login
-//! that may make support codes (support.rs `may_make`: any but the App Review account's), and
-//! missing otherwise; currentUser says the same.
+//! is stored, bound to the account key. The App Review account's login adds a device only when it
+//! is a demo PC of its file (review.rs, from 1.9.2): any other is `not_eligible` before hbbs is
+//! asked. A new token replaces the account's token from the same device, and that token's key
+//! with it, and an account keeps at most [`MAX_TOKENS`]. The answer adds `"hjv":{"ks":<the key's
+//! serial>}`, and for a PC added by the login or already in the account also
+//! `"binding":"<32 hex>","login_at":<server time>` (design v3 §4-1), from which the PC's service
+//! takes up the binding (§4-4). While hjv-api has a ticket key, `hjv.access` is the app's access
+//! ticket (ticket.rs): `both` for an installed PC whose login signature matched the key hbbs holds
+//! for it, `ctl` for any other device, and for the App Review account `review` for the demo PCs of
+//! its file, or none without them (also on a demo PC, which registers with its sync's `staff`/`pc`
+//! ticket). `hjv.support_code` is `true` for a login that may make support codes (support.rs
+//! `may_make`: any but the App Review account's), and missing otherwise; currentUser says the
+//! same.
 
 use crate::{
     api::{is_json, user_json, ApiRequest, BodyError, Reply},
@@ -1361,7 +1364,7 @@ async fn sso_login(
     }
     match result {
         Ok(user) => {
-            let answer = success(run, key, user, device).await;
+            let answer = success(run, key, user, device, None).await;
             // a first login that went through gives its call back: the window keeps the calls
             // that logged no one in, so that people logging in for the first time one after
             // another behind one address (a campus NAT) do not use up its share
@@ -1407,7 +1410,7 @@ async fn sso_login(
 /// The App Review account's login (review.rs) after step 5, with nothing of the SSO's (its pause,
 /// the second factor, its calls): steps 7 and 8, its file's hash in place of step 10 (a wrong
 /// password failing as one the SSO refused), then the rest as for anyone, into no account but one
-/// of its own.
+/// of its own, and binding no PC but a demo PC of the file.
 async fn review_login(
     run: &mut Run<'_>,
     key: &str,
@@ -1428,6 +1431,7 @@ async fn review_login(
     if let Err(answer) = success_limits(run).await {
         return answer;
     }
+    let file = review.clone();
     match tokio::task::spawn_blocking(move || review.verify(&password)).await {
         Ok(true) => {}
         Ok(false) => {
@@ -1451,18 +1455,18 @@ async fn review_login(
                 .await;
         }
     }
-    // an account of its ID that this login did not make (another name or pcode, or a PC: one of
-    // before the ID rule) is not its own. Checked outside the transaction: only this login makes
-    // accounts of IDs outside the rule, and it binds no PC
+    // an account of its ID that this login did not make (another name or pcode: one of before the
+    // ID rule) is not its own. Checked outside the transaction: only this login makes accounts of
+    // IDs outside the rule (and the account's own deletion, its new account of the same values:
+    // db.rs). Its PCs say nothing here: from 1.9.2 it holds its demo PCs, and a PC that left the
+    // PC= line since must not lock the account out
     let own = {
         let key = key.to_owned();
         state
             .db
             .call(move |c| match db::account_by_key(c, &key)? {
                 None => Ok(true),
-                Some(a) => Ok(a.portal_id == key
-                    && a.display_name == review::NAME
-                    && db::devices_of(c, a.id)?.is_empty()),
+                Some(a) => Ok(review::is_account(&a)),
             })
             .await
     };
@@ -1491,7 +1495,7 @@ async fn review_login(
         pcode: key.to_owned(),
         name: review::NAME.to_owned(),
     };
-    let answer = success(run, key, user, device).await;
+    let answer = success(run, key, user, device, Some(&file)).await;
     if !answer.failure {
         log_notice!("login: the App Review account logged in, without the SSO (acct={tag})");
     }
@@ -1592,7 +1596,16 @@ async fn denied(run: &mut Run<'_>, e: &SsoError, denial: Denial) -> LoginAnswer 
         .await
 }
 
-async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClaim) -> LoginAnswer {
+/// The login once the password is right: steps 11 and 12, the transaction and the answer.
+/// `review` is the App Review account's file for its login (review.rs), whose demo PCs are the
+/// only devices that login binds; `None` for a login through the SSO.
+async fn success(
+    run: &mut Run<'_>,
+    key: &str,
+    user: SsoUser,
+    device: DeviceClaim,
+    review: Option<&Review>,
+) -> LoginAnswer {
     let state = run.state;
     let account_tag = run.account_tag.clone().unwrap_or_default();
     if login_key(&user.pcode) != key {
@@ -1645,7 +1658,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
                 .await;
         }
     }
-    let check = check_device(state, key, &device, &account_tag).await;
+    let check = check_device(state, key, &device, &account_tag, review).await;
     let login_key = key.to_owned();
     let token = format!("hjv_{}", b64url(&random_bytes::<32>()));
     let hash = sha256(token.as_bytes());
@@ -1793,7 +1806,15 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
         )
     };
     match status {
-        BindStatus::Added => device_record("added").await,
+        BindStatus::Added => {
+            if review.is_some() {
+                log_notice!(
+                    "login: a demo PC joined the App Review account (acct={account_tag}, dev={})",
+                    state.tags.device(&device.id)
+                );
+            }
+            device_record("added").await
+        }
         BindStatus::OtherAccount => {
             log_warn!(
                 "device check: the device is in another account (dev={}, acct={account_tag}); admin: hjv-api admin binding revoke tag:{}",
@@ -1836,23 +1857,25 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
 }
 
 /// Checks the login's device for the list when it qualifies (D9, D10, v2 §5): an installed
-/// device of HJV_API_BIND_OS whose login signature matches the key hbbs holds for its ID, in an
-/// account other than the App Review account (review.rs), which never holds a PC. Writes nothing
+/// device of HJV_API_BIND_OS whose login signature matches the key hbbs holds for its ID. For the
+/// App Review account (review.rs) only a demo PC of its file's `PC=` line qualifies (`review`,
+/// its login's file); any other device of it is not eligible before hbbs is asked. Writes nothing
 /// but the records of what went wrong.
 async fn check_device(
     state: &Arc<AppState>,
     key: &str,
     device: &DeviceClaim,
     account_tag: &str,
+    review: Option<&Review>,
 ) -> DeviceCheck {
     if device.id.is_empty() {
         return DeviceCheck::Skip(BindStatus::None);
     }
-    if device.signature.is_none()
-        || !device.installed
-        || !state.config.bind_os.contains(&device.os)
-        || review::is_review(key)
+    if device.signature.is_none() || !device.installed || !state.config.bind_os.contains(&device.os)
     {
+        return DeviceCheck::Skip(BindStatus::NotEligible);
+    }
+    if review::is_review(key) && !review.is_some_and(|r| r.holds(&device.id)) {
         return DeviceCheck::Skip(BindStatus::NotEligible);
     }
     let device_tag = state.tags.device(&device.id);

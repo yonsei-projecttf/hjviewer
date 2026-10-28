@@ -10,17 +10,18 @@
 //! | `GET /api/hjv/devices/{id}/wol` | `{"ready","hints","reported_at","relay":{"name","match","online"}}`, no MAC |
 //!
 //! Each takes the token with its key's `X-HJV-Proof` (api.rs `session`); a PC of another account,
-//! or a job, is the same 404 as one that does not exist. The wake request, in this order: the PC
-//! of the account; already on (hbbs saw it within [`ONLINE_AGE`] seconds, or it synced as long
-//! ago; hbbs is asked [`LOOKUPS_PER_MINUTE`] times a minute per account at most, and past that a
-//! PC that has not synced counts as off): 409 `online`; no wake report: 409 `no_wol_info`; the
-//! PC's limit, one job a minute: within it the job under way (queued or sent) is the answer, 202,
-//! and one that is over 429; the account's limit (20 an hour): 429; the relay (below): 409
-//! `no_relay` or 503 `relay_offline`; the relay's limit (10 a minute): 429; then the command,
-//! signed, queued for the relay, whose held poll gets it at once (relay.rs). A minute after a job
-//! that still waits for its PC, the user may send the packets again: that is a new job, and each
-//! is confirmed on its own. Errors carry the text the account API's rules ask for and the code in
-//! `hjv`:
+//! or a job, is the same 404 as one that does not exist, and so is every PC of the App Review
+//! account (review.rs), whose demo PCs are not in its list (api.rs). The wake request, in this
+//! order: the PC of the account; already on (hbbs saw it within [`ONLINE_AGE`] seconds, or it
+//! synced as long ago; hbbs is asked [`LOOKUPS_PER_MINUTE`] times a minute per account at most, and
+//! past that a PC that has not synced counts as off): 409 `online`; no wake report: 409
+//! `no_wol_info`; the PC's limit, one job a minute: within it the job under way (queued or sent) is
+//! the answer, 202, and one that is over 429; the account's limit (20 an hour): 429; the relay
+//! (below): 409 `no_relay` or 503 `relay_offline`; the relay's limit (10 a minute): 429; then the
+//! command, signed, queued for the relay, whose held poll gets it at once (relay.rs). A minute
+//! after a job that still waits for its PC, the user may send the packets again: that is a new job,
+//! and each is confirmed on its own. Errors carry the text the account API's rules ask for and the
+//! code in `hjv`:
 //!
 //! ```text
 //! 409 {"error":"이미 켜져 있습니다.","hjv":"online"}
@@ -61,7 +62,7 @@ use crate::{
     api::{session, ApiRequest, Reply},
     db::{self, Job, RelayRow, WolInfo},
     hbbs::{self, Lookup},
-    relay,
+    relay, review,
     state::AppState,
     util::{b64, hex, now, random_bytes, sha256, valid_device_id},
     wolinfo::{self, Grade, Net4, Ready},
@@ -450,7 +451,7 @@ async fn wake(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply
     let Some(any_relay) = any_relay(req) else {
         return Reply::error(StatusCode::BAD_REQUEST, TEXT_BAD_BODY);
     };
-    if !valid_device_id(device_id) {
+    if !valid_device_id(device_id) || review::is_account(&s.account) {
         return Reply::not_found();
     }
     let (account_id, id, at) = (s.account.id, device_id.to_owned(), now());
@@ -767,7 +768,7 @@ async fn wol(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply 
         Ok(s) => s,
         Err(reply) => return reply,
     };
-    if !valid_device_id(device_id) {
+    if !valid_device_id(device_id) || review::is_account(&s.account) {
         return Reply::not_found();
     }
     let (account_id, id) = (s.account.id, device_id.to_owned());

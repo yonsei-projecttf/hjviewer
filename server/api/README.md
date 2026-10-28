@@ -355,7 +355,7 @@ ticket status             the access tickets: the ticket key in use with its fin
                           KEY= line hbbs's access.conf takes it by, whether it is that key of
                           HJV_API_TICKET_PUBKEYS, the lifetimes, and the tickets handed out and
                           refused since the start by kind (login ctl|both|review, request
-                          ctl|both|review, sync both, guest ctl|pc, refused
+                          ctl|both|review, sync both|pc, guest ctl|pc, refused
                           off|account|request|too-often, guest refused …); the access password's
                           file (on until, closed since, off) by the tag of its hash, its tickets'
                           lifetime and the last day's tries by result; the support codes open
@@ -509,9 +509,10 @@ PC=<the demo PC's ID>[,<another>…]
 ```
 
 `PC=` names the demo PCs, 1 to 3 different PC IDs separated by commas: the only PCs the account's
-access ticket reaches (Access tickets, below). It is the one line the file may leave out; without
-it the account gets no ticket, and once hbbs checks tickets it connects to nothing. An hjv-api from
-before the access tickets refuses the whole file with the line: put the new hjv-api in first.
+access ticket reaches (Access tickets, below), and from 1.9.2 the only PCs the account may hold
+(The demo PCs, below). It is the one line the file may leave out; without it the account gets no
+ticket, and once hbbs checks tickets it connects to nothing. An hjv-api from before the access
+tickets refuses the whole file with the line: put the new hjv-api in first.
 
 HASH is PBKDF2-HMAC-SHA256 of the password, 100 000 to 10 000 000 iterations (bounded, so that a
 file cannot stall logins), a salt of 16 bytes or more and a key of 32, compared in constant time
@@ -551,17 +552,21 @@ in either mode (docs/server-runbook.md 7-17): in open mode an ID not on it count
 then. The right password then goes as any login, a block keeps it out; its user object is
 `{"name":"<the ID, case-folded>","display_name":"App Review","status":1}`, and the journal says
 `login: the App Review account logged in, without the SSO (acct=<tag>)`. It never goes into an
-account it did not make: when the account of its ID has another name or pcode, or a PC (an account
-of before the rule), the right password fails as a wrong one, with the record `review-existing` and
+account it did not make: when the account of its ID has another name or pcode (an account of
+before the rule), the right password fails as a wrong one, with the record `review-existing` and
 the critical journal line `login: the App Review file names the ID of an account that is not the
-App Review account's (acct=<tag>); …`, and nothing of that account changes.
+App Review account's (acct=<tag>); …`, and nothing of that account changes. Its PCs say nothing
+there: from 1.9.2 it holds its demo PCs.
 
 The account is told apart with no state of its own: its key fails the ID rule, which every other
-account's passes. It never holds a PC (a login on an installed Windows PC is `not_eligible`), door 1
-and the short links answer it `403 {"error":"이 계정으로는 새 버전을 받을 수 없습니다."}`, it is never a
-super operator (whatever `HJV_API_OPERATORS` says), and its tokens hold only while the file is
-active and names it: otherwise every request of it gets the 401 of an unknown token, and the app
-logs out. Its own account (its keys, an empty device list, logout) is all it reaches. Its access
+account's passes, and only its login makes an account of such a key, with the key as its pcode and
+the name `App Review` (`review::is_account`, which the demo PCs' rules below go by: an account of
+before the rule keeps its own). It holds no PC but its demo PCs (below; a login on any other
+installed PC is `not_eligible`, before hbbs is asked), door 1 and the short links answer it `403
+{"error":"이 계정으로는 새 버전을 받을 수 없습니다."}`, it is never a super operator (whatever
+`HJV_API_OPERATORS` says), and its tokens hold only while the file is active and names it:
+otherwise every request of it gets the 401 of an unknown token, and the app logs out. Its own
+account (its keys, an empty device list, logout) is all it reaches. Its access
 ticket (Access tickets, below) reaches the demo PCs of the file's `PC=` line only, `review`/`ctl`
 until the earlier of `HJV_API_TICKET_HOURS` and UNTIL; without the line it gets none
 (`POST /api/hjv/ticket` answers 403 `no_ticket`, its login's answer has no `access`). An account
@@ -571,14 +576,64 @@ there: its key would pass the rule, and its tokens would hold without the file (
 
 A new HASH in the file ends no session of the old password: `hjv-api admin user revoke-all
 tag:<tag>` does. To end the account: delete the file (its tokens stop at once), then `hjv-api admin
-user delete tag:<tag>`, with the tag of the journal's line. From 1.9.1 the account may also delete
-itself in the app, as any account (Account deletion, below): it goes as any other, but its allowlist
-entry stays, since its ID names no person and the next review login needs it; that login makes a
-new, empty account (docs/server-runbook.md 7-17). The operator's `user delete` takes the entry too.
+user delete tag:<tag>`, with the tag of the journal's line, which also releases its demo PCs. From
+1.9.1 the account may also delete itself in the app, as any account (Account deletion, below): it
+goes as any other, but its allowlist entry stays, since its ID names no person and the next review
+login needs it; that login finds a new, empty account (docs/server-runbook.md 7-17), and from 1.9.2
+its demo PCs still bound to it (below). The operator's `user delete` takes the entry too.
 hjv-api from before this account does
 not know `HJV_API_REVIEW_FILE` and does not start with it, and would let the account's tokens hold
 as any: before going back to it, end the account and remove the setting (docs/server-runbook.md
 7-17).
+
+### The demo PCs (1.9.2)
+
+The owner's decision of 2026-10-28: the demo Windows PC that reviewers connect to is held by the
+App Review account itself, not by a staff account (docs/access-tickets.md 1, 2-4;
+docs/server-runbook.md 7-17, 9-11).
+
+- **Binding.** A login of the account on a PC of the file's `PC=` line binds it as a staff login
+  binds its PC: an installed app of `HJV_API_BIND_OS` whose login signature matches the key hbbs
+  holds for the ID (`added`, `already`, `check_failed`, and `other_account` for a PC another account
+  holds, which stays that account's). Any other device of the account is `not_eligible` before
+  hbbs is asked. The journal says `login: a demo PC joined the App Review account (acct=<tag>,
+  dev=<tag>)` for each new binding. A demo PC's own login answer still carries the account's
+  `review`/`ctl` ticket; this-device never offers [취소] for it (`"undo":false`), and
+  `POST /api/hjv/this-device/undo` changes nothing.
+- **Its ticket.** A demo PC's sync with its binding carries `staff`/`pc` for its ID and the key
+  that checked the sync, under the account's tag, with no targets: it registers that PC and is
+  refused at every punch hole and relay request. It lives `HJV_API_TICKET_HOURS` and never past
+  UNTIL, and comes only while the file is active, names the account and has the PC on its `PC=`
+  line; otherwise the sync gets its list without `access`, and the PC goes offline once the ticket
+  it has ends. `admin ticket status` counts them as `sync pc`. hbbs takes `pc` from `staff` and
+  `guest` only (`review` is for `ctl`), and `staff`/`both`, a staff PC's, would let whoever took it
+  from the PC connect to any PC: `pc` is the narrowest kind hbbs and the 1.9.2 apps take.
+- **The account's own view.** Its `GET /api/peers` is empty and `DELETE /api/hjv/devices/{id}`,
+  the wake path and `…/wol` answer 404 for every PC: the reviewers type the demo PC's ID and its
+  password, and the app's own words about an account that was deleted and logged in again ("an
+  empty account") stay true. Its PCs take no password-less connection, whatever the switches say
+  (`db::passwordless_on` is false for it): their lists are `disabled` without keys, so that no key
+  of it outlasts the file. `admin passwordless on|off --account` keeps the switch and says so.
+- **Deletion in the app.** The demo PCs it holds of its file's `PC=` line stay bound: in the same
+  transaction a new, empty account of its ID, pcode, name and password-less switch takes them over
+  with their bindings as they are (no tombstone), and then the old row goes with everything else
+  as in any deletion. Only PCs the account itself holds move; a PC that left the `PC=` line leaves
+  with a tombstone. The answer's `pcs` counts the PCs that left; the record's `done` and the journal
+  line add `, <n> demo PCs kept`. A deletion from a demo PC's own login (its device is a PC the
+  account holds, whether or not the login proved its key; found by the account's login key, which
+  the new account keeps, so also for a request that authenticated just before another device's
+  deletion moved the PC) gets `403 {"error":"이 PC는 App Review
+  계정의 데모 PC라서 여기서는 계정을 지울 수 없습니다. iPhone이나 iPad의 HJViewer에서 지우세요. (This
+  PC is the App Review account's demo PC: delete the account in HJViewer on the iPhone or iPad.)",
+  "hjv":"demo_pc"}` before the record takes a line, and the journal `account delete: refused from a
+  demo PC of the App Review account (acct=<tag>); …`: the 1.9.2 app lets its PC go on
+  `"deleted":true`, and on nothing else. A logout pressed on the demo PC itself is the app's own
+  release, which no server answer stops.
+- **Door 1** refuses a demo PC's device key with `403 {"error":"이 기기는 새 버전을 받을 수 없습니다."}`
+  once its signature holds, counted against no address (journal `update: a demo PC of the App
+  Review account asked for a package and was refused (dev=<tag>); …`).
+- `user revoke-all`, a logout on another device and a restart leave the demo PCs bound and
+  registered; `user delete` and `binding revoke` release them (a signed `revoked` at the next sync).
 
 ## The access password
 
@@ -1105,9 +1160,12 @@ POST /api/hjv/account/delete  {"confirm":"delete-account"}     the app: token an
   keys end with all that the account row takes along (the keys' nonces, use and answers, the
   relay pre-approvals, the wake jobs with their commands), and its allowlist entry goes unless it
   is blocked. The App Review account's entry stays (`db::delete_account_by_user`): its ID names no
-  person, and the next review login needs it. The open support codes of the account's keys end in
-  memory at once, and the held polls of its relays look again. `pcs` counts the PCs that left the
-  account, `devices` its active account keys (the devices logged in), `relays` the relays revoked.
+  person, and the next review login needs it; from 1.9.2 its demo PCs stay bound too, to a new,
+  empty account of its ID made in the same transaction (The demo PCs, above), and a deletion from
+  a demo PC's own login is refused with 403 `demo_pc`. The open support codes of the account's keys
+  end in memory at once, and the held polls of its relays look again. `pcs` counts the PCs that
+  left the account (not the demo PCs kept), `devices` its active account keys (the devices logged
+  in), `relays` the relays revoked.
 - The body is a JSON object whose `confirm` is the string `delete-account` (other members are
   ignored); the signature covers it. The app logs its device out where it gets the 200; the
   account's other devices find their tokens unknown at their next request (401).
@@ -1144,13 +1202,15 @@ POST /api/hjv/account/delete  {"confirm":"delete-account"}     the app: token an
 2026-10-26T09:30:00Z uid=998 sudo_user=- cmd="app account-delete" acct=<tag> done="ok: 1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist entry removed" prev=<64 hex>
 ```
 
-  `done` is `ok: …` with the entry `removed`, `kept (App Review)`, `stays blocked` or `none`; or,
+  `done` is `ok: …` with the entry `removed`, `kept (App Review)`, `stays blocked` or `none`
+  (`kept, <n> demo PCs kept (App Review)` when the App Review account kept demo PCs, 1.9.2); or,
   without deleting anything, `ok: already deleted`, `failed: the login ended` or `failed:
   database`. The record `account deleted-by-user` keeps the
   account's tag (no address, no device). The journal has the tag and the counts only: `account:
   deleted at its own request (acct=<tag>): 1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist
-  entry removed` (`, the App Review account` after the tag for that account), and the refusals and
-  failures as `account delete: …` (docs/server-runbook.md 9-10).
+  entry removed` (`, the App Review account` after the tag for that account, and `, <n> demo PCs
+  kept` at the end when it kept some), and the refusals and failures as `account delete: …`
+  (docs/server-runbook.md 9-10, 9-11).
 
 ### Device list: `GET /api/peers`
 
@@ -1161,12 +1221,13 @@ POST /api/hjv/account/delete  {"confirm":"delete-account"}     the app: token an
 ```
 
 `pk` is the key hbbs held when the PC was bound (the app checks the PC it reaches against it),
-`kinds` is `HJV_API_PASSWORDLESS_KINDS`. `pwless` and `note`:
+`kinds` is `HJV_API_PASSWORDLESS_KINDS`. The App Review account's list is always empty (its demo
+PCs, The App Review account above). `pwless` and `note`:
 
 | `pwless` | when (the first that holds) | `note` |
 |---|---|---|
 | `needs-relogin` | hbbs holds another key for the PC than the one stored (design v3 §4-6) | PC에서 다시 로그인 필요(보안 키 바뀜) |
-| `disabled` | the account's switch is off | 관리자가 일시 중지함 |
+| `disabled` | the account's switch is off (never on for the App Review account) | 관리자가 일시 중지함 |
 | `listed` | no sync yet, or the last one carried no binding or another one | PC에서 로그인 필요 |
 | `expired` | the last sync is older than a list lives (`HJV_API_TRUST_TTL`) | 서버와 동기화 안 됨(마지막 확인 <n>분/시간/일 전); without a sync ever, 서버와 동기화 안 됨 |
 | `off` | the PC's users switched it off there | PC에서 꺼 둠 |
@@ -1267,7 +1328,7 @@ with the PC's device key (the key hbbs held when it was bound):
 
 | row | `binding` | answer |
 |---|---|---|
-| bound | the PC's binding | 200, a signed list: `active` with the account's keys that are not revoked, or `disabled` without keys (the account's switch is off, or it is blocked or off the allowlist) |
+| bound | the PC's binding | 200, a signed list: `active` with the account's keys that are not revoked, or `disabled` without keys (the account's switch is off, or it is blocked or off the allowlist, or it is the App Review account) |
 | bound | empty, or one no tombstone of the ID has | 200 `{"server_time":…,"state":"listed","refresh":120}`, no list |
 | bound | a released binding of the ID | 200, a signed `revoked` |
 | tombstone only | a released binding of the ID | 200, a signed `revoked` |
@@ -1282,7 +1343,9 @@ with the PC's device key (the key hbbs held when it was bound):
 - `access` is the PC's access ticket (Access tickets, below), which its service registers with
   hbbs on: in the answer with the list of a sync that carried the PC's binding, while hjv-api has
   a ticket key and the account is on the allowlist and not blocked (whatever its password-less
-  switch, so a `disabled` list may come with one). A `revoked` list and `listed` carry none.
+  switch, so a `disabled` list may come with one). A demo PC of the App Review account gets
+  `"use":"pc"`, and only while that account's file is active and has the PC on its `PC=` line (The
+  demo PCs, above). A `revoked` list and `listed` carry none.
 
 - The list, its fields in this order (the bytes are what is signed and checked):
   `{"v":1,"typ":"hjv-trust","kid":1,"binding":"<hex>","pc_id":"<ID>","pc_pk":"<base64>","req":"<n>",
@@ -1316,8 +1379,8 @@ POST /api/hjv/ticket                         a phone: no body, or {}
 ```
 
 - The ticket object, the same in the three places: `ticket` the string the app carries as it is
-  and never reads; `use` what it is good for (`ctl`: the punch hole and relay requests; `both`:
-  also the registration, `RegisterPk` field 1001); `exp` when hbbs stops taking it;
+  and never reads; `use` what it is good for (`ctl`: the punch hole and relay requests; `pc`: the
+  registration, `RegisterPk` field 1001, alone; `both`: all three); `exp` when hbbs stops taking it;
   `server_time` the server's clock at the answer, so that the app counts `exp − server_time` from
   receipt and renews in time without reading the ticket. Each answer has a ticket of its own.
 - Who gets which ticket:
@@ -1331,6 +1394,7 @@ POST /api/hjv/ticket                         a phone: no body, or {}
 | the access password, `POST /api/hjv/guest` (below) | `guest`/`ctl` for the one PC a controller names, or `guest`/`pc` for a PC's own ID and key | `HJV_API_GUEST_TICKET_HOURS` |
 | a support code, `POST /api/hjv/guest` with `code` (Support codes, below) | `guest`/`pc` for a PC's own ID and key | two hours, a constant |
 | a bound PC's sync with its binding, `access` | `staff`/`both` for its ID and the key that checked the sync, while the account is on the allowlist and not blocked | `HJV_API_PC_TICKET_HOURS` |
+| a demo PC of the App Review account, its sync with its binding, `access` (1.9.2) | `staff`/`pc` for its ID and the key that checked the sync, while the account is on the allowlist and not blocked and its file is active, names it and has the PC on its `PC=` line | `HJV_API_TICKET_HOURS`, until its UNTIL at the latest |
 
   `sub` is the account's tag (log.rs), never its portal ID, and empty for the access password and
   a support code;
@@ -1925,9 +1989,16 @@ names, a closed door), the limits (thirty failures of an address, right requests
 the HEAD without headers), a package that is not as the policy says, and that the journal and the
 records hold tags only; `tests/review.rs` the App Review account (its login without the SSO, also
 while SSO calls are paused or with a second factor, a wrong password and the ID's limit, the
-success limits before the hash, the file missing, past its UNTIL or refused, list mode, no PC, no
-account it did not make, door 1 and short links refused, no super operator, its tokens ending with
-the file, the line at the start, and its own deletion in the app, which keeps its allowlist entry);
+success limits before the hash, the file missing, past its UNTIL or refused, list mode, no PC off
+its `PC=` line, no account it did not make, door 1 and short links refused, no super operator, its
+tokens ending with the file, the line at the start, and its own deletion in the app, which keeps
+its allowlist entry; from 1.9.2 its demo PCs: bound by its login on them and nothing else bound, a
+staff account's PC of the line left alone, out of its own lists, [취소] and removal, their
+`staff`/`pc` ticket until UNTIL and none without the file, their binding kept through its deletion
+in the app (open and list mode) in a new, empty account, through revoke-all, a logout and a
+restart, never deleted from a demo PC's own login (nor by its request that overlaps the iPad's
+deletion, in an order the test makes), released by `user delete`, and door 1 refusing their device
+key);
 `tests/tickets.rs` the access tickets: the shared vectors made again and the signer's rules held
 against them, `POST /api/hjv/ticket` (a phone's ticket, a Windows app's, the refusals, the retry,
 the limit), the tickets of the login's answer and of a bound PC's sync (by the account's state and

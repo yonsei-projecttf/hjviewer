@@ -1120,6 +1120,39 @@ pub fn check_list(
     })())
 }
 
+/// The payload of the ticket object of an answer (`{"ticket","use","exp","server_time"}`, ticket.rs
+/// `Issued::json`), once the signature of the harness's ticket key its kid names holds, with the
+/// object's `use` and `exp` the payload's (tests/tickets.rs reads tickets strictly, as hbbs does).
+pub fn ticket_of(object: &Value) -> Value {
+    let ticket = object["ticket"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no ticket in {object}"));
+    let parts: Vec<&str> = ticket.split('.').collect();
+    assert!(parts.len() == 4 && parts[0] == "t1", "{ticket}");
+    let seed = match parts[1] {
+        "1" => TICKET_SEED,
+        "2" => NEXT_TICKET_SEED,
+        kid => panic!("kid {kid}"),
+    };
+    let payload = hjv_api::util::b64url_decode(parts[2]).unwrap();
+    let signature = hjv_api::util::b64url_decode(parts[3]).unwrap();
+    assert!(
+        devsig::verify(
+            &devsig::public_key(&seed),
+            &hjv_api::ticket::message(&payload),
+            &b64(&signature)
+        ),
+        "the signature of {ticket}"
+    );
+    let p: Value = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(
+        (&object["use"], &object["exp"]),
+        (&p["use"], &p["exp"]),
+        "{object}"
+    );
+    p
+}
+
 impl Drop for Harness {
     fn drop(&mut self) {
         let _ = self.stop.send(true);

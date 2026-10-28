@@ -68,7 +68,7 @@
 //!
 //! | row | `binding` sent | answer |
 //! |---|---|---|
-//! | bound | the binding | a signed list, `active` (the account's keys that are not revoked) or `disabled` (the account's switch is off, or it is off the allowlist or blocked: no keys) |
+//! | bound | the binding | a signed list, `active` (the account's keys that are not revoked) or `disabled` (the account's switch is off, or it is off the allowlist or blocked, or it is the App Review account: no keys) |
 //! | bound | empty, or one no tombstone of the ID has | 200 `listed`, no list |
 //! | bound | a released binding of the ID | a signed `revoked` |
 //! | tombstone only | a released binding of the ID | a signed `revoked` |
@@ -90,13 +90,17 @@
 //! ticket key and the PC's account is on the allowlist and not blocked, whatever the account's
 //! password-less switch (ticket.rs): `"access":{"ticket","use":"both","exp","server_time"}`, for
 //! the PC's ID and the key that checked the sync, so that its service registers with hbbs on a
-//! ticket each sync renews. A `revoked` list, a `listed` answer and an error carry none.
+//! ticket each sync renews. A demo PC of the App Review account (review.rs `is_account`, from
+//! 1.9.2) gets `"use":"pc"` instead (ticket.rs `for_demo_pc`), and only while the account's file
+//! is active and has the PC on its `PC=` line; its list is always `disabled` (db.rs
+//! `passwordless_on`). A `revoked` list, a `listed` answer and an error carry none.
 
 use crate::{
     api::{is_json, ApiRequest, BodyError, Reply},
     db::{self, Device, SyncRow, UseLine},
     envelope::{self, Envelope, Refusal, Spec},
     hbbs::{self, Lookup},
+    review,
     state::AppState,
     trust::{mask_name, ListEntry, State as ListState, TrustList},
     util::{b64, b64_decode, date, day_number, hex, now, valid_device_id, DAY, HOUR, MINUTE},
@@ -462,21 +466,33 @@ enum Decided {
     /// bound, without a list
     Listed,
     /// a list to sign: active, disabled or revoked; `cache` when it was built for a bound PC;
-    /// `send_wol` when hjv-api wants the PC's whole wake report next time; `ticket` the login key
-    /// of the account and the PC's key when the answer carries the PC's access ticket
+    /// `send_wol` when hjv-api wants the PC's whole wake report next time; `ticket` the account
+    /// and the PC's key when the answer carries the PC's access ticket
     List {
         list: TrustList,
         cache: Option<CachedList>,
         send_wol: bool,
-        ticket: Option<(String, [u8; 32])>,
+        ticket: Option<(Holder, [u8; 32])>,
     },
 }
 
-/// The login key of a bound PC's account while the account may use HJViewer (on the allowlist,
-/// not blocked), for the PC's access ticket.
-fn ticket_holder(c: &Connection, account_id: i64) -> rusqlite::Result<Option<String>> {
+/// The account a bound PC's access ticket is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Holder {
+    login_key: String,
+    /// the App Review account (review.rs `is_account`): its PCs are demo PCs, whose ticket is
+    /// ticket.rs's `for_demo_pc`
+    review: bool,
+}
+
+/// A bound PC's account while it may use HJViewer (on the allowlist, not blocked), for the PC's
+/// access ticket.
+fn ticket_holder(c: &Connection, account_id: i64) -> rusqlite::Result<Option<Holder>> {
     Ok(match db::account(c, account_id)? {
-        Some(a) if db::allowed(c, &a.login_key)? => Some(a.login_key),
+        Some(a) if db::allowed(c, &a.login_key)? => Some(Holder {
+            review: review::is_account(&a),
+            login_key: a.login_key,
+        }),
         _ => None,
     })
 }
@@ -660,7 +676,7 @@ fn decide(
                     let serial = db::change_serial(&tx)?;
                     let now = Instant::now();
                     let ticket = if settings.tickets {
-                        ticket_holder(&tx, d.account_id)?.map(|key| (key, pc_pk))
+                        ticket_holder(&tx, d.account_id)?.map(|holder| (holder, pc_pk))
                     } else {
                         None
                     };
@@ -784,8 +800,13 @@ pub async fn handle(state: &Arc<AppState>, req: ApiRequest) -> Reply {
                 "send_wol": send_wol,
                 "list": { "kid": list.kid, "l": b64(&bytes), "s": b64(&signature) },
             });
-            if let Some((login_key, pc_pk)) = ticket {
-                if let Ok(issued) = crate::ticket::for_bound_pc(state, &login_key, &id, pc_pk, at) {
+            if let Some((holder, pc_pk)) = ticket {
+                let issued = if holder.review {
+                    crate::ticket::for_demo_pc(state, &holder.login_key, &id, pc_pk, at).await
+                } else {
+                    crate::ticket::for_bound_pc(state, &holder.login_key, &id, pc_pk, at)
+                };
+                if let Ok(issued) = issued {
                     answer["access"] = issued.json(now());
                 }
             }

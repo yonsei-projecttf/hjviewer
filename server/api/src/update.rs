@@ -47,7 +47,8 @@
 //!   runs and nothing else. Whatever of this fails, the answer is the same 403.
 //!
 //! A short link is made by a login only. The App Review account's login (review.rs) gets 403 at
-//! door 1 and for a short link.
+//! door 1 and for a short link, and from 1.9.2 so does the device key of its demo PCs, once the
+//! key's signature holds: that 403 counts against no address, as no rightly signed request does.
 //!
 //! **A short link** is eight symbols of Crockford's base32 (40 random bits), shown as
 //! `XXXX-XXXX`; read without regard to case, `-` and spaces, with `O` for `0` and `I` or `L` for
@@ -1269,7 +1270,8 @@ fn in_time(t: i64, at: i64) -> bool {
 /// The PC that signed the request, as its tag and its account's: a PC in an account that is on
 /// the allowlist, whose stored key signed this platform and version at about this time, and whose
 /// own platform it is. Else the 403 that is the same whatever was wrong, counted against the
-/// address.
+/// address, but for a demo PC of the App Review account (review.rs), whose rightly signed request
+/// gets it uncounted.
 async fn device(
     state: &Arc<AppState>,
     req: &ApiRequest,
@@ -1315,6 +1317,17 @@ async fn device(
         None => "a PC in no account",
         Some(_) if !signed => "a signature that is not the PC's",
         Some(_) if !in_time => "a signature of another time",
+        // a demo PC of the App Review account (review.rs) gets no package: the 403, rightly
+        // signed, which counts against no address
+        Some((device, Some(account), _)) if review::is_account(account) => {
+            let tag = state.tags.device(&device.device_id);
+            if state.first_notice(&format!("update:demo-pc:{tag}"), NOTICE_EVERY) {
+                log_info!(
+                    "update: a demo PC of the App Review account asked for a package and was refused (dev={tag}); the next ten minutes are not logged"
+                );
+            }
+            return Err(Reply::error(StatusCode::FORBIDDEN, TEXT_REFUSED));
+        }
         Some((_, _, false)) => "a PC whose account is blocked or off the allowlist",
         Some((device, ..)) if device.os != platform.name() => "a PC asking for another platform",
         Some((device, Some(account), true)) => {

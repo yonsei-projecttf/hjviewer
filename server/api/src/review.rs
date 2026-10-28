@@ -27,23 +27,37 @@
 //! While the file is active, its ID (compared as the allowlist compares IDs) logs in without the
 //! SSO (login.rs): the limits of any ID and the success limits, the password checked against HASH
 //! in constant time (a wrong one fails as a wrong password the SSO refused), then the login's
-//! transaction as for anyone, with the name [`NAME`], but never into an account it did not make (of
-//! another name, or with a PC: one of before the ID rule). The operator puts the ID on the
-//! allowlist ahead in either mode (docs/server-runbook.md 7-17): in open mode an ID not on it
-//! counts under HJV_API_LIMIT_NEW_ID until its first login, in list mode it logs in only then. The
-//! account needs no state of its own to be told apart: its key fails the ID rule, which every other
-//! account's passes ([`is_review`]). It never holds a PC (login.rs `check_device`), gets no package
-//! or short link (update.rs), gets an access ticket only for its demo PCs ([`Review::demo_pcs`],
-//! ticket.rs: `review`/`ctl` until the earlier of a day and UNTIL), is never a super operator
-//! (overview.rs), and
-//! its tokens hold only while the file is active and names it ([`admits`], api.rs
+//! transaction as for anyone, with the name [`NAME`], but never into an account it did not make
+//! (another name or pcode: one of before the ID rule). The operator puts the ID on the allowlist
+//! ahead in either mode (docs/server-runbook.md 7-17): in open mode an ID not on it counts under
+//! HJV_API_LIMIT_NEW_ID until its first login, in list mode it logs in only then. The account
+//! needs no state of its own to be told apart: its key fails the ID rule, which every other
+//! account's passes ([`is_review`]), and only its login makes an account of such a key, with the
+//! key as its pcode and [`NAME`] as its name ([`is_account`]). It gets no package or short link
+//! (update.rs), gets an access ticket only for its demo PCs ([`Review::demo_pcs`], ticket.rs:
+//! `review`/`ctl` until the earlier of a day and UNTIL), is never a super operator (overview.rs),
+//! and its tokens hold only while the file is active and names it ([`admits`], api.rs
 //! `authenticate`): else they are unknown tokens, and the app logs out. A new HASH ends no session
 //! of the old password: `hjv-api admin user revoke-all` does. From 1.9.1 it may delete itself in
 //! the app as any account (account.rs): its allowlist entry then stays, its ID naming no person,
 //! so that its next login makes a new, empty account.
+//!
+//! From 1.9.2 (the owner's decision of 2026-10-28) it holds the demo PCs that reviewers connect
+//! to, and no other PC: a login of it on a PC of the `PC=` line binds that PC as a staff login
+//! binds its PC (an installed app of HJV_API_BIND_OS whose signature matches the key hbbs holds
+//! for the ID: login.rs `check_device`), while the file is active; on any other device it binds
+//! nothing, and hbbs is not even asked. A demo PC registers with hbbs on a `staff`/`pc` ticket of
+//! its sync, which ends at UNTIL (ticket.rs `for_demo_pc`). The account's own lists stay as a
+//! reviewer expects of an account that holds no PC: its My PCs is empty and it takes no PC out
+//! (api.rs), its PCs take no password-less connection (db.rs `passwordless_on`: the reviewers type
+//! the demo PC's ID and its password, as the review notes say), and its own deletion in the app
+//! leaves its demo PCs bound to a new, empty account of the same ID (db.rs
+//! `delete_account_by_user`), refused only from a demo PC's own login (account.rs). The operator's
+//! `user delete` and `binding revoke` release them, as any PC.
 
 use crate::{
     config::Config,
+    db::Account,
     log::Tagger,
     state::AppState,
     update::{same, utc_time, watched, Watched},
@@ -122,9 +136,15 @@ impl Review {
     }
 
     /// The demo PCs, in the file's order: the only PCs the account's access ticket reaches
-    /// (ticket.rs). None, and so no ticket, without a `PC=` line.
+    /// (ticket.rs), and the only ones it may hold (login.rs). None, and so no ticket, without a
+    /// `PC=` line.
     pub fn demo_pcs(&self) -> &[String] {
         &self.pcs
+    }
+
+    /// Whether the PC `id` is one of the demo PCs.
+    pub fn holds(&self, id: &str) -> bool {
+        self.pcs.iter().any(|pc| pc == id)
     }
 
     /// Whether `password` is the file's: PBKDF2-HMAC-SHA256 with its salt and iterations,
@@ -228,6 +248,31 @@ pub fn is_review(login_key: &str) -> bool {
     staff_id(login_key).is_none()
 }
 
+/// Whether the account `a` is the App Review account itself: its key outside the ID rule
+/// ([`is_review`]), with the key as its pcode and [`NAME`] as its name, as only its login makes
+/// it (login.rs `review_login`, and its own deletion's new account: db.rs). An account of before
+/// the ID rule has its key outside the rule too, but the SSO's pcode and name: the demo PCs'
+/// rules are not its (pcsync.rs, update.rs, api.rs).
+pub fn is_account(a: &Account) -> bool {
+    is_review(&a.login_key) && a.portal_id == a.login_key && a.display_name == NAME
+}
+
+/// The file at `at` while it is active and names the account of `login_key` (on a thread for
+/// files; none, and no thread, without HJV_API_REVIEW_FILE).
+pub async fn active_for(state: &Arc<AppState>, login_key: &str, at: i64) -> Option<Arc<Review>> {
+    state.config.review_file.as_ref()?;
+    let (state, key) = (state.clone(), login_key.to_owned());
+    tokio::task::spawn_blocking(move || {
+        state
+            .review
+            .active(&state.config, &state.tags, at)
+            .filter(|review| review.names(&key))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Whether a token of the account of `login_key` holds at `at`: any other account's does, the App
 /// Review account's while its file is active and names it. It may read a file: not for an async
 /// thread.
@@ -241,18 +286,7 @@ pub fn admits(state: &AppState, login_key: &str, at: i64) -> bool {
 
 /// The file, when it is active and names the ID typed at a login (on a thread for files).
 pub async fn named(state: &Arc<AppState>, username: &str) -> Option<Arc<Review>> {
-    // without the setting, no thread is taken
-    state.config.review_file.as_ref()?;
-    let (state, key) = (state.clone(), login_key(username));
-    tokio::task::spawn_blocking(move || {
-        state
-            .review
-            .active(&state.config, &state.tags, now())
-            .filter(|review| review.names(&key))
-    })
-    .await
-    .ok()
-    .flatten()
+    active_for(state, &login_key(username), now()).await
 }
 
 /// At the start: the file's own line says what was read or why it is not used; this one, that
@@ -406,10 +440,27 @@ mod tests {
         let with = |line: &str| {
             Review::parse(format!("{}{line}\n", file(ID, HASH, until)).as_bytes()).map(|r| r.pcs)
         };
-        // none without the line: then the account gets no access ticket (ticket.rs)
+        // none without the line: then the account gets no access ticket (ticket.rs) and holds
+        // no PC (login.rs)
         let none = Review::parse(file(ID, HASH, until).as_bytes()).unwrap();
-        assert!(none.demo_pcs().is_empty());
+        assert!(none.demo_pcs().is_empty() && !none.holds("100200300"));
         assert_eq!(with("PC=100200300"), Ok(vec!["100200300".to_owned()]));
+        let two = Review::parse(
+            format!("{}PC=100200301,Office-PC_7\n", file(ID, HASH, until)).as_bytes(),
+        )
+        .unwrap();
+        assert!(two.holds("100200301") && two.holds("Office-PC_7"));
+        // as the IDs are, whole: no other case, part or blank
+        for other in [
+            "100200300",
+            "office-pc_7",
+            "10020030",
+            "1002003011",
+            " 100200301",
+            "",
+        ] {
+            assert!(!two.holds(other), "{other:?}");
+        }
         // in the file's order, blanks around the IDs taken off
         assert_eq!(
             with("PC= 100200301 , 100200300,Office-PC_7 "),
@@ -445,6 +496,44 @@ mod tests {
         assert!(is_review(""));
         assert!(!is_review("zztest01"));
         assert!(!is_review("yztest03"));
+    }
+
+    #[test]
+    fn the_account_itself_is_the_one_its_login_makes() {
+        let account = |key: &str, pcode: &str, name: &str| Account {
+            id: 1,
+            login_key: key.to_owned(),
+            portal_id: pcode.to_owned(),
+            display_name: name.to_owned(),
+            created_at: 0,
+            last_login_at: 0,
+            last_active_at: 0,
+        };
+        // as review_login makes it: its key as its pcode, the name App Review
+        assert!(is_account(&account(
+            "appreview-test",
+            "appreview-test",
+            NAME
+        )));
+        // one of before the ID rule: the SSO's pcode and name
+        assert!(!is_account(&account(
+            "appreview-test",
+            "APPREVIEW-TEST",
+            "홍길동"
+        )));
+        assert!(!is_account(&account(
+            "appreview-test",
+            "appreview-test",
+            "홍길동"
+        )));
+        assert!(!is_account(&account(
+            "appreview-test",
+            "APPREVIEW-TEST",
+            NAME
+        )));
+        // a staff account, whatever its name
+        assert!(!is_account(&account("zztest01", "zztest01", NAME)));
+        assert!(!is_account(&account("zztest01", "ZZTEST01", NAME)));
     }
 
     #[test]

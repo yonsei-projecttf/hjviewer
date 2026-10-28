@@ -125,7 +125,7 @@ hjv-api admin [--socket <path>] [--reveal] <command>
   passwordless status | on | off [--account <id|tag:T> | --owner-of <PC ID>]
                             connections without the PC's password between an account's devices:
                             for everyone (off when installed; off also ends the accounts turned on
-                            one by one), or for one account
+                            one by one), or for one account (never the App Review account's)
   strict on | off           PCs ask the server at each password-less connection (incidents)
   report                    counts: accounts, devices, tokens, keys, switches, the login mode and
                             the allowlist, logins of the last day and week, the PCs' syncs,
@@ -1307,8 +1307,15 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 })
                 .await
                 .map_err(dberr)?;
+            // the App Review account's switch is kept, and changes nothing (db.rs
+            // passwordless_on): its demo PCs take their password only
+            let review = if crate::review::is_account(&account) {
+                "; the App Review account's PCs take no password-less connection, whatever its switch"
+            } else {
+                ""
+            };
             Ok(format!(
-                "password-less connections: {turn} for the account {}{}",
+                "password-less connections: {turn} for the account {}{}{review}",
                 state.tags.account(&account.login_key),
                 if changed { "" } else { " (no change)" }
             ))

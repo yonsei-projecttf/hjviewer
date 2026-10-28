@@ -17,7 +17,13 @@
 //!   part (docs/access-tickets.md 2-4, 3-3).
 //! - the sync of a bound PC that sent its binding, `access` (pcsync.rs): `staff`/`both` for the
 //!   PC's ID and the key that checked the sync, while its account is on the allowlist and not
-//!   blocked, renewed with each sync.
+//!   blocked, renewed with each sync. A demo PC of the App Review account (review.rs, from 1.9.2)
+//!   gets `staff`/`pc` instead, the registration alone, until the earlier of HJV_API_TICKET_HOURS
+//!   and the file's UNTIL, and only while the file is active, names the account and has the PC on
+//!   its `PC=` line ([`for_demo_pc`]). hbbs takes `pc` from `staff` and `guest` only (`review` is
+//!   for `ctl` alone, docs/access-tickets.md 2-4), and a `both` with no targets would let whoever
+//!   took it from the PC connect to any PC: `staff`/`pc` registers that one PC under its key and
+//!   is refused at every punch hole and relay request.
 //!
 //! Each carries the ticket object `{"ticket":"t1.…","use":"ctl","exp":…,"server_time":…}`
 //! ([`Issued::json`]): the app learns from `exp` and the server's time when to renew, never from
@@ -165,6 +171,21 @@ impl Claims {
             to: Vec::new(),
             iat,
             exp: iat.saturating_add(lifetime),
+        }
+    }
+
+    /// A demo PC's of the App Review account (`sub` its tag): `staff`/`pc` for the PC's ID and
+    /// device key, the registration alone, until `exp`.
+    pub fn demo_pc(sub: &str, id: &str, pk: [u8; 32], iat: i64, exp: i64) -> Claims {
+        Claims {
+            who: Who::Staff,
+            use_: Use::Pc,
+            sub: sub.to_owned(),
+            id: id.to_owned(),
+            pk: Some(pk),
+            to: Vec::new(),
+            iat,
+            exp,
         }
     }
 
@@ -483,16 +504,9 @@ async fn review_claims(
     sub: &str,
     at: i64,
 ) -> Result<Claims, NoTicket> {
-    let (app, key) = (state.clone(), login_key.to_owned());
-    let found = tokio::task::spawn_blocking(move || {
-        app.review
-            .active(&app.config, &app.tags, at)
-            .filter(|review| review.names(&key))
-    })
-    .await
-    .ok()
-    .flatten();
-    let review = found.ok_or(NoTicket::Account)?;
+    let review = review::active_for(state, login_key, at)
+        .await
+        .ok_or(NoTicket::Account)?;
     review_ticket(
         sub,
         review.demo_pcs(),
@@ -532,6 +546,48 @@ pub fn for_bound_pc(
     let sub = state.tags.account(login_key);
     let claims = Claims::staff(&sub, Some((id, pk)), at, state.config.pc_ticket_secs);
     issue(state, &claims, "sync both")
+}
+
+/// The ticket of a demo PC of the App Review account `login_key` (review.rs, docs/access-tickets.md
+/// 2-4) whose sync carried its binding: `staff`/`pc` for its ID `id` and the key `pk` that checked
+/// the sync, under the account's tag, as [`demo_pc_ticket`] times it, while the file is active at
+/// `at`, names the account and has `id` on its `PC=` line; none otherwise ([`NoTicket::Account`]),
+/// so that the PC registers until the ticket it has ends and no longer.
+pub async fn for_demo_pc(
+    state: &Arc<AppState>,
+    login_key: &str,
+    id: &str,
+    pk: [u8; 32],
+    at: i64,
+) -> Result<Issued, NoTicket> {
+    if state.ticket_key.is_none() {
+        return Err(NoTicket::Off);
+    }
+    let review = review::active_for(state, login_key, at)
+        .await
+        .filter(|review| review.holds(id))
+        .ok_or(NoTicket::Account)?;
+    let sub = state.tags.account(login_key);
+    let claims = demo_pc_ticket(&sub, id, pk, review.until(), at, state.config.ticket_secs)?;
+    issue(state, &claims, "sync pc")
+}
+
+/// A demo PC's claims at `at` for the file that ends at `until`: `staff`/`pc` for the PC `id` with
+/// the key `pk`, until the earlier of `at + lifetime` and `until`; none with less than a second
+/// left. The same times as the account's own ticket ([`review_ticket`]).
+fn demo_pc_ticket(
+    sub: &str,
+    id: &str,
+    pk: [u8; 32],
+    until: i64,
+    at: i64,
+    lifetime: i64,
+) -> Result<Claims, NoTicket> {
+    let exp = at.saturating_add(lifetime).min(until);
+    if exp <= at {
+        return Err(NoTicket::Account);
+    }
+    Ok(Claims::demo_pc(sub, id, pk, at, exp))
 }
 
 /// The bytes a Windows app's device key signs to ask for a `both` ticket: the context, the PC's
@@ -687,9 +743,10 @@ pub fn status(state: &AppState) -> String {
     }
     let _ = writeln!(
         out,
-        "lifetimes: logged-in apps {} h (HJV_API_TICKET_HOURS), bound PCs {} h (HJV_API_PC_TICKET_HOURS)",
+        "lifetimes: logged-in apps {} h (HJV_API_TICKET_HOURS), bound PCs {} h (HJV_API_PC_TICKET_HOURS), the App Review account's demo PCs {} h, never past its file's UNTIL",
         config.ticket_secs / HOUR,
-        config.pc_ticket_secs / HOUR
+        config.pc_ticket_secs / HOUR,
+        config.ticket_secs / HOUR
     );
     let counts: Vec<String> = state
         .tickets
@@ -736,6 +793,8 @@ mod tests {
                 use_: Use::Pc,
                 ..Claims::staff(SUB, Some(("1", pk)), AT, 1)
             },
+            // a demo PC's of the App Review account: the same kind
+            Claims::demo_pc(SUB, "123456789", pk, AT, AT + 86_400),
         ];
         for c in &good {
             assert_eq!(check(c), Ok(()), "{c:?}");
@@ -954,6 +1013,41 @@ mod tests {
         assert_eq!(
             review_ticket(SUB, &[], AT + 86_400, AT, 86_400),
             Err(NoTicket::Account)
+        );
+    }
+
+    #[test]
+    fn a_demo_pcs_ticket_registers_it_until_its_file_ends() {
+        let pk = devsig::public_key(&[2u8; 32]);
+        let claims = |until: i64| demo_pc_ticket(SUB, "100200300", pk, until, AT, 86_400);
+        // a day, staff/pc for the PC and its key, no targets
+        let c = claims(AT + 10 * 86_400).unwrap();
+        assert_eq!(c, Claims::demo_pc(SUB, "100200300", pk, AT, AT + 86_400));
+        assert_eq!(
+            (c.who, c.use_, c.to.len(), c.id.as_str(), c.pk),
+            (Who::Staff, Use::Pc, 0, "100200300", Some(pk))
+        );
+        let pk64 = b64(&pk);
+        assert_eq!(
+            String::from_utf8(payload(&c).unwrap()).unwrap(),
+            format!(
+                r#"{{"v":1,"who":"staff","use":"pc","sub":"{SUB}","id":"100200300","pk":"{pk64}","to":[],"iat":1760000000,"exp":1760086400}}"#
+            )
+        );
+        // never past UNTIL, down to its last second
+        assert_eq!(claims(AT + 3600).unwrap().exp, AT + 3600);
+        let last = claims(AT + 1).unwrap();
+        assert_eq!((last.iat, last.exp), (AT, AT + 1));
+        assert!(payload(&last).is_ok());
+        for until in [AT, AT - 1, 0] {
+            assert_eq!(claims(until), Err(NoTicket::Account), "{until}");
+        }
+        // the lifetime HJV_API_TICKET_HOURS gives it
+        assert_eq!(
+            demo_pc_ticket(SUB, "100200300", pk, AT + 86_400, AT, 6 * HOUR)
+                .unwrap()
+                .exp,
+            AT + 6 * HOUR
         );
     }
 

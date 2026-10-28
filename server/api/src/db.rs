@@ -35,7 +35,9 @@
 //! and the change serial goes up, in one transaction. Nothing else deletes a `devices` row, and an
 //! account is deleted only by [`delete_account`] (or, at its own request, by
 //! [`delete_account_by_user`], the same with the App Review account's allowlist entry kept), which
-//! releases its PCs first (the `ON DELETE CASCADE` of `devices` would leave no tombstone).
+//! releases its PCs first (the `ON DELETE CASCADE` of `devices` would leave no tombstone). The
+//! one PC that changes its account is a demo PC of the App Review account (review.rs, 1.9.2):
+//! when that account deletes itself, its new, empty account of the same ID takes the PC over.
 
 use crate::{
     util::DAY,
@@ -663,7 +665,13 @@ pub fn set_account_passwordless(
 }
 
 /// Whether password-less connections are on for an account: its own switch, else the global one.
+/// Never for the App Review account (review.rs `is_account`, from 1.9.2), whatever the switches
+/// say: its demo PCs let the reviewers in with their password only, as the review notes tell
+/// them, and their lists carry no key that could outlast the review file.
 pub fn passwordless_on(c: &Connection, account_id: i64) -> rusqlite::Result<bool> {
+    if account(c, account_id)?.is_some_and(|a| crate::review::is_account(&a)) {
+        return Ok(false);
+    }
     match account_passwordless(c, account_id)? {
         Some(on) => Ok(on),
         None => passwordless_global(c),
@@ -1093,17 +1101,70 @@ pub fn delete_account(c: &Connection, account_id: i64, at: i64) -> rusqlite::Res
     delete_account_inner(c, account_id, false, at)
 }
 
+/// What an account's own deletion keeps ([`delete_account_by_user`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Keep<'a> {
+    /// its allowlist entry: the App Review account's, whose ID names no person and whose next
+    /// review login needs the entry (review.rs)
+    pub listing: bool,
+    /// the App Review account's demo PCs, the IDs of its file's `PC=` line (review.rs): those of
+    /// them the account holds stay bound, to its new account
+    pub demo_pcs: &'a [String],
+}
+
 /// [`delete_account`] at the account's own request (account.rs, 1.9.1): the same, but with
-/// `keep_listing` its allowlist entry stays, as the App Review account's does, whose ID names no
-/// person and whose next review login needs the entry (review.rs). Inside the caller's
-/// transaction.
+/// `keep.listing` its allowlist entry stays, as the App Review account's does.
+///
+/// From 1.9.2 the PCs of `keep.demo_pcs` that the account itself holds (never another account's
+/// PC that the line names) do not leave: a new, empty account takes them over, made at `at` with
+/// the old one's ID, pcode, name and password-less switch, the PCs' bindings as they were (no
+/// tombstone: their syncs and tickets go on), and then the old row goes with everything else as
+/// before, its keys, tokens, nonces, key use, pre-approvals and wake jobs. The new row is made
+/// under a login key no login has (a blank before the ID: a login trims it) while the old row
+/// holds the unique key, and takes the key once the old row is gone. Inside the caller's
+/// transaction. `None` when there was no such account, else how many demo PCs the new account
+/// took.
 pub fn delete_account_by_user(
     c: &Connection,
     account_id: i64,
-    keep_listing: bool,
+    keep: Keep<'_>,
     at: i64,
-) -> rusqlite::Result<bool> {
-    delete_account_inner(c, account_id, keep_listing, at)
+) -> rusqlite::Result<Option<usize>> {
+    let mut demo = Vec::new();
+    for id in keep.demo_pcs {
+        let held: bool = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM devices WHERE device_id = ?1 AND account_id = ?2)",
+            params![id, account_id],
+            |r| r.get(0),
+        )?;
+        if held {
+            demo.push(id);
+        }
+    }
+    if demo.is_empty() {
+        return Ok(delete_account_inner(c, account_id, keep.listing, at)?.then_some(0));
+    }
+    let successor: i64 = c.query_row(
+        "INSERT INTO accounts (login_key, portal_id, display_name, created_at, last_login_at,
+             last_active_at, passwordless)
+         SELECT ' ' || login_key, portal_id, display_name, ?2, ?2, ?2, passwordless
+         FROM accounts WHERE id = ?1
+         RETURNING id",
+        params![account_id, at],
+        |r| r.get(0),
+    )?;
+    for id in &demo {
+        c.execute(
+            "UPDATE devices SET account_id = ?1 WHERE device_id = ?2 AND account_id = ?3",
+            params![successor, id, account_id],
+        )?;
+    }
+    let deleted = delete_account_inner(c, account_id, keep.listing, at)?;
+    c.execute(
+        "UPDATE accounts SET login_key = substr(login_key, 2) WHERE id = ?1",
+        [successor],
+    )?;
+    Ok(deleted.then_some(demo.len()))
 }
 
 fn delete_account_inner(
@@ -3659,9 +3720,16 @@ mod tests {
         assert!(token_of(&c, b"t", a).unwrap());
         assert!(!token_of(&c, b"t", b).unwrap() && !token_of(&c, b"u", a).unwrap());
         let serial = change_serial(&c).unwrap();
+        let entry = |listing| Keep {
+            listing,
+            demo_pcs: &[],
+        };
         // as delete_account: the PC released first (tombstone), the tokens with the account, and
         // the entry gone
-        assert!(delete_account_by_user(&c, a, false, 6).unwrap());
+        assert_eq!(
+            delete_account_by_user(&c, a, entry(false), 6).unwrap(),
+            Some(0)
+        );
         assert_eq!(change_serial(&c).unwrap(), serial + 2);
         assert!(account(&c, a).unwrap().is_none());
         assert!(device(&c, "1").unwrap().is_none());
@@ -3669,13 +3737,221 @@ mod tests {
         assert!(!delete_token(&c, b"t").unwrap());
         assert_eq!(listing(&c, "a1").unwrap(), Listing::Absent);
         // keeping the entry (the App Review account's), registered as it was
-        assert!(delete_account_by_user(&c, b, true, 7).unwrap());
+        assert_eq!(
+            delete_account_by_user(&c, b, entry(true), 7).unwrap(),
+            Some(0)
+        );
         assert!(account(&c, b).unwrap().is_none());
         assert_eq!(listing(&c, "b2").unwrap(), Listing::Registered);
         // a blocked entry stays either way; an account deleted already is no deletion
-        assert!(delete_account_by_user(&c, blocked, false, 8).unwrap());
+        assert_eq!(
+            delete_account_by_user(&c, blocked, entry(false), 8).unwrap(),
+            Some(0)
+        );
         assert_eq!(listing(&c, "c3").unwrap(), Listing::Blocked);
-        assert!(!delete_account_by_user(&c, a, false, 9).unwrap());
+        assert_eq!(
+            delete_account_by_user(&c, a, entry(false), 9).unwrap(),
+            None
+        );
+    }
+
+    /// The App Review account's own deletion (1.9.2): its demo PCs that it holds go to a new, empty
+    /// account of its ID with their bindings as they are, and everything else goes as in any
+    /// deletion; a PC of the PC= line that another account holds stays that account's.
+    #[test]
+    fn the_review_accounts_deletion_keeps_its_demo_pcs_in_a_new_account() {
+        let mut c = conn();
+        let review = "appreview-test";
+        allow_add(&mut c, &[review.to_owned(), "zztest01".to_owned()], 1).unwrap();
+        let old = upsert_account(&c, review, review, crate::review::NAME, 2).unwrap();
+        let staff = upsert_account(&c, "zztest01", "ZZTEST01", "홍길동", 2).unwrap();
+        set_account_passwordless(&c, old, Some(true)).unwrap();
+        // two demo PCs of its own, one PC that left the PC= line, and a PC of the line that a staff
+        // account holds
+        let demo = bind(&c, old, "100", &[1; 32], "windows", "PC", 3).unwrap();
+        let other = bind(&c, old, "200", &[2; 32], "windows", "PC", 3).unwrap();
+        let left = bind(&c, old, "300", &[3; 32], "windows", "PC", 3).unwrap();
+        let theirs = bind(&c, staff, "400", &[4; 32], "windows", "PC", 3).unwrap();
+        store_sync(
+            &c,
+            "100",
+            &SyncNote {
+                mark: "present",
+                app_ver: "1.9.2",
+                off: false,
+            },
+            4,
+        )
+        .unwrap();
+        // what the account holds besides: a key with its token, a pre-approval, a wake job
+        let key = NewKey {
+            account_id: old,
+            public_key: &[9; 32],
+            dev_tag: "",
+            ctl_id: "500",
+            platform: "ios",
+            model: "iPad",
+            app_name: "iPad13,1",
+            app_ver: "1.9.2",
+            login_net: "",
+        };
+        let KeyAdmission::Added { ckid, .. } = add_key(&c, &key, 4, 10).unwrap() else {
+            panic!("the key was not added");
+        };
+        insert_token_tx(
+            &c,
+            &NewToken {
+                ckid: Some(ckid),
+                ..token(b"t", old, "500")
+            },
+            4,
+            20,
+        )
+        .unwrap();
+        preapprove(
+            &c,
+            &Preapproval {
+                relay_id: "r-aaaaaaaaaaaaaaaa".into(),
+                account_id: old,
+                name: "NAS".into(),
+                created_at: 4,
+                expires_at: 1_000_000,
+            },
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO wake_jobs (job, account_id, account_tag, device_id, relay_id, grade, net,
+                 cmd, created_at, exp, state)
+             VALUES ('00000000000000000000000000000001', ?1, 't', '100', 'r-x', 'exact', '10.0.0.0/24',
+                 'c', 4, 64, 'queued')",
+            [old],
+        )
+        .unwrap();
+        let serial = change_serial(&c).unwrap();
+        assert_eq!(bound_key(&c, "100", review).unwrap(), Some(vec![1; 32]));
+        let pcs = ["100".to_owned(), "200".to_owned(), "400".to_owned()];
+        let kept = delete_account_by_user(
+            &c,
+            old,
+            Keep {
+                listing: true,
+                demo_pcs: &pcs,
+            },
+            5,
+        )
+        .unwrap();
+        assert_eq!(kept, Some(2));
+        assert!(change_serial(&c).unwrap() > serial);
+        assert!(account(&c, old).unwrap().is_none());
+        // the new account: another id, the same key, pcode, name and switch, made now, empty
+        let new = account_by_key(&c, review).unwrap().unwrap();
+        assert_ne!(new.id, old);
+        assert_eq!(
+            (
+                new.portal_id.as_str(),
+                new.display_name.as_str(),
+                new.created_at,
+                new.last_login_at
+            ),
+            (review, crate::review::NAME, 5, 5)
+        );
+        assert!(crate::review::is_account(&new));
+        assert_eq!(account_passwordless(&c, new.id).unwrap(), Some(true));
+        assert!(keys_of(&c, new.id).unwrap().is_empty());
+        assert_eq!(listing(&c, review).unwrap(), Listing::Registered);
+        // its demo PCs with their bindings and syncs as they were, and no tombstone of them; by the
+        // login key, which the new account keeps, each is the account's as before (account.rs
+        // `on_demo_pc`, for a request that authenticated as the old row), by the old id no longer
+        for (id, binding) in [("100", demo), ("200", other)] {
+            let d = device(&c, id).unwrap().unwrap();
+            assert_eq!((d.account_id, d.binding_id), (new.id, binding.binding_id));
+            assert!(d.account_id != old && bound_key(&c, id, review).unwrap().is_some());
+            assert!(tombstone(&c, id, &binding.binding_id.unwrap())
+                .unwrap()
+                .is_none());
+        }
+        assert_eq!(
+            device(&c, "100").unwrap().unwrap().sync_state.as_deref(),
+            Some("present")
+        );
+        // the PC that left the PC= line leaves the account, with a tombstone
+        assert!(device(&c, "300").unwrap().is_none());
+        assert_eq!(
+            tombstone(&c, "300", &left.binding_id.unwrap())
+                .unwrap()
+                .unwrap()
+                .reason,
+            "account-delete"
+        );
+        // the staff account's PC of the line stays its own, as it was
+        let d = device(&c, "400").unwrap().unwrap();
+        assert_eq!((d.account_id, d.binding_id), (staff, theirs.binding_id));
+        assert_eq!(bound_key(&c, "400", review).unwrap(), None);
+        assert!(tombstone(&c, "400", &theirs.binding_id.unwrap())
+            .unwrap()
+            .is_none());
+        // nothing of the old account is left: every table that names an account (by its foreign
+        // keys) has no row of the old id. The tables are these; a new one is to be looked at here
+        let mut stmt = c
+            .prepare(
+                "SELECT m.name, p.\"from\" FROM sqlite_master m, pragma_foreign_key_list(m.name) p
+                 WHERE m.type = 'table' AND p.\"table\" = 'accounts' ORDER BY m.name",
+            )
+            .unwrap();
+        let refs: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            refs,
+            [
+                ("ctl_keys", "account_id"),
+                ("devices", "account_id"),
+                ("relay_preapprovals", "account_id"),
+                ("relays", "owner_account"),
+                ("tokens", "account_id"),
+                ("wake_jobs", "account_id"),
+            ]
+            .map(|(t, col)| (t.to_owned(), col.to_owned()))
+        );
+        for (table, column) in &refs {
+            let n: i64 = c
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    [old],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{table}.{column}");
+        }
+        assert!(!token_of(&c, b"t", old).unwrap() && !delete_token(&c, b"t").unwrap());
+        // no row is left under the key of the move
+        let moving: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM accounts WHERE login_key LIKE ' %'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(moving, 0);
+        // its new account deleted in turn, without a PC of the line it holds: an ordinary deletion
+        assert_eq!(
+            delete_account_by_user(
+                &c,
+                new.id,
+                Keep {
+                    listing: true,
+                    demo_pcs: &["900".to_owned()],
+                },
+                6
+            )
+            .unwrap(),
+            Some(0)
+        );
+        assert!(account_by_key(&c, review).unwrap().is_none());
+        assert!(device(&c, "100").unwrap().is_none() && device(&c, "200").unwrap().is_none());
+        assert_eq!(device(&c, "400").unwrap().unwrap().account_id, staff);
     }
 
     #[test]
