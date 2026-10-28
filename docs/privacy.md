@@ -121,11 +121,15 @@ keeps no tag of the ID.
 Google Play, and only until a time the operator sets, one more account can log in: a demo account
 for their reviewers. Its ID, of another form than the portal IDs above, is only in a file on the
 server, which also holds a hash of its password; the password typed is checked against that hash,
-not by the Yonsei SSO, and is not kept, as no password is. The account holds no PC and gets no new
-app version, and it ends with that file. From version 1.8.0 it connects only to the demo PCs that
-the same file names (one to three). Its logins leave the same records as any other, with the tag of
-its ID, and the account is kept and deleted as any other, also in the app (section 8); its list
-entry then stays, since its ID names no person and the next review login needs it.
+not by the Yonsei SSO, and is not kept, as no password is. The account gets no new app version,
+and it ends with that file. From version 1.8.0 it connects only to the demo PCs that the same file
+names (one to three). From version 1.9.2 it holds those demo PCs, which the operator logs in on with
+it, and no other PC; a demo PC is kept as any PC in an account (below), and gets an access ticket
+that only lets it register, until the file's end. Its logins leave the same records as any other,
+with the tag of its ID, and the account is kept and deleted as any other, also in the app (section
+8); its list entry then stays, since its ID names no person and the next review login needs it, and
+so do its demo PCs, bound to a new, empty account of the same ID, until the operator releases them
+when the review ends.
 
 **Logging in.** You type your Yonsei portal ID and password in the app. If you use the device's
 password autofill (Passwords on iOS, an autofill service on Android), it can fill in the ID and
@@ -155,7 +159,8 @@ attempts it refused for each reason (counts only).
 service signs short-lived access tickets, and the server's connection broker checks them before it
 sets up a connection or takes a PC's registration. A logged-in app gets one with its login and again
 about halfway through its life (it lives 24 hours); a PC in your account gets one with each sync (72
-hours); the App Review account gets one that reaches only its demo PCs. A ticket holds the kind of
+hours); the App Review account gets one that reaches only its demo PCs, and its demo PCs one that
+only lets them register (24 hours, never past the end of the account's file). A ticket holds the kind of
 holder (staff, App Review, the access password or a support code), what it is good for, a tag of the
 account (never the portal ID; none for the access password or a support code), the PC's ID and
 public key when it lets that PC register,
@@ -513,13 +518,13 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 로그인한 사람에게만 해당합니다. 학교의 교직원만 로그인할 수 있습니다. 계정 서비스는 교직원의 포탈 ID(형식으로 가림: Z나 Y로 시작하고 ZA로 시작하지 않음)만 받고, 연세 SSO가 알려 준 그 사람의 코드도 같은 규칙으로 확인합니다. 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 운영자는 미리 명단에 올린 ID만 받는 방식으로 되돌릴 수도 있습니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다. 다른 형식의 ID는(아래 App Review 계정의 ID는 빼고) SSO에 묻기 전에 바로 거절하며, 그 ID와 비밀번호를 SSO에 보내지 않고 시도 기록에도 그 ID의 꼬리표를 남기지 않습니다.
 
-**App Review 계정.** Apple이 iOS 앱을, Google이 Google Play의 Android 앱을 심사하는 동안, 운영자가 정한 때까지만 계정 하나가 더 로그인할 수 있습니다. 심사자가 쓰는 데모 계정입니다. 그 ID는 위의 포탈 ID와 다른 형식이고 서버의 파일 하나에만 있으며, 그 파일에는 비밀번호의 해시도 있습니다. 입력한 비밀번호는 연세 SSO가 아니라 그 해시로 확인하고, 다른 비밀번호처럼 보관하지 않습니다. 이 계정은 PC를 가지지 못하고 새 버전을 받지 못하며, 그 파일이 없어지면 끝납니다. 1.8.0부터는 같은 파일에 적힌 데모 PC(1~3대)에만 연결합니다. 이 계정의 로그인도 다른 로그인과 같은 기록(그 ID의 꼬리표 포함)을 남기고, 계정도 다른 계정처럼 보관하고 지우며 앱에서도 지울 수 있습니다(8절). 그때 명단 항목은 남습니다. 그 ID는 사람의 포탈 ID가 아니고, 다음 심사 로그인에 필요하기 때문입니다.
+**App Review 계정.** Apple이 iOS 앱을, Google이 Google Play의 Android 앱을 심사하는 동안, 운영자가 정한 때까지만 계정 하나가 더 로그인할 수 있습니다. 심사자가 쓰는 데모 계정입니다. 그 ID는 위의 포탈 ID와 다른 형식이고 서버의 파일 하나에만 있으며, 그 파일에는 비밀번호의 해시도 있습니다. 입력한 비밀번호는 연세 SSO가 아니라 그 해시로 확인하고, 다른 비밀번호처럼 보관하지 않습니다. 이 계정은 새 버전을 받지 못하고, 그 파일이 없어지면 끝납니다. 1.8.0부터는 같은 파일에 적힌 데모 PC(1~3대)에만 연결합니다. 1.9.2부터는 운영자가 이 계정으로 로그인한 그 데모 PC를 가지고, 다른 PC는 가지지 못합니다. 데모 PC는 계정에 들어간 다른 PC처럼 보관하고(아래), 등록에만 쓰이는 출입증을 그 파일이 끝날 때까지 받습니다. 이 계정의 로그인도 다른 로그인과 같은 기록(그 ID의 꼬리표 포함)을 남기고, 계정도 다른 계정처럼 보관하고 지우며 앱에서도 지울 수 있습니다(8절). 그때 명단 항목은 남습니다. 그 ID는 사람의 포탈 ID가 아니고, 다음 심사 로그인에 필요하기 때문입니다. 데모 PC도 같은 ID의 새 빈 계정에 묶인 채 남고, 심사가 끝나면 운영자가 풉니다.
 
 **로그인.** 앱에 연세포탈 ID와 비밀번호를 넣습니다. 기기의 암호 자동 완성(iOS의 암호, Android의 자동 완성 서비스)을 쓰면 그것이 저장해 둔 ID와 비밀번호를 넣을 수 있고, 로그인에 성공한 뒤에는 그것이 저장할지 물을 수 있습니다. 저장하면 앱이 아니라 그 서비스가 보관하고, 앱은 비밀번호를 저장하지 않습니다(1.9.0부터). 앱은 비밀번호를 서버의 키로 봉인하므로, 암호화된 통신을 들여다보는 네트워크에서도 계정 서비스만 열 수 있습니다. 계정 서비스는 연세 SSO(학교의 로그인 시스템)에 비밀번호를 확인받은 뒤 바로 버립니다. 비밀번호와 SSO 토큰은 저장하지도 기록하지도 않습니다. SSO에서 받은 것 가운데 그 사람의 코드(포탈 ID)와 성명만 읽고 보관하며, 이메일 주소와 소속은 읽지 않습니다. 로그인할 때마다 그 기기의 **계정 키**도 새로 등록합니다. 서버는 공개키만 보관하고 개인키는 기기에 남으며, 로그인 뒤의 모든 계정 요청에 그 키로 서명합니다.
 
 **내 PC.** HJViewer를 설치한 Windows PC에서 HJViewer에 로그인하면 그 PC가 내 계정에 들어갑니다. 그때부터 운영자가 이 기능을 켠 경우(1절), 로그인한 다른 내 기기는 그 PC에 PC 비밀번호 없이 원격 화면, 파일 전송, 카메라로 연결할 수 있습니다. 터미널과 포트 포워딩은 지금처럼 PC 비밀번호를 묻습니다. 그 PC의 HJViewer 서비스는 보통 2분마다, 서버에 닿는 동안에는 늦어도 5분마다 PC의 기기 키로 서명한 짧은 요청을 서버에 보내고, 서명된 내 계정의 키 목록을 받습니다(닿지 못하면 30초 뒤부터 간격을 늘려 가며 최대 10분마다 다시 해 봅니다). 이때 PC는 앱 버전, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 계정 키마다 오늘과 어제 받아들인 비밀번호 없는 연결의 마지막 시각과 횟수, 거절한 시도의 이유별 개수(개수만)를 함께 알립니다.
 
-**출입증**(1.8.0부터). 서버를 교직원만 쓰게 하려고, 계정 서비스는 수명이 짧은 출입증에 서명하고, 서버의 연결 중개(hbbs)는 연결을 잇거나 PC의 등록을 받기 전에 그것을 확인합니다. 로그인한 앱은 로그인할 때와 수명이 반쯤 지날 때 받고(24시간), 계정에 들어간 PC는 동기화마다 받으며(72시간), App Review 계정은 데모 PC에만 닿는 것을 받습니다. 출입증에는 가진 쪽의 종류(교직원, App Review, 이용 비밀번호나 지원 코드), 쓸 수 있는 자리, 계정의 꼬리표(포탈 ID가 아님. 이용 비밀번호와 지원 코드에는 없음), PC를 등록하게 하는 것이면 그 PC의 ID와 공개키, 몇몇 PC에만 닿는 것이면 그 PC들, 만든 시각과 끝나는 시각이 들어 있습니다. 서명했을 뿐 암호화하지 않았으므로 가진 사람은 끝날 때까지 읽고 쓸 수 있습니다. 그래서 앱은 서버와의 암호화된 연결로만 보내고 로그에 쓰지 않습니다. 계정 서비스는 출입증을 저장하지도 하나하나 기록하지도 않고, 종류별로 센 수만 메모리에 둡니다. 연결 중개는 출입증으로 등록한 PC가 연결해 있는 동안 그 출입증의 키 번호와 시각을 메모리에 둡니다.
+**출입증**(1.8.0부터). 서버를 교직원만 쓰게 하려고, 계정 서비스는 수명이 짧은 출입증에 서명하고, 서버의 연결 중개(hbbs)는 연결을 잇거나 PC의 등록을 받기 전에 그것을 확인합니다. 로그인한 앱은 로그인할 때와 수명이 반쯤 지날 때 받고(24시간), 계정에 들어간 PC는 동기화마다 받으며(72시간), App Review 계정은 데모 PC에만 닿는 것을, 그 데모 PC는 자기 등록에만 쓰이는 것(24시간, 계정 파일의 날짜를 넘지 않음)을 받습니다. 출입증에는 가진 쪽의 종류(교직원, App Review, 이용 비밀번호나 지원 코드), 쓸 수 있는 자리, 계정의 꼬리표(포탈 ID가 아님. 이용 비밀번호와 지원 코드에는 없음), PC를 등록하게 하는 것이면 그 PC의 ID와 공개키, 몇몇 PC에만 닿는 것이면 그 PC들, 만든 시각과 끝나는 시각이 들어 있습니다. 서명했을 뿐 암호화하지 않았으므로 가진 사람은 끝날 때까지 읽고 쓸 수 있습니다. 그래서 앱은 서버와의 암호화된 연결로만 보내고 로그에 쓰지 않습니다. 계정 서비스는 출입증을 저장하지도 하나하나 기록하지도 않고, 종류별로 센 수만 메모리에 둡니다. 연결 중개는 출입증으로 등록한 PC가 연결해 있는 동안 그 출입증의 키 번호와 시각을 메모리에 둡니다.
 
 **이용 비밀번호**(1.8.0부터). 로그인하지 않은 사람은 운영자가 알려 주는 이용 비밀번호를 넣을 수 있습니다. 앱은 로그인의 비밀번호처럼 서버의 키로 봉인해 보내고, 계정 서비스는 서버의 파일에 있는 해시로 확인한 뒤 PC 하나에 12시간 동안 닿는 출입증으로 바꿔 줍니다. 앱이 연결하려는 PC, 또는 비밀번호를 넣은 그 PC입니다(그 PC는 요청에 기기 키로 서명합니다). 앱은 비밀번호를 바로 버리고 출입증은 메모리에만 둡니다. 계정 서비스는 시도마다 결과, 시각, 접속한 IP 주소의 꼬리표를 기록하고, 한도를 위해 주소마다 시도와 출입증의 수를 셉니다. 비밀번호, 주소 자체, PC ID, 출입증은 남기지 않습니다.
 
