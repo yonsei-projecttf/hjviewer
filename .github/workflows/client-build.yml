@@ -139,6 +139,13 @@ env:
 # the newest, still calls the retired cache service and failed in every run (restore 400, save an
 # error page), and once that works it would add an entry of hundreds of MB per image to the build
 # repository's 10 GiB (GHA-10 of the 2026-10-27 CI audit).
+#
+# Actions run on Node 24 (GitHub took Node 20 off the runners on 2026-09-23): every JavaScript action
+# is pinned to a release that declares node24 but two, which the runner runs on Node 24 all the same:
+# KyleMayes/install-llvm-action, whose newest release (v2.0.9) still declares node20, and
+# r0adkll/sign-android-release (node12, "Sign app APK"). actions/cache v6.1.0 computes
+# an entry's version (the paths, the compression, Windows-only) and looks up its key as v3.5.0 did,
+# so the bridge and vcpkg entries that v3.5.0 saved still restore (docs/ci.md, "캐시").
 
 jobs:
   # Not upstream. What every other job needs first: the build plan, the inputs a build refuses, the
@@ -234,7 +241,7 @@ jobs:
           exit 1
 
       - name: Check out hjviewer
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ inputs.source_ref || github.sha }}
@@ -279,7 +286,7 @@ jobs:
       bridge_cache: ${{ steps.bridge-out.outputs.cache-hit }}
     steps:
       - name: Check out hjviewer
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -292,7 +299,7 @@ jobs:
       # a run of one more platform) takes them. A miss generates them as upstream does.
       - name: Restore the generated bridge
         id: bridge-out
-        uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: bridge-out-${{ needs.preflight.outputs.source_sha }}-frb${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-expand${{ env.CARGO_EXPAND_VERSION }}-flutter${{ env.BRIDGE_FLUTTER_VERSION }}-rust${{ env.RUST_VERSION }}
           path: |
@@ -394,7 +401,7 @@ jobs:
 
       - name: Save the generated bridge
         if: steps.bridge-out.outputs.cache-hit != 'true'
-        uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ${{ steps.bridge-out.outputs.cache-primary-key }}
           path: |
@@ -436,7 +443,7 @@ jobs:
         working-directory: upstream/rustdesk/flutter
     steps:
       - name: Check out hjviewer
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -547,7 +554,7 @@ jobs:
       vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}
     steps:
       - name: Check out hjviewer
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -588,13 +595,15 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"; fi
           echo "BUILD_NAME=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_ENV"
 
-      # L159-162
+      # L159-162. v2.0.9 is the newest release and declares node20 (no Node 24 release yet, see the
+      # top of this file)
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      # L164-174
+      # L164-174. A composite action; its one JavaScript step, actions/cache@v3 (node16), runs only
+      # with `cache: true`, which this step leaves off
       - name: Install flutter
         uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225  # v2.12.0; https://github.com/subosito/flutter-action/issues/277
         with:
@@ -671,7 +680,7 @@ jobs:
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
-        uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vcpkg-bincache
           key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-${{ steps.vcpkg-tools.outputs.key }}-
@@ -730,7 +739,7 @@ jobs:
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
-        uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
@@ -795,7 +804,7 @@ jobs:
       # (third-party-RustDeskTempTopMostWindow.yml L41-59, called from L88-107 with windows-2022, x64,
       # Release, Windows10) and downloads it into ./rustdesk (L342-347); built inline here.
       - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
 
       - name: Build RustDeskTempTopMostWindow
         run: |
@@ -1080,7 +1089,7 @@ jobs:
       # build goes nowhere and skips it. Only the two files the check reads are checked out here.
       - name: Check out the release record check
         if: ${{ !inputs.check_only }}
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -1160,7 +1169,7 @@ jobs:
                wget
 
       - name: Check out hjviewer
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -1217,7 +1226,7 @@ jobs:
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
-        uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vcpkg-bincache
           key: vcpkg-arm64-android-${{ env.VCPKG_COMMIT_ID }}-
@@ -1268,7 +1277,7 @@ jobs:
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
-        uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
@@ -1754,7 +1763,7 @@ jobs:
       # build goes nowhere and skips it. Only the two files the check reads are checked out here.
       - name: Check out the release record check
         if: ${{ !inputs.check_only }}
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -1803,7 +1812,7 @@ jobs:
           brew install nasm yasm
 
       - name: Check out hjviewer
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -1853,7 +1862,7 @@ jobs:
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
-        uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vcpkg-bincache
           key: vcpkg-arm64-ios-${{ env.VCPKG_COMMIT_ID }}-
@@ -1907,7 +1916,7 @@ jobs:
 
       - name: Save vcpkg binary cache
         if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
-        uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
@@ -2159,7 +2168,7 @@ jobs:
       # through). Read only: GET requests with the run's token and, in the third step alone, the
       # upload key.
       - name: Check out the release record check
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -2310,7 +2319,7 @@ jobs:
       version: ${{ steps.package.outputs.version }}
     steps:
       - name: Check out hjviewer
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha }}
@@ -2433,7 +2442,7 @@ jobs:
       actions: read
     steps:
       - name: Check out the summary script
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.preflight.outputs.source_sha || inputs.source_ref || github.sha }}
