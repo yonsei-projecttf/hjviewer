@@ -484,6 +484,12 @@ beyond section 9.
   server's operating system, its version and processor type, and a fingerprint of the server
   machine; nothing about users or their devices.
 
+**Third parties.** The Yonsei SSO and public STUN servers get only the data named here and only
+for the purpose named here. The Yonsei SSO, the university's own login service, gets a portal ID and
+password only to check a login, and protects them as the university's privacy policy and Korean law
+require. Public STUN servers get only the requesting device's IP address and port, as any server the
+device contacts does; HJViewer gives them no other user data.
+
 ### 10. Contact and changes
 
 **Privacy manager** (개인정보 보호책임자): 프로젝트TF, haejin.cho@yonsei.ac.kr. Send requests
@@ -605,6 +611,8 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 - **PC의 2단계 인증 코드는 보내지 않음**: HJViewer 빌드는 upstream RustDesk의 'PC의 2단계 인증 코드를 Telegram 봇으로 보내기'를 꺼 두었습니다. 코드는 직접 설정한 인증 앱에서 나옵니다.
 - **STUN 서버**(2절). 그 밖에는 없습니다. 광고나 분석 회사에 넘기지 않습니다.
 - 사용자에 관한 것이 아닌 것: upstream rustdesk-server와 같이, 서버의 hbbs는 시작할 때와 하루에 한 번 RustDesk의 업데이트 서비스(api.rustdesk.com)에 더 새 서버 버전이 있는지 묻습니다. 서버의 운영체제와 그 버전, 프로세서 종류, 서버 기계의 지문을 보냅니다. 사용자나 기기에 관한 것은 보내지 않습니다.
+
+**제3자.** 연세 SSO와 공개 STUN 서버는 여기에 적은 정보만, 적은 목적으로만 받습니다. 학교의 로그인 서비스인 연세 SSO는 로그인을 확인하는 데에만 포탈 ID와 비밀번호를 받고, 학교의 개인정보 처리방침과 법이 요구하는 대로 보호합니다. 공개 STUN 서버는 기기가 닿는 다른 서버와 마찬가지로 요청한 기기의 IP 주소와 포트만 받고, HJViewer는 그 밖의 사용자 정보를 주지 않습니다.
 
 ### 10. 문의와 변경
 
