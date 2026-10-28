@@ -8,7 +8,7 @@ This server is for Yonsei University faculty and staff, so sign in first with th
 
 The demo account reaches only the demo Windows PC: ID {{DEMO_PC_ID}}, password {{DEMO_PC_PASSWORD}}. Type the Sign-In Information exactly (the user name goes in the "Yonsei portal ID" field): wrong passwords lock the account for up to a day, and a failed login shows a message in Korean. Settings shows it as "App Review"; its "My PCs" tab stays empty. If the app says "A new device logged in" or asks to check a device, it is another review device: tap "It is mine". To delete the account, open Settings > Account > Delete account in the iPhone or iPad app; signing in again afterwards starts an empty account.
 
-On the demo PC, do not log out of HJViewer or delete its account there: either takes that PC offline. Its Windows user has no password; on the lock screen, click Sign in.
+On the demo PC, please leave HJViewer signed out: signing in and out there takes the PC offline. Its Windows user has no password; on the lock screen, click Sign in.
 
 Account types: staff use Yonsei portal accounts, and administrators are staff accounts that the operator names on the server. Both are real people's accounts, so App Review gets this demo account, which lacks the staff features below.
 

@@ -716,13 +716,13 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구해서, 2026
    ```text
    To delete the account, open Settings > Account > Delete account.
    ```
-   2026-10-28부터(1.9.2의 App Review 통과 계획) 메모는 `store/appstore/review_notes.txt` 그대로이고, 손으로 낼 때 콘솔에서만 바꾸는 변형(데모 PC 두 대, 시험한 기기, Windows 비밀번호)은 [store/README.md](../store/README.md)의 "심사 메모"에 있습니다. 데모 계정 문단은 틀린 비밀번호의 로그인 실패 문구가 한국어라는 것(서버의 실패 문구는 한국어 한 문장)과, 계정 삭제는 iPhone·iPad 앱에서 한다는 것을 밝히고, 그 뒤에 데모 PC 문단을 둡니다. 데모 PC는 데모 계정에 묶여 있어(6번), 심사자가 원격 화면 속에서 그 PC의 HJViewer에 로그인했다가 로그아웃하면 앱이 묶음을 풀어 그 PC가 오프라인이 되기 때문입니다(그 PC에서 누른 계정 삭제는 서버가 거절함, 5번). 앱 잠금 문단은 Face ID와 Touch ID를 함께 말합니다. iOS 앱은 세션을 녹화하지 않으므로 메모에 녹화를 쓰지 않고, 로컬 네트워크 문단은 권한 창의 문구가 같은 것을 말하므로 4000바이트 안에 들도록 뺐습니다. 둘째 문단의 "works the same in every region"은 확인하지 못한 주장이라 뺐습니다.
+   2026-10-28부터(1.9.2의 App Review 통과 계획) 메모는 `store/appstore/review_notes.txt` 그대로이고, 손으로 낼 때 콘솔에서만 바꾸는 변형(데모 PC 두 대, 시험한 기기, Windows 비밀번호)은 [store/README.md](../store/README.md)의 "심사 메모"에 있습니다. 1.9.2의 손 제출은 데모 PC 한 대 판에 학교의 허락서 문장을 넣고, 시험한 기기를 밝히면 Tested on 문장을 더합니다. 데모 계정 문단은 틀린 비밀번호의 로그인 실패 문구가 한국어라는 것(서버의 실패 문구는 한국어 한 문장)과, 계정 삭제는 iPhone·iPad 앱에서 한다는 것을 밝히고, 그 뒤에 데모 PC 문단을 둡니다. 데모 PC 문단은 그 PC의 HJViewer를 로그아웃된 채로 두어 달라고 합니다. 데모 PC는 데모 계정에 묶여 있고(6번) 2번의 확인 뒤 그 HJViewer에는 로그인이 없는데, 심사자가 원격 화면 속에서 거기 로그인했다가 로그아웃하면 앱이 묶음을 풀어 그 PC가 오프라인이 되기 때문입니다(그 PC에서 누른 계정 삭제는 서버가 거절함, 5번). 앱 잠금 문단은 Face ID와 Touch ID를 함께 말합니다. iOS 앱은 세션을 녹화하지 않으므로 메모에 녹화를 쓰지 않고, 로컬 네트워크 문단은 권한 창의 문구가 같은 것을 말하므로 4000바이트 안에 들도록 뺐습니다. 둘째 문단의 "works the same in every region"은 확인하지 못한 주장이라 뺐습니다.
    ```text
    ... wrong passwords lock the account for up to a day, and a failed login shows a message in
    Korean. ... To delete the account, open Settings > Account > Delete account in the iPhone or
    iPad app; signing in again afterwards starts an empty account.
 
-   On the demo PC, do not log out of HJViewer or delete its account there: either takes that PC
+   On the demo PC, please leave HJViewer signed out: signing in and out there takes the PC
    offline. Its Windows user has no password; on the lock screen, click Sign in.
    ```
 4. **이 계정으로 되는 것**: 로그인과 로그아웃, 계정 화면(이름 "App Review"), 로그인한 기기 목록, 빈 "내 PC" 목록(1.9.2부터 데모 PC는 서버에서 이 계정에 묶여 있지만 목록에는 보이지 않음), 계정 삭제(1.9.1, 설정 → 계정 → [계정 삭제]. 지운 뒤 다시 로그인하면 빈 계정이 새로 생기고, 1.9.2부터 데모 PC는 그대로 온라인). 연세 SSO는 부르지 않습니다. 앱의 기본 기능(PC의 ID와 비밀번호로 연결)은 로그인과 상관없이 됩니다. 단, 출입 확인을 켠 서버(1.8.0)에서는 로그인해야 연결되고, 이 계정은 `review.conf`의 `PC=` 줄에 적은 데모 PC에만 연결됩니다. 심사 기기가 둘 이상이면 서로의 로그인이 "새 기기에서 로그인했습니다"(A new device logged in) 알림으로 뜹니다. 그래서 메모에 "내 기기 맞음"(It is mine)을 누르라고 적습니다.

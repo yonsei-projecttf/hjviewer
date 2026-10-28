@@ -197,10 +197,14 @@ class StoreTextTest(unittest.TestCase):
             self.assertIn(text, guide + notes, text)
         self.assertEqual(notes.count(login_48), 1, "the 4.8 wording is the notes' own since 2026-10-28")
 
-        def with_both(text):
+        def with_permission(text):
             paragraphs = text.split("\n\n")
             self.assertEqual(paragraphs[0], UNLISTED)
             paragraphs[1] += " " + permission
+            return "\n\n".join(paragraphs)
+
+        def with_both(text):
+            paragraphs = with_permission(text).split("\n\n")
             # after Apple's approval: a paragraph of its own right after Apple's unlisted sentence
             paragraphs.insert(1, approved.replace("<date>", longest_date))
             return "\n\n".join(paragraphs)
@@ -209,13 +213,13 @@ class StoreTextTest(unittest.TestCase):
         self.assertEqual(cst.PC_PASSWORD_MAX, 32, "store/README.md and the store run say 32 bytes")
 
         # the variants for a submission by hand (store/README.md), their <...> at the worst case, fit
-        # in the two forms store/README.md names: 1.9.2's first one, and its longest one once its cut
-        # is made (no Tested on)
+        # in the two forms store/README.md names: 1.9.2's, and the longest one once its cut is made
+        # (no Tested on)
         tested = " Tested on <devices and OS versions>."
         two_pcs = (("The demo account reaches only the demo Windows PC: ID {{DEMO_PC_ID}}, password {{DEMO_PC_PASSWORD}}.",
                     "The demo account reaches only the demo Windows PCs, both with the password {{DEMO_PC_PASSWORD}}: "
                     "ID {{DEMO_PC_ID}}, or ID <second PC ID> if the first is offline."),
-                   ("On the demo PC, do not", "On a demo PC, do not"),
+                   ("On the demo PC, please", "On a demo PC, please"),
                    ("type the demo PC's ID", "type a demo PC's ID"))
         no_webcam = (("which we do not give out).", "which we do not give out; the demo PCs have no camera)."),)
         for old, new in two_pcs + no_webcam:
@@ -237,10 +241,12 @@ class StoreTextTest(unittest.TestCase):
                 text = text.replace(name, value)
             return text
 
-        # 1.9.2's first submission by hand: two demo PCs and the devices tested on
-        self.assertLessEqual(self.worst_size(copy, hand(notes, two_pcs, tested_on=True)), cst.REVIEW_NOTES_BYTES)
+        # 1.9.2's submission by hand: the one-PC template, the university's permission and the
+        # devices tested on (3907 bytes on 2026-10-28)
+        self.assertLessEqual(self.worst_size(copy, with_permission(hand(notes, tested_on=True))),
+                             cst.REVIEW_NOTES_BYTES)
         # the longest form store/README.md says fits: two PCs without a webcam, the university's
-        # permission and Apple's approval, without Tested on
+        # permission and Apple's approval, without Tested on (3995 bytes on 2026-10-28)
         self.assertLessEqual(self.worst_size(copy, with_both(hand(notes, two_pcs, no_webcam))),
                              cst.REVIEW_NOTES_BYTES)
 
