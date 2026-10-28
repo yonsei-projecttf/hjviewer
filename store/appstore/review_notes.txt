@@ -1,6 +1,6 @@
 This app is intended for unlisted distribution.
 
-HJViewer is a remote desktop app for Yonsei University faculty and staff: the iPhone or iPad views and controls a Windows PC that runs HJViewer for Windows, and is never viewed or controlled itself. It works only with the HJViewer server that ProjectTF, a team at Yonsei University, runs. It reaches PCs behind firewalls over HTTPS (port 443) and has its own account service (a university login, the user's own PCs, password-less connections to them, waking a PC through a relay device on its network). It is based on the open-source RustDesk (AGPL-3.0) and is not affiliated with it. It costs nothing, has no ads or in-app purchases, and works the same in every region.
+HJViewer is a remote desktop app for Yonsei University faculty and staff: the iPhone or iPad views and controls a Windows PC that runs HJViewer for Windows, and is never viewed or controlled itself. It works only with the HJViewer server that ProjectTF, a team at Yonsei University, runs. It reaches PCs behind firewalls over HTTPS (port 443) and has its own account service (a university login, the user's own PCs, password-less connections to them when the operator turns this on, sending a wake signal to a PC through a relay device on its network). It is based on the open-source RustDesk (AGPL-3.0) and is not affiliated with it. It costs nothing, has no ads or in-app purchases, and works the same in every region.
 
 External services: the server checks portal logins with the Yonsei University SSO; public STUN servers help devices connect directly. The app supports iPhone and iPad with iOS 13.0 or later.
 
@@ -10,13 +10,13 @@ The demo account reaches only the demo Windows PC: ID {{DEMO_PC_ID}}, password {
 
 Account types: staff use Yonsei portal accounts, and administrators are staff accounts that the operator names on the server. Both are real people's accounts, so App Review gets this demo account, which lacks the staff features below.
 
-Screenshots of the My PCs list and the wake offer, and the attached video, show what the demo account cannot: a staff account's PC list, a password-less connection, the wake offer and a support code.
+Screenshots of the My PCs list and the wake offer, and the attached video, show what the demo account cannot: a staff account's PC list, the wake offer and a support code.
 
 Staff accounts see "Create support code" under Settings > Account and on the My PCs tab: a one-time code, sent with a link to HJViewer for Windows, that lets the PC of someone without a login accept connections for two hours; when the staff member's device connects, that PC's connection window shows a signed "Yonsei faculty or staff (verified login)" mark. Administrators also see a read-only "Admin view: users and PCs" under Settings > Account.
 
 The app also has text chat with the person at the PC in a session (end-to-end encrypted, not stored on the server), session recording to the device, and a PC's camera view and terminal from its menu.
 
-Face ID: only for an optional app lock (Settings > Security > App lock, off by default), which asks for Face ID or the passcode when the app opens or returns after a set time (1 minute by default) and covers its screens until then and in the background, so the app switcher shows no remote screen. The app gets only the result and sends nothing about it.
+Face ID: only for an optional app lock (Settings > Security > App lock, off by default), which asks for Face ID or the passcode when the app opens or returns after a set time and covers its screens until then and in the background, so the app switcher shows no remote screen. The app gets only the result and sends nothing about it.
 
 Local network: HJViewer asks for the local network only to connect directly (peer to peer) to a PC on the same network.
 

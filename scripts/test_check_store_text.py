@@ -154,17 +154,18 @@ class StoreTextTest(unittest.TestCase):
         login = "Login uses their university portal accounts; the app has no sign-up."
         login_48 = ("Login uses their existing university portal accounts (education accounts, guideline 4.8); "
                     "the app has no sign-up.")
-        supported = "The app supports iPhone and iPad with iOS 13.0 or later."
-        tested_bytes = 80  # store/README.md: " Tested on …" up to 80 bytes
-        for text in (permission, login, login_48, supported, "**80바이트까지**",
+        approved = "Apple approved unlisted app distribution for this app on <date>."
+        longest_date = "September 30, 2026"  # store/README.md: the date in English, at its longest
+        for text in (permission, login, login_48, approved, f"`{longest_date}`",
                      "Screenshots of the My PCs list and the wake offer, and the attached video, show"):
             self.assertIn(text, guide + notes, text)
-        for text in (login, supported):
-            self.assertEqual(notes.count(text), 1, text)
+        self.assertEqual(notes.count(login), 1)
         paragraphs = notes.split("\n\n")
+        self.assertEqual(paragraphs[0], UNLISTED)
         paragraphs[1] += " " + permission
+        # after Apple's approval: a paragraph of its own right after Apple's unlisted sentence
+        paragraphs.insert(1, approved.replace("<date>", longest_date))
         every = "\n\n".join(paragraphs).replace(login, login_48)
-        every = every.replace(supported, supported + " Tested on " + "x" * (tested_bytes - len(" Tested on ")))
         copy.value("appstore/review_notes.txt", every)
         out = self.check(copy)
         size = int(re.search(r"review_notes.txt: (\d+) of 4000 bytes filled", out).group(1))

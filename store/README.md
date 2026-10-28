@@ -51,11 +51,12 @@ App Store Connect와 Google Play Console에 그대로 보일 글의 원본입니
 - 4000바이트는 글자가 아니라 바이트입니다. 검사는 데모 PC ID 16바이트, 비밀번호 32바이트(최악)로 채우고 줄바꿈을 CRLF(2바이트)로 셉니다.
 - `distribution.txt`가 `unlisted`면 메모에 Apple이 요구하는 문장 `This app is intended for unlisted distribution.`이 한 문단으로 있어야 합니다(지금 첫 문단).
 - 데모 계정 문단의 세 문장은 `docs/distribution.md` "iOS: 심사용 데모 계정" 3번의 문구입니다. 그 절과 함께 고칩니다.
-- 영상 문단("Screenshots of the My PCs list and the wake offer, and the attached video, …")은 App Store 제출에 로그인 기능의 영상을 늘 첨부한다는 전제입니다(SUBMIT 7-6). 올린 스크린샷 세트에 내 PC 목록과 켜기 창이 없으면 문단 첫머리를 `The attached video shows`로 바꿉니다. 영상을 첨부하지 않는 제출(외부 TestFlight 등)에서는 문단을 뺍니다.
-- 조건이 맞을 때 이 파일을 고쳐 더하는 문장. 아래를 **모두** 더해도 최악의 경우(ID 16, 비밀번호 32바이트, CRLF) 4000바이트 안이고, `scripts/test_check_store_text.py`의 `test_the_review_notes_room_for_every_conditional_sentence`가 그 합계를 고정합니다(문구를 바꾸면 그 시험도 바꿉니다):
+- 영상 문단("Screenshots of the My PCs list and the wake offer, and the attached video, …")은 App Store 제출에 로그인 기능의 영상을 늘 첨부한다는 전제입니다(SUBMIT 7-6). 올린 스크린샷 세트에 내 PC 목록과 켜기 창이 없으면 문단 첫머리를 `The attached video shows`로 바꿉니다. 영상을 첨부하지 않는 제출(외부 TestFlight 등)에서는 문단을 뺍니다. 이 문단의 목록에는 비밀번호 없는 연결을 넣지 않습니다. 운영자가 켤 때만 되는 기능이라, 둘째 문단처럼 그 조건을 붙여서만 씁니다.
+- 조건이 맞을 때 이 파일을 고쳐 더하는 문장. 아래를 **모두** 더해도 최악의 경우(ID 16, 비밀번호 32바이트, CRLF) 4000바이트 안이고, `scripts/test_check_store_text.py`의 `test_the_review_notes_room_for_every_conditional_sentence`가 그 합계를 고정합니다(문구를 바꾸면 그 시험도 바꿉니다). 문단의 번호는 아래 승인 문장을 넣기 전의 것입니다:
   - 학교의 서면 허락서를 첨부할 때, 둘째 문단 끝에: `The university's written permission to use its name and its SSO login is attached.`
   - 선택: 지침 4.8을 밝힐 때, 넷째 문단의 `Login uses their university portal accounts; the app has no sign-up.`을 다음으로 바꿈: `Login uses their existing university portal accounts (education accounts, guideline 4.8); the app has no sign-up.`
-  - 제출 전에 실제로 시험한 기기와 OS가 있으면, 셋째 문단의 지원 범위 문장 뒤에 ` Tested on …`으로 실제 기록만 씁니다(자리 표시를 새로 만들지 않음). 앞의 공백을 넣어 **80바이트까지** 씁니다.
+  - Apple이 등록되지 않은 앱 배포(Unlisted)를 승인한 뒤 다시 낼 때, 첫 문단 바로 다음에 새 문단으로: `Apple approved unlisted app distribution for this app on <date>.` `<date>`는 승인 메일의 날짜를 영어로 씁니다(예: `October 30, 2026`). 가장 긴 날짜(`September 30, 2026`)로 76바이트, 문단 구분까지 80바이트입니다.
+- 제출 전에 시험한 기기와 OS를 적던 ` Tested on …` 문장(80바이트까지)은 2026-10-28에 위 목록에서 뺐습니다. 승인 문장까지 모두 넣은 최악의 경우를 4000바이트 안에 두기 위해서입니다.
 
 ## Google Play (`play/`)
 
