@@ -29,6 +29,9 @@ cst = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cst)
 
 UNLISTED = "This app is intended for unlisted distribution."
+# an iOS deployment target in a patch's added line: the pods' target of the Podfile's post_install
+# (0006), the Runner target's build settings, the Podfile's platform
+IOS_TARGET = re.compile(r"(?:IPHONEOS_DEPLOYMENT_TARGET(?:'\])?\s*=\s*'?|platform :ios, ')(\d+(?:\.\d+)+)")
 # made-up demo PC values for the --filled tests (never real ones)
 FAKE_ID = "987654321"
 FAKE_PASSWORD = "Made-up-Test-Password-7f3!"
@@ -88,6 +91,33 @@ class StoreTextTest(unittest.TestCase):
             self.assertEqual(f.read(), "unlisted\n")
         with open(os.path.join(STORE, "appstore", "locales.txt"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "ko\nen-GB\n")
+
+    def test_the_ios_minimum_is_the_patches(self):
+        # The iOS version that the App Store texts name is the one the client patches build for: the
+        # last patch that sets a deployment target in its added lines (0006 gives the pods the app's
+        # 13.0; a patch that raises the Runner target or the Podfile's platform, like 1.9.2's dropped
+        # iOS 15.0 commit, takes over and fails this until the texts follow)
+        last = None
+        for path in sorted(glob.glob(os.path.join(ROOT, "client", "patches", "rustdesk", "*.patch"))):
+            with open(path, encoding="utf-8", errors="replace") as f:
+                found = {v for line in f if line.startswith("+") and not line.startswith("+++")
+                         for v in IOS_TARGET.findall(line)}
+            if found:
+                last = (os.path.basename(path), found)
+        self.assertIsNotNone(last, "no client patch sets the iOS deployment target")
+        patch, found = last
+        self.assertEqual(len(found), 1, f"{patch} sets more than one iOS target: {sorted(found)}")
+        (minimum,) = found
+        for rel, sentence in (("review_notes.txt", f"The app supports iPhone and iPad with iOS {minimum} or later."),
+                              ("en-GB/description.txt", f"An iPhone or iPad with iOS {minimum} or later"),
+                              ("ko/description.txt", f"iOS {minimum} 이상의 iPhone 또는 iPad")):
+            with open(os.path.join(STORE, "appstore", rel), encoding="utf-8") as f:
+                self.assertEqual(f.read().count(sentence), 1, f"appstore/{rel}: {sentence}")
+        # and no other iOS version in any App Store text
+        for path in sorted(glob.glob(os.path.join(STORE, "appstore", "**", "*.txt"), recursive=True)):
+            with open(path, encoding="utf-8") as f:
+                for version in re.findall(r"\biOS (\d+(?:\.\d+)*)", f.read()):
+                    self.assertEqual(version, minimum, os.path.relpath(path, STORE))
 
     def test_the_limits(self):
         for rel, kind, limit in (("appstore/ko/name.txt", "chars", 30), ("appstore/en-GB/subtitle.txt", "chars", 30),
