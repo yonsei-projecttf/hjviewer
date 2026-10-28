@@ -1,25 +1,23 @@
 This app is intended for unlisted distribution.
 
-HJViewer is a remote desktop app for Yonsei University faculty and staff: the iPhone or iPad views and controls a Windows PC that runs HJViewer for Windows, and is never viewed or controlled itself. It works only with the HJViewer server that ProjectTF, a team at Yonsei University, runs. It reaches PCs behind firewalls over HTTPS (port 443) and has its own account service (a university login, the user's own PCs, password-less connections to them when the operator turns this on, sending a wake signal to a PC through a relay device on its network). It is based on the open-source RustDesk (AGPL-3.0) and is not affiliated with it. It costs nothing, has no ads or in-app purchases, and works the same in every region.
+HJViewer is a remote desktop app for Yonsei University faculty and staff: the iPhone or iPad views and controls a Windows PC that runs HJViewer for Windows, and is never viewed or controlled itself. It works only with the HJViewer server that ProjectTF, a team at Yonsei University, runs. It reaches PCs behind firewalls over HTTPS (port 443) and has its own account service (a university login, the user's own PCs, password-less connections to them when the operator turns this on, sending a wake signal to a PC through a relay device on its network). It is based on the open-source RustDesk (AGPL-3.0) and is not affiliated with it. It costs nothing and has no ads or in-app purchases.
 
-External services: the server checks portal logins with the Yonsei University SSO; public STUN servers help devices connect directly. The app supports iPhone and iPad with iOS 13.0 or later.
+External services: the server checks portal logins with the Yonsei University SSO; public STUN servers help devices connect directly.
 
-This server is for Yonsei University faculty and staff, so sign in first with the demo account (Settings > Account > Log in). Login uses their university portal accounts; the app has no sign-up. Without a login, an app connects only with the operator's access password, and a PC outside an account accepts connections only with it or a staff member's one-time support code. The demo account needs neither.
+This server is for Yonsei University faculty and staff, so sign in first with the demo account (Settings > Account > Log in). Login uses their existing university portal accounts (education accounts, guideline 4.8); the app has no sign-up. Without a login, an app connects only with the operator's access password, and a PC outside an account accepts connections only with it or a staff member's one-time support code. The demo account needs neither.
 
-The demo account reaches only the demo Windows PC: ID {{DEMO_PC_ID}}, password {{DEMO_PC_PASSWORD}}. Type the Sign-In Information exactly (the user name goes in the "Yonsei portal ID" field): wrong passwords lock the account for up to a day. Settings shows it as "App Review"; its "My PCs" tab stays empty. If the app says "A new device logged in" or asks to check a device, it is another review device: tap "It is mine". To delete the account, open Settings > Account > Delete account; signing in again afterwards starts an empty account.
+The demo account reaches only the demo Windows PC: ID {{DEMO_PC_ID}}, password {{DEMO_PC_PASSWORD}}. Type the Sign-In Information exactly (the user name goes in the "Yonsei portal ID" field): wrong passwords lock the account for up to a day, and a failed login shows a message in Korean. Settings shows it as "App Review"; its "My PCs" tab stays empty. If the app says "A new device logged in" or asks to check a device, it is another review device: tap "It is mine". To delete the account, open Settings > Account > Delete account in the iPhone or iPad app; signing in again afterwards starts an empty account.
+
+On the demo PC, do not log out of HJViewer or delete its account there: either takes that PC offline. Its Windows user has no password; on the lock screen, click Sign in.
 
 Account types: staff use Yonsei portal accounts, and administrators are staff accounts that the operator names on the server. Both are real people's accounts, so App Review gets this demo account, which lacks the staff features below.
 
-Screenshots of the My PCs list and the wake offer, and the attached video, show what the demo account cannot: a staff account's PC list, the wake offer and a support code.
+The screenshot of the My PCs list and the attached video show what the demo account cannot: a staff account's PC list and a support code.
 
 Staff accounts see "Create support code" under Settings > Account and on the My PCs tab: a one-time code, sent with a link to HJViewer for Windows, that lets the PC of someone without a login accept connections for two hours; when the staff member's device connects, that PC's connection window shows a signed "Yonsei faculty or staff (verified login)" mark. Administrators also see a read-only "Admin view: users and PCs" under Settings > Account.
 
-The app also has text chat with the person at the PC in a session (end-to-end encrypted, not stored on the server), session recording to the device, and a PC's camera view and terminal from its menu.
+In a session the app also has text chat with the person at the PC (end-to-end encrypted, not stored on the server). The menu of a PC's card under Recent sessions also opens its terminal and camera view (its "Run as administrator" item needs a Windows administrator login, which we do not give out). The PC's owner can turn either off in the PC's permission settings, and its HJViewer connection window shows each session.
 
-Face ID: only for an optional app lock (Settings > Security > App lock, off by default), which asks for Face ID or the passcode when the app opens or returns after a set time and covers its screens until then and in the background, so the app switcher shows no remote screen. The app gets only the result and sends nothing about it.
-
-Local network: HJViewer asks for the local network only to connect directly (peer to peer) to a PC on the same network.
+Face ID or Touch ID: only for an optional app lock (Settings > Security > App lock, off by default) that covers the app's screens until Face ID, Touch ID or the passcode unlocks it; the app gets only the result.
 
 To try remote control: sign in, type the demo PC's ID in the "Remote ID" box on the Connection tab, tap the arrow and enter the PC's password.
-
-Export compliance: the app's encryption (TLS, DTLS in WebRTC connections, and libsodium) uses standard algorithms only. Its Info.plist sets ITSAppUsesNonExemptEncryption to NO.

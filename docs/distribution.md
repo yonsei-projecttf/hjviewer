@@ -306,7 +306,7 @@ HJViewer 1.9.0이 나왔습니다. <날짜>부터는 1.9.0이어야 연결할 �
 - **끄기**: 같은 스위치를 끕니다. 끌 때도 한 번 확인합니다.
 - **안 될 때**: 기기 암호를 모르면 열 수 없습니다. 기기에서 암호와 생체 인증을 모두 없애면 앱은 다음에 열 때 잠금을 끄고 그렇다고 알립니다. 취소나 실패로는 잠금이 꺼지지 않습니다.
 - **알아 둘 것**: 잠긴 동안 뒤로 가기는 아무것도 하지 않고, 가림막 아래에 열려 있던 창은 잠금을 푼 뒤에도 그대로 있습니다(1.9.0, M2). 잠긴 동안 연 `hjviewer://`(1.9.0은 `rustdesk://`도) 링크의 연결은 가림막 아래에서 묻거나 시작하고, 그 창은 잠금을 푼 뒤에 보입니다. iPhone이 처음 Face ID를 쓸 때 묻는 허락 창의 글은 앱의 언어를 따릅니다(한국어 "Face ID로 HJViewer 앱 잠금을 풉니다.", 영어 "HJViewer uses Face ID to unlock the app."; 1.9.0부터 앱이 한국어 지역도 선언함, U66).
-- Android의 앱 잠금은 일반 권한 `USE_BIOMETRIC`과 `USE_FINGERPRINT`를 더합니다(Play 선언은 필요 없음). iOS의 App Store 심사 메모에는 Face ID를 앱 잠금에만 쓴다는 문단을 넣습니다(아래 "iOS: 심사용 데모 계정" 3번).
+- Android의 앱 잠금은 일반 권한 `USE_BIOMETRIC`과 `USE_FINGERPRINT`를 더합니다(Play 선언은 필요 없음). iOS의 App Store 심사 메모에는 Face ID와 Touch ID를 앱 잠금에만 쓴다는 문단을 넣습니다(아래 "iOS: 심사용 데모 계정" 3번).
 
 ## 1.9.1: 사용자에게 달라지는 것
 
@@ -715,6 +715,15 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구해서, 2026
    1.9.1부터는 메모에 계정 삭제의 자리를 한 문장 더합니다(지침 5.1.1(v)). 심사자가 지워 봐도, 같은 데모 계정으로 다시 로그인하면 빈 계정이 새로 생기므로 다음 심사에 지장이 없습니다(런북 7-17). 1.9.2의 hjv-api부터는 데모 PC도 그대로 온라인으로 남습니다. 서버가 그 PC를 새 계정에 붙여 두고, 내 PC 목록에는 보이지 않으므로 "빈 계정"이라는 앱과 메모의 말이 그대로 맞습니다. 지금 메모의 문구는 `store/appstore/review_notes.txt`가 정본입니다.
    ```text
    To delete the account, open Settings > Account > Delete account.
+   ```
+   2026-10-28부터(1.9.2의 App Review 통과 계획) 메모는 `store/appstore/review_notes.txt` 그대로이고, 손으로 낼 때 콘솔에서만 바꾸는 변형(데모 PC 두 대, 시험한 기기, Windows 비밀번호)은 [store/README.md](../store/README.md)의 "심사 메모"에 있습니다. 데모 계정 문단은 틀린 비밀번호의 로그인 실패 문구가 한국어라는 것(서버의 실패 문구는 한국어 한 문장)과, 계정 삭제는 iPhone·iPad 앱에서 한다는 것을 밝히고, 그 뒤에 데모 PC 문단을 둡니다. 데모 PC는 데모 계정에 묶여 있어(6번), 심사자가 원격 화면 속에서 그 PC의 HJViewer에 로그인했다가 로그아웃하면 앱이 묶음을 풀어 그 PC가 오프라인이 되기 때문입니다(그 PC에서 누른 계정 삭제는 서버가 거절함, 5번). 앱 잠금 문단은 Face ID와 Touch ID를 함께 말합니다. iOS 앱은 세션을 녹화하지 않으므로 메모에 녹화를 쓰지 않고, 로컬 네트워크 문단은 권한 창의 문구가 같은 것을 말하므로 4000바이트 안에 들도록 뺐습니다. 둘째 문단의 "works the same in every region"은 확인하지 못한 주장이라 뺐습니다.
+   ```text
+   ... wrong passwords lock the account for up to a day, and a failed login shows a message in
+   Korean. ... To delete the account, open Settings > Account > Delete account in the iPhone or
+   iPad app; signing in again afterwards starts an empty account.
+
+   On the demo PC, do not log out of HJViewer or delete its account there: either takes that PC
+   offline. Its Windows user has no password; on the lock screen, click Sign in.
    ```
 4. **이 계정으로 되는 것**: 로그인과 로그아웃, 계정 화면(이름 "App Review"), 로그인한 기기 목록, 빈 "내 PC" 목록(1.9.2부터 데모 PC는 서버에서 이 계정에 묶여 있지만 목록에는 보이지 않음), 계정 삭제(1.9.1, 설정 → 계정 → [계정 삭제]. 지운 뒤 다시 로그인하면 빈 계정이 새로 생기고, 1.9.2부터 데모 PC는 그대로 온라인). 연세 SSO는 부르지 않습니다. 앱의 기본 기능(PC의 ID와 비밀번호로 연결)은 로그인과 상관없이 됩니다. 단, 출입 확인을 켠 서버(1.8.0)에서는 로그인해야 연결되고, 이 계정은 `review.conf`의 `PC=` 줄에 적은 데모 PC에만 연결됩니다. 심사 기기가 둘 이상이면 서로의 로그인이 "새 기기에서 로그인했습니다"(A new device logged in) 알림으로 뜹니다. 그래서 메모에 "내 기기 맞음"(It is mine)을 누르라고 적습니다.
 5. **이 계정으로 안 되는 것**: `PC=` 줄 밖의 PC를 이 계정에 묶기(설치된 Windows PC에서 로그인해도 묶이지 않음), 데모 PC를 내 PC 목록에서 보거나 빼기, 데모 PC의 HJViewer에서 계정 삭제(1.9.2: "iPhone이나 iPad의 HJViewer에서 지우세요"), 비밀번호 없는 연결(데모 PC에도, 운영자의 스위치와 상관없이), 새 버전 내려받기(Windows, Android, 데모 PC의 자동 업데이트 포함), 원격 켜기, 최고운영자 화면, 지원 코드 만들기(1.9.0: 이 계정의 로그인에는 `support_code`가 없어 [지원 코드 만들기]가 나오지 않음), 그리고 출입 확인을 켠 서버에서 데모 PC 밖의 PC에 연결하기(거절 창 A2). 파일의 날짜가 지나거나 운영자가 파일을 지우면, 이 계정으로 로그인한 앱은 다음 요청에서 로그아웃됩니다. 날짜가 지나면 데모 PC도 출입증을 받지 못해 오프라인이 됩니다.

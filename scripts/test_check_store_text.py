@@ -108,8 +108,9 @@ class StoreTextTest(unittest.TestCase):
         patch, found = last
         self.assertEqual(len(found), 1, f"{patch} sets more than one iOS target: {sorted(found)}")
         (minimum,) = found
-        for rel, sentence in (("review_notes.txt", f"The app supports iPhone and iPad with iOS {minimum} or later."),
-                              ("en-GB/description.txt", f"An iPhone or iPad with iOS {minimum} or later"),
+        # (the review notes named it too until 2026-10-28, when that sentence made room in their 4000
+        # bytes; App Store Connect shows it from the build)
+        for rel, sentence in (("en-GB/description.txt", f"An iPhone or iPad with iOS {minimum} or later"),
                               ("ko/description.txt", f"iOS {minimum} 이상의 iPhone 또는 iPad")):
             with open(os.path.join(STORE, "appstore", rel), encoding="utf-8") as f:
                 self.assertEqual(f.read().count(sentence), 1, f"appstore/{rel}: {sentence}")
@@ -174,6 +175,12 @@ class StoreTextTest(unittest.TestCase):
         copy.value("appstore/review_notes.txt", head + "a" * pad)
         self.check(copy, "--pc-password-max", str(cst.PC_PASSWORD_MAX + 1), fails=r"4001 of 4000 bytes")
 
+    def worst_size(self, copy, notes):
+        """The notes' bytes once filled with the worst case, as the check prints them (it must pass)."""
+        copy.value("appstore/review_notes.txt", notes)
+        out = self.check(copy)
+        return int(re.search(r"review_notes.txt: (\d+) of 4000 bytes filled", out).group(1))
+
     def test_the_review_notes_room_for_every_conditional_sentence(self):
         # store/README.md's conditional sentences, all at once, still fit in the worst case
         with open(os.path.join(STORE, "README.md"), encoding="utf-8") as f:
@@ -181,26 +188,61 @@ class StoreTextTest(unittest.TestCase):
         copy = StoreCopy(self)
         notes = self.notes(copy)
         permission = "The university's written permission to use its name and its SSO login is attached."
-        login = "Login uses their university portal accounts; the app has no sign-up."
         login_48 = ("Login uses their existing university portal accounts (education accounts, guideline 4.8); "
                     "the app has no sign-up.")
         approved = "Apple approved unlisted app distribution for this app on <date>."
         longest_date = "September 30, 2026"  # store/README.md: the date in English, at its longest
-        for text in (permission, login, login_48, approved, f"`{longest_date}`",
-                     "Screenshots of the My PCs list and the wake offer, and the attached video, show"):
+        for text in (permission, approved, f"`{longest_date}`",
+                     "The screenshot of the My PCs list and the attached video show"):
             self.assertIn(text, guide + notes, text)
-        self.assertEqual(notes.count(login), 1)
-        paragraphs = notes.split("\n\n")
-        self.assertEqual(paragraphs[0], UNLISTED)
-        paragraphs[1] += " " + permission
-        # after Apple's approval: a paragraph of its own right after Apple's unlisted sentence
-        paragraphs.insert(1, approved.replace("<date>", longest_date))
-        every = "\n\n".join(paragraphs).replace(login, login_48)
-        copy.value("appstore/review_notes.txt", every)
-        out = self.check(copy)
-        size = int(re.search(r"review_notes.txt: (\d+) of 4000 bytes filled", out).group(1))
-        self.assertLessEqual(size, cst.REVIEW_NOTES_BYTES)
+        self.assertEqual(notes.count(login_48), 1, "the 4.8 wording is the notes' own since 2026-10-28")
+
+        def with_both(text):
+            paragraphs = text.split("\n\n")
+            self.assertEqual(paragraphs[0], UNLISTED)
+            paragraphs[1] += " " + permission
+            # after Apple's approval: a paragraph of its own right after Apple's unlisted sentence
+            paragraphs.insert(1, approved.replace("<date>", longest_date))
+            return "\n\n".join(paragraphs)
+
+        self.assertLessEqual(self.worst_size(copy, with_both(notes)), cst.REVIEW_NOTES_BYTES)
         self.assertEqual(cst.PC_PASSWORD_MAX, 32, "store/README.md and the store run say 32 bytes")
+
+        # the variants for a submission by hand (store/README.md), their <...> at the worst case, fit
+        # in the two forms store/README.md names: 1.9.2's first one, and its longest one once its cut
+        # is made (no Tested on)
+        tested = " Tested on <devices and OS versions>."
+        two_pcs = (("The demo account reaches only the demo Windows PC: ID {{DEMO_PC_ID}}, password {{DEMO_PC_PASSWORD}}.",
+                    "The demo account reaches only the demo Windows PCs, both with the password {{DEMO_PC_PASSWORD}}: "
+                    "ID {{DEMO_PC_ID}}, or ID <second PC ID> if the first is offline."),
+                   ("On the demo PC, do not", "On a demo PC, do not"),
+                   ("type the demo PC's ID", "type a demo PC's ID"))
+        no_webcam = (("which we do not give out).", "which we do not give out; the demo PCs have no camera)."),)
+        for old, new in two_pcs + no_webcam:
+            self.assertEqual(notes.count(old), 1, old)
+            self.assertIn(f"`{new}`", guide, new)
+        self.assertIn(f"`{tested}`", guide)
+        worst = {"<second PC ID>": "x" * cst.PC_ID_MAX,
+                 "<devices and OS versions>": "x" * (80 - len(tested.replace("<devices and OS versions>", "")))}
+
+        def hand(text, *changes, tested_on=False):
+            for old, new in (pair for change in changes for pair in change):
+                text = text.replace(old, new)
+            paragraphs = text.split("\n\n")
+            if tested_on:  # at the end of the third paragraph, External services
+                self.assertTrue(paragraphs[2].startswith("External services:"))
+                paragraphs[2] += tested
+            text = "\n\n".join(paragraphs)
+            for name, value in worst.items():
+                text = text.replace(name, value)
+            return text
+
+        # 1.9.2's first submission by hand: two demo PCs and the devices tested on
+        self.assertLessEqual(self.worst_size(copy, hand(notes, two_pcs, tested_on=True)), cst.REVIEW_NOTES_BYTES)
+        # the longest form store/README.md says fits: two PCs without a webcam, the university's
+        # permission and Apple's approval, without Tested on
+        self.assertLessEqual(self.worst_size(copy, with_both(hand(notes, two_pcs, no_webcam))),
+                             cst.REVIEW_NOTES_BYTES)
 
     def test_the_review_notes_placeholders(self):
         for change, rule in ((lambda t: t + " {{DEMO_ACCOUNT}}", r"\{\{DEMO_ACCOUNT\}\} is not one of"),
