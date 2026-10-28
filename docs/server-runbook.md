@@ -921,7 +921,7 @@ sudo journalctl --namespace=hjviewer -u hjviewer-api -p warning --since -10min -
 - `selfcheck`는 SSO 주소의 DNS·TCP·TLS, hbbs 콘솔, 목록 키, 명령 키, 출입증 키를 봅니다. 키마다 두 줄입니다: 고정한 공개키의 지문(`list keys the apps pin …`, `command keys the relays pin …`, `ticket keys hbbs takes …`)과 쓰는 키가 고정한 그 번호의 키인지(`list key in use (HJV_API_LIST_KID 1): the pinned key 1, …`, `command key in use (HJV_API_COMMAND_KID 1): the pinned key 1, …`, `ticket key in use (HJV_API_TICKET_KID 1): the key 1 hbbs takes, …`). 7단계 전에는 `hbbs console` 줄 하나만 `[FAIL]`(패치 0004 전)이고 나머지는 `[ OK ]`여야 합니다. 7-6을 먼저 했으면(hjv-api를 시작하기 전에 hbbs를 0004로 바꿈) 그 줄도 `[ OK ] hbbs console: answers hjv-pk (patch 0004)`여야 하고, 7-6에서 건너뛴 확인이 이것입니다.
 - 목록 키, 명령 키, 출입증 키 줄이 `[FAIL]`이면 멈춥니다. 고정한 목록 키가 다르면 모든 PC가 모든 목록을 거절하고, 명령 키가 다르면 모든 중계기가 켜기 명령을 거절하고, 출입증 키가 다르면 hbbs가 출입 확인을 켠 뒤 모든 연결과 PC 등록을 거절합니다. `HJV_API_COMMAND_PUBKEYS`나 `HJV_API_TICKET_PUBKEYS`가 비어 있어도 쓰는 키를 대조할 수 없어 `[FAIL]`입니다. 출입증 키 가운데 공개된 시험 키가 있어도 `[FAIL]`입니다(`… is a public test key …`).
 - 지문 줄(공개값)은 사용자가 5단계에서 키를 만들 때 본 지문과 같아야 하고, 8단계의 대조에 쓰므로 목록 키와 명령 키 것을 모두 보고에 옮깁니다. 출입증 키의 지문도 보고에 옮깁니다.
-- 서비스가 시작하지 않으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -p err -o cat | grep -vE 'acct=|dev=|ip=|tag:'`의 오류 줄을 사용자에게만 보여 줍니다(7-0: 꼬리표가 든 줄은 거름. 그 밖의 줄이 필요하면 사용자가 서버에서 직접 봄). 설정 파일의 모르는 `HJV_API_` 이름, 빠진 SSO 값, 없는 자격 증명(명령 키와 출입증 키 포함, 7-4)이 흔한 원인입니다.
+- 서비스가 시작하지 않으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -o cat | grep -E '^hjv-api: ' | tail -3`의 원인 줄(hjv-api가 멈추며 남긴 `hjv-api: <원인>`)을 사용자에게만 보여 줍니다. 이 줄에는 우선순위 앞머리가 없어 저널은 info로 두므로 `-p err`로 거르면 보이지 않습니다. 원인 줄은 틀린 설정의 이름, 자격 증명의 이름, 파일 경로만 말하고 사람의 값은 싣지 않습니다(7-0). 아무것도 나오지 않거나 그 밖의 줄이 필요하면 사용자가 서버에서 직접 봅니다. 설정 파일의 모르는 `HJV_API_` 이름, 빠진 SSO 값, 없는 자격 증명(명령 키와 출입증 키 포함, 7-4)이 흔한 원인입니다.
 
 로그인 방식을 확인합니다. 설정 파일에 `HJV_API_LOGIN` 줄이 없거나 `open`이면(기본값, 2026-10-14 사용자 결정) 연세 SSO를 통과한 교직원은 누구나 로그인하고, 처음 로그인할 때 명단에 저절로 올라갑니다. 교직원만 되는 것은 연세 SSO가 아니라 hjv-api의 ID 규칙 때문입니다. 입력한 ID를 대문자로 바꿔 Z나 Y로 시작하고 ZA로 시작하지 않아야 SSO에 묻고, SSO가 알려 준 그 사람의 pcode도 같은 규칙에 맞아야 합니다(행정허브 플러그인은 Z와 B를 받음). 그래서 명단을 미리 넣을 필요가 없습니다. `selfcheck`의 마지막 줄이 `[ OK ] login (HJV_API_LOGIN): open, …`이고, `report`의 둘째 줄이 `login: open (…)`이어야 합니다.
 
@@ -1189,7 +1189,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
     systemctl is-active hjviewer-api.socket hjviewer-api.service
     sudo journalctl --namespace=hjviewer -u hjviewer-api -p warning --since -1h -o cat | wc -l   # 개수만
     ```
-    멈춰 있으면(`inactive`, `failed`) 사용자 승인 뒤 `sudo systemctl start hjviewer-api.socket hjviewer-api.service`를 하고 `sudo /opt/hjviewer/bin/hjv-api admin selfcheck`로 확인합니다. 시작하지 않으면 7-5의 마지막 항목처럼 오류 줄을 사용자에게만 보여 주고 멈춥니다. 하루 안에 되살리지 못하면 모든 PC가 비밀번호 창으로 돌아간다는 것도 알립니다.
+    멈춰 있으면(`inactive`, `failed`) 사용자 승인 뒤 `sudo systemctl start hjviewer-api.socket hjviewer-api.service`를 하고 `sudo /opt/hjviewer/bin/hjv-api admin selfcheck`로 확인합니다. 시작하지 않으면 7-5의 마지막 항목처럼 원인 줄을 사용자에게만 보여 주고 멈춥니다. 하루 안에 되살리지 못하면 모든 PC가 비밀번호 창으로 돌아간다는 것도 알립니다.
   - **Caddy(A 경로)와 Apache**: 1.6.0의 `deploy/Caddyfile`과 `deploy/apache-hjviewer.conf`도 같은 경로를 hjv-api의 소켓 `/run/hjviewer-api.sock`으로 넘기고, 닿지 않으면 위의 503 JSON으로 답합니다(1.5.1까지의 파일은 404). 이 런북에는 그 두 웹 서버 뒤에 hjv-api를 두는 절차가 없으므로, 이 런북대로 설치한 A 경로 서버와 Apache 서버에서 이 503은 hjv-api가 없는 서버의 정상 응답입니다.
     - 고칠 것이 없습니다. `Caddyfile`이나 Apache 사이트 파일을 고쳐 404로 되돌리지 않습니다. 5절의 확인(`/ws/id`·`/ws/relay` 101, `/api/heartbeat` 404)이 그대로이면 됩니다.
     - 이런 서버에 맞는 앱은 계정 공개키(`HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`)를 넣지 않은 빌드입니다. 그런 앱에는 로그인이 없어 계정 경로를 부르지 않습니다([architecture.md](architecture.md) 5-9). 계정 공개키를 넣은 앱을 이런 서버에 붙이면 로그인할 때 위 문구가 나옵니다. 워크플로를 직접 실행한 빌드는 공개키가 없어도 되지만, 비공개 빌드 저장소를 거친 1.6.0 출시 빌드는 계정 공개키가 있어야 통과합니다([ci.md](ci.md)의 "계정 기능의 공개키").
@@ -1353,7 +1353,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    sleep 3; systemctl is-active hjviewer-api                   # active
    sudo journalctl --namespace=hjviewer -u hjviewer-api --since -1min -o cat | grep -e 'App Review file (HJV_API_REVIEW_FILE)' -e 'no App Review account' | tail -2
    ```
-   - `active`가 아니면 7-5의 마지막 항목처럼 오류 줄(`-p err`, 꼬리표가 든 줄은 거름)을 사용자에게만 보여 주고, `sudo sed -i '/^HJV_API_REVIEW_FILE=/d' "$E"`로 그 줄을 지운 뒤 다시 시작해 `active`인지 봅니다.
+   - `active`가 아니면 7-5의 마지막 항목처럼 hjv-api가 멈추며 남긴 원인 줄(`grep -E '^hjv-api: '`)을 사용자에게만 보여 주고, `sudo sed -i '/^HJV_API_REVIEW_FILE=/d' "$E"`로 그 줄을 지운 뒤 다시 시작해 `active`인지 봅니다.
    - `login: the App Review file (HJV_API_REVIEW_FILE) read: until <UTC>, <n> demo PC(s) (acct=<꼬리표>)`가 나오고, 그 시각이 지금보다 뒤이고, 그 뒤에 `login: no App Review account (…)` 줄이 없어야 합니다. 이 꼬리표가 `T`입니다. `<n>`은 `PC=` 줄의 PC 수입니다(1번 블록에서 센 수와 같아야 함).
    - `… is not used: <이유>`이면 파일이 거부된 것입니다(이유에 ID나 해시는 없음). 그 줄을 보고하고 사용자가 파일을 다시 만듭니다.
    - `login: no App Review account (…)`만 나오면 파일이 없습니다. read 줄(지난 시각)과 이 줄이 함께 나오면 `UNTIL`이 지났습니다.
@@ -1932,7 +1932,7 @@ curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; e
    sleep 3; systemctl is-active hjviewer-api                   # active
    sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep '^access password'
    ```
-   - `active`가 아니면 7-17의 2번처럼 오류 줄을 사용자에게만 보이고, 그 줄을 지운 뒤 다시 시작합니다.
+   - `active`가 아니면 7-17의 2번처럼 원인 줄(7-5)을 사용자에게만 보이고, 설정 줄(`HJV_API_GUEST_FILE=`)을 지운 뒤 다시 시작합니다.
    - `access password: closed: the file is not there or not used (the journal says why)`이면 `sudo journalctl --namespace=hjviewer -u hjviewer-api --since -5min -o cat | grep 'access password' | tail -2`의 `… is not used: <이유>`를 보고합니다(이유에 해시는 없음). 사용자가 파일을 다시 만듭니다.
 3. **바꾸기**: 1번의 블록에 새 파일을 넣습니다. 새 파일은 그때부터의 시도에 쓰이고, 이미 나간 출입증은 12시간 안에 끝납니다. 퍼진 비밀번호라서 바로 끊어야 하면 이어서 9-3을 `NB=now`로 합니다. 그때는 교직원과 묶인 PC의 출입증도 함께 끝나고, 몇 분 안에 저절로 새로 받습니다.
 4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 같습니다. 설정 줄은 두어도 됩니다. 1.9.0의 지원 코드는 이 파일을 보지 않으므로 그대로 됩니다. 지원 코드만 끄는 설정은 없습니다(9-7의 '지원 코드가 잘못 쓰임').
