@@ -141,9 +141,9 @@ env:
 # repository's 10 GiB (GHA-10 of the 2026-10-27 CI audit).
 #
 # Actions run on Node 24 (GitHub took Node 20 off the runners on 2026-09-23): every JavaScript action
-# is pinned to a release that declares node24 but two, which the runner runs on Node 24 all the same:
-# KyleMayes/install-llvm-action, whose newest release (v2.0.9) still declares node20, and
-# r0adkll/sign-android-release (node12, "Sign app APK"). actions/cache v6.1.0 computes
+# is pinned to a release that declares node24 but one, which the runner runs on Node 24 all the same:
+# KyleMayes/install-llvm-action, whose newest release (v2.0.9) still declares node20. The Android
+# job signs its APK with build-tools' own commands ("Sign app APK"). actions/cache v6.1.0 computes
 # an entry's version (the paths, the compression, Windows-only) and looks up its key as v3.5.0 did,
 # so the bridge and vcpkg entries that v3.5.0 saved still restore (docs/ci.md, "캐시").
 
@@ -1376,7 +1376,8 @@ jobs:
           mkdir -p signed-apk
           mv "./$BUILD_NAME-android-aarch64.apk" signed-apk/
 
-      # L1282-1302; https://github.com/r0adkll/sign-android-release/issues/84#issuecomment-1889636075
+      # L1282-1288: the image's newest build-tools, whose zipalign and apksigner sign the APK below
+      # and whose aapt2 reads it in "Sign and check Play bundle"
       - name: Setup sign tool version variable
         if: env.ANDROID_SIGNING == 'true'
         shell: bash
@@ -1386,20 +1387,62 @@ jobs:
           echo "ANDROID_SIGN_TOOL_VERSION=$BUILD_TOOL_VERSION" >> "$GITHUB_ENV"
           echo "Last build tool version is: $BUILD_TOOL_VERSION"
 
-      - uses: r0adkll/sign-android-release@349ebdef58775b1e0d8099458af0816dc79b6407 # v1
-        name: Sign app APK
+      # L1290-1302 used r0adkll/sign-android-release (node12, and the set-output command, whose refusal
+      # GitHub announced in 2022 and put off without a date); these are the commands it ran at 349ebde,
+      # with the same build-tools and flags: zipalign -c -v 4 only checks that the APK is aligned, its
+      # copy -aligned.apk is signed by apksigner with its default schemes into -signed.apk (1.9.1's
+      # APK: v2 and v3, no v1, which minSdk 24 leaves out; v4 goes to the .idsig file beside it,
+      # which nothing uploads), and apksigner verify checks that. The keystore is decoded outside the
+      # workspace with mode 600 and removed as soon as apksigner has signed (and by the next step);
+      # the passwords reach apksigner by the names of environment variables (env:), never on a
+      # command line. The step's output and SIGNED_RELEASE_FILE name the signed APK as the action
+      # did, relative to the workspace.
+      - name: Sign app APK
         if: env.ANDROID_SIGNING == 'true'
         id: sign-apk
-        with:
-          releaseDirectory: upstream/rustdesk/signed-apk
-          signingKeyBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          alias: ${{ secrets.ANDROID_KEY_ALIAS }}
-          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          # PKCS12 keystores (keytool's default) use the store password for the key too
-          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
         env:
-          # env.ANDROID_SIGN_TOOL_VERSION is set by Step "Setup sign tool version variable"
-          BUILD_TOOLS_VERSION: ${{ env.ANDROID_SIGN_TOOL_VERSION }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          # PKCS12 keystores (keytool's default) use the store password for the key too
+          HJV_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/$ANDROID_SIGN_TOOL_VERSION"
+          ks="$RUNNER_TEMP/apk-release.keystore"
+          trap 'rm -f "$ks"' EXIT
+          apks=(upstream/rustdesk/signed-apk/*.apk)
+          if [ ${#apks[@]} != 1 ] || [ ! -f "${apks[0]}" ]; then
+            echo "::error::upstream/rustdesk/signed-apk holds ${#apks[@]} APKs, not the one of this build."
+            exit 1
+          fi
+          apk=${apks[0]}
+          aligned=${apk%.apk}-aligned.apk signed=${apk%.apk}-signed.apk
+          if ! "$tools/zipalign" -c -v 4 "$apk" > "$RUNNER_TEMP/zipalign.txt"; then
+            cat "$RUNNER_TEMP/zipalign.txt"
+            echo "::error::zipalign -c -v 4: $apk is not aligned."
+            exit 1
+          fi
+          tail -n 1 "$RUNNER_TEMP/zipalign.txt"
+          cp "$apk" "$aligned"
+          (umask 077 && printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ks")
+          "$tools/apksigner" sign --ks "$ks" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --out "$signed" --key-pass env:HJV_KEY_PASS "$aligned"
+          rm -f "$ks"
+          "$tools/apksigner" verify "$signed"
+          # the schemes and the signing certificate's SHA-256, never its name (the DN line)
+          "$tools/apksigner" verify --verbose --print-certs "$signed" 2>&1 |
+            grep -E '^(Verified using |Verified for |Number of signers: |Signer #[0-9]+ certificate SHA-256 digest: )'
+          echo "SIGNED_RELEASE_FILE=$signed" >> "$GITHUB_ENV"
+          echo "signedReleaseFile=$signed" >> "$GITHUB_OUTPUT"
+
+      # also when the step above failed or the run was cancelled
+      - name: Remove the APK keystore
+        if: always() && env.ANDROID_SIGNING == 'true'
+        working-directory: ${{ github.workspace }}
+        run: rm -f "$RUNNER_TEMP/apk-release.keystore"
 
       - name: Add license, source and third-party notices
         shell: bash
@@ -1475,10 +1518,9 @@ jobs:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
-          # The APK signing action leaves its copy of the keystore in the workspace: gone before
-          # Gradle and the plugins' build scripts run again ("Remove the upload keystore" is the
-          # backstop).
-          rm -f signed-apk/signingKey.jks
+          # Gradle and the plugins' build scripts run again here: "Sign app APK" and "Remove the APK
+          # keystore" have removed the keystore that signed the APK, and "Sign and check Play bundle"
+          # decodes its own copy only after this step.
           # The Play-only manifest overlay. The APK is built, so a manifest of the release build type
           # now changes the bundle alone: it outranks the app's manifest and the plugins', and its
           # tools:node="remove" entries take out what only the side-loaded APK may have.
@@ -1715,7 +1757,7 @@ jobs:
       - name: Remove the upload keystore
         if: always() && env.ANDROID_SIGNING == 'true'
         working-directory: ${{ github.workspace }}
-        run: rm -f "$RUNNER_TEMP/play-upload.keystore" upstream/rustdesk/signed-apk/signingKey.jks
+        run: rm -f "$RUNNER_TEMP/play-upload.keystore"
 
       # Not in upstream (GHA-15 of the 2026-10-27 CI audit): what the job leaves of the disk, for the
       # run summary. Whether "Free Disk Space" can go shows only over runs, a run that builds the

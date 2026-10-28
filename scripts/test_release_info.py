@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Offline tests of scripts/release-info.py and of the client-build.yml steps of the
 minimum-version work that are not about keys: the release record of every platform job with the
-Android manifest check, the iOS export method, the list of Dart tests and the Windows smoke tests
-(scripts/ci.sh client):
+Android manifest check, the Android job's APK signing, the iOS export method, the list of Dart tests
+and the Windows smoke tests (scripts/ci.sh client):
 
     python3 -I -B -m unittest discover -s scripts -p 'test_release_info.py'
 
@@ -318,7 +318,7 @@ class RecordTest(unittest.TestCase):
             tree.put(name, apk(262872251, "1.6.0", utf8))
             # what else the signing step leaves in the directory is not uploaded, and not listed
             tree.put("HJViewer-1.6.0-0123abc-android-aarch64.apk", apk(262872251, "1.6.0"))
-            tree.put("signingKey.jks", b"a keystore")
+            tree.put("HJViewer-1.6.0-0123abc-android-aarch64-signed.apk.idsig", b"a v4 signature")
             code, out, summary = tree.run("--platform", "android", "--file", name)
             self.assertEqual(code, 0, out)
             record = self.check_contract(tree.read("release.json").decode(), tree)
@@ -1170,14 +1170,14 @@ class WorkflowTest(unittest.TestCase):
                 want, upload = f"{build}-android-aarch64-signed.apk", "Upload signed APK"
                 tree.put(f"{build}-android-aarch64-aligned.apk", apk(), out)
                 tree.put(want, apk() + b"signed", out)
-                tree.put("signingKey.jks", b"the keystore", out)
+                tree.put(want + ".idsig", b"apksigner's v4 signature", out)
                 env["SIGNED_APK"] = f"upstream/rustdesk/signed-apk/{want}"
                 artifact = {"${{ steps.sign-apk.outputs.signedReleaseFile }}": env["SIGNED_APK"]}
             artifact["${{ env.BUILD_NAME }}"] = build
             code, text = self.run_record_step("android", tree, env, cwd)
             self.assertEqual(code, 0, text)
             self.assertEqual(self.uploaded("android", upload, out, artifact), sorted(self.listed(out) + ["SHA256SUMS"]))
-            self.assertNotIn("signingKey.jks", self.listed(out))
+            self.assertFalse([n for n in self.listed(out) if n.endswith((".idsig", "-aligned.apk"))])
             self.assertEqual(self.listed(out)[0], want)
             if signing == "true":
                 with open(os.path.join(out, "release.json")) as f:
@@ -1192,6 +1192,137 @@ class WorkflowTest(unittest.TestCase):
         tree.put(f"{build}-android-aarch64.apk", apk(), out)
         code, text = self.run_record_step("android", tree, {"BUILD_NAME": build, "ANDROID_SIGNING": "true", "SIGNED_APK": ""}, cwd)
         self.assertEqual(code, 1, text)
+
+    # Stand-ins for build-tools' zipalign and apksigner: each call goes to $T/calls; apksigner sign
+    # notes the keystore's mode and bytes and writes the signed APK with its .idsig, as apksigner
+    # does; verify --print-certs prints a certificate's name, which the step must not show
+    ZIPALIGN = '#!/bin/bash\necho "zipalign $*" >> "$T/calls"\n[ -z "${MISALIGNED:-}" ] || ' \
+               '{ echo "Verification FAILED"; exit 1; }\necho "Verification succesful"\n'
+    APKSIGNER = '''#!/bin/bash
+echo "apksigner $*" >> "$T/calls"
+[ "$ANDROID_KEYSTORE_PASSWORD" = store-secret ] && [ "$HJV_KEY_PASS" = key-secret ] || exit 9
+if [ "$1" = sign ]; then
+  ks= out=
+  while [ $# -gt 1 ]; do
+    case $1 in --ks) ks=$2 ;; --out) out=$2 ;; esac
+    shift
+  done
+  stat -c '%a' "$ks" >> "$T/keystore"
+  cat "$ks" >> "$T/keystore"
+  [ -z "${SIGN_FAILS:-}" ] || exit 1
+  { cat "$1"; echo signed; } > "$out"
+  echo v4 > "$out.idsig"
+elif [ "$2" = --verbose ]; then
+  echo "Verifies"
+  echo "Verified using v2 scheme (APK Signature Scheme v2): true"
+  echo "Number of signers: 1"
+  echo "Signer #1 certificate DN: CN=Somebody Real, O=Somewhere"
+  echo "Signer #1 certificate SHA-256 digest: 00ff"
+  echo "WARNING: a warning that names nothing" >&2
+fi
+'''
+
+    def sign_apk(self, apks, **env):
+        """"Sign app APK" as the runner runs it, against the stand-ins: (exit code, output, the
+        step's outputs, its GITHUB_ENV, the calls, what apksigner saw of the keystore, the
+        keystore's path, the workspace's signed-apk folder)."""
+        step = self.step("android", "Sign app APK")
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        tools = os.path.join(tmp, "sdk", "build-tools", "36.1.0")
+        os.makedirs(tools)
+        for name, text in (("zipalign", self.ZIPALIGN), ("apksigner", self.APKSIGNER)):
+            with open(os.path.join(tools, name), "w") as f:
+                f.write(text)
+            os.chmod(os.path.join(tools, name), 0o755)
+        work, temp = os.path.join(tmp, "work"), os.path.join(tmp, "temp")
+        folder = os.path.join(work, "upstream", "rustdesk", "signed-apk")
+        os.makedirs(folder)
+        os.makedirs(temp)
+        for name in apks:
+            with open(os.path.join(folder, name), "wb") as f:
+                f.write(b"an APK " + name.encode())
+        files = {name: os.path.join(tmp, name) for name in ("output", "env", "calls", "keystore")}
+        for path in files.values():
+            open(path, "w").close()
+        secrets = {"KEYSTORE_BASE64": "dGhlIGtleXN0b3Jl", "ANDROID_KEYSTORE_PASSWORD": "store-secret",
+                   "ANDROID_KEY_ALIAS": "the alias", "HJV_KEY_PASS": "key-secret"}
+        self.assertEqual(sorted(step["env"]), sorted(secrets))
+        done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]], cwd=work,
+                              env={**os.environ, **secrets, "ANDROID_HOME": os.path.join(tmp, "sdk"),
+                                   "ANDROID_SIGN_TOOL_VERSION": "36.1.0", "RUNNER_TEMP": temp, "T": tmp,
+                                   "GITHUB_OUTPUT": files["output"], "GITHUB_ENV": files["env"], **env},
+                              capture_output=True, text=True, timeout=60)
+        read = {}
+        for name, path in files.items():
+            with open(path) as f:
+                read[name] = f.read()
+        return (done.returncode, done.stdout + done.stderr, read["output"], read["env"], read["calls"],
+                read["keystore"], os.path.join(temp, "apk-release.keystore"), folder)
+
+    def test_the_apk_signing_step(self):
+        """What r0adkll/sign-android-release ran at 349ebde, without it (node12, set-output): the
+        same tools and flags, the passwords by name only, the keystore outside the workspace and
+        gone after the step, and the output its four readers take."""
+        step = self.step("android", "Sign app APK")
+        self.assertNotIn("uses", step)
+        self.assertEqual((step["if"], step["shell"], step["working-directory"]),
+                         ("env.ANDROID_SIGNING == 'true'", "bash", "${{ github.workspace }}"))
+        self.assertEqual(step["env"]["HJV_KEY_PASS"],
+                         "${{ secrets.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}")
+        self.assertNotIn("${{", step["run"])
+        self.assertNotIn("r0adkll", json.dumps(self.wf["jobs"]))
+        name = "HJViewer-1.9.2-0123abc-android-aarch64"
+        signed = f"upstream/rustdesk/signed-apk/{name}-signed.apk"
+        code, out, output, env, calls, keystore, ks, folder = self.sign_apk([name + ".apk"])
+        self.assertEqual(code, 0, out)
+        # the path as the action wrote it, relative to the workspace, for the output's readers
+        self.assertEqual(output, f"signedReleaseFile={signed}\n")
+        self.assertEqual(env, f"SIGNED_RELEASE_FILE={signed}\n")
+        apk_path = f"upstream/rustdesk/signed-apk/{name}.apk"
+        self.assertEqual(calls.splitlines(), [
+            f"zipalign -c -v 4 {apk_path}",
+            f"apksigner sign --ks {ks} --ks-key-alias the alias --ks-pass env:ANDROID_KEYSTORE_PASSWORD "
+            f"--out {signed} --key-pass env:HJV_KEY_PASS upstream/rustdesk/signed-apk/{name}-aligned.apk",
+            f"apksigner verify {signed}",
+            f"apksigner verify --verbose --print-certs {signed}"])
+        # the keystore: decoded, mode 600, outside the workspace, and gone after the step
+        self.assertEqual(keystore, "600\nthe keystore")
+        self.assertFalse(os.path.exists(ks))
+        self.assertEqual(sorted(os.listdir(folder)),
+                         sorted([name + ".apk", name + "-aligned.apk", name + "-signed.apk", name + "-signed.apk.idsig"]))
+        with open(os.path.join(folder, name + "-aligned.apk"), "rb") as f:
+            self.assertEqual(f.read(), b"an APK " + name.encode() + b".apk")
+        # the schemes and the digest of the certificate, never its name, warnings or a password
+        self.assertIn("Signer #1 certificate SHA-256 digest: 00ff", out)
+        self.assertIn("Verified using v2 scheme (APK Signature Scheme v2): true", out)
+        for hidden in ("Somebody Real", "DN:", "WARNING", "store-secret", "key-secret"):
+            self.assertNotIn(hidden, out + calls)
+        # an APK that is not aligned is not signed, and no keystore is written for it
+        code, out, output, env, calls, keystore, ks, _ = self.sign_apk([name + ".apk"], MISALIGNED="1")
+        self.assertEqual((code, output, env, keystore), (1, "", "", ""))
+        self.assertIn("::error::zipalign -c -v 4", out)
+        self.assertNotIn("apksigner", calls)
+        # a failed signing leaves no keystore and no output
+        code, out, output, env, calls, keystore, ks, _ = self.sign_apk([name + ".apk"], SIGN_FAILS="1")
+        self.assertNotEqual(code, 0)
+        self.assertEqual((output, env, keystore), ("", "", "600\nthe keystore"))
+        self.assertFalse(os.path.exists(ks))
+        # one APK, the build's: none or two are a mistake of the build
+        for apks in ([], [name + ".apk", "other.apk"]):
+            code, out, output, *_ = self.sign_apk(apks)
+            self.assertEqual((code, output), (1, ""), apks)
+            self.assertIn("::error::upstream/rustdesk/signed-apk holds", out)
+        # the next step removes the keystore also when this one failed or the run was cancelled
+        steps = [s.get("name") for s in self.steps("android")]
+        remove = self.step("android", "Remove the APK keystore")
+        self.assertEqual(steps.index("Remove the APK keystore"), steps.index("Sign app APK") + 1)
+        self.assertEqual(remove["if"], "always() && env.ANDROID_SIGNING == 'true'")
+        self.assertEqual(remove["run"], 'rm -f "$RUNNER_TEMP/apk-release.keystore"')
+        self.assertIn('ks="$RUNNER_TEMP/apk-release.keystore"', step["run"])
+        # the build-tools of the step that also gives "Sign and check Play bundle" its aapt2
+        self.assertLess(steps.index("Setup sign tool version variable"), steps.index("Sign app APK"))
+        self.assertIn('tools="$ANDROID_HOME/build-tools/$ANDROID_SIGN_TOOL_VERSION"', step["run"])
 
     def test_the_ios_step(self):
         for name, signing in (("HJViewer-1.6.0-0123abc-ios.ipa", "true"), ("HJViewer-1.6.0-0123abc-ios-unsigned.ipa", "false")):
