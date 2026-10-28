@@ -1327,6 +1327,11 @@ jobs:
       # while the Bridge codegen job may still run. A run without its Rust cache spent 1.3 minutes on
       # them inside the build step (2026-10-27); with the cache, it checks what is there. After the
       # Rust cache's restore, whose key it does not change: it only downloads, and exports nothing.
+      # The build step still fetches what hbb_common, a build dependency too and so also built for
+      # the runner, uses on Linux only (users, x11, nix and three more crates, 0.4 MiB, and two git
+      # dependencies): adding --target x86_64-unknown-linux-gnu would fetch them, but also 295
+      # packages the build never uses (275 crates, 44.5 MiB, and 14 git repositories), which a new
+      # Rust entry would keep (cargo metadata, 2026-10-28).
       - name: Fetch the crates
         shell: bash
         run: cargo fetch --locked --target aarch64-linux-android
