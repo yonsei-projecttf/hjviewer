@@ -8,8 +8,8 @@
 //! 1.9.2 it holds the demo PCs of its PC= line: bound by its login on them, registered on a
 //! `staff`/`pc` ticket that ends at UNTIL, out of its own lists, kept through its deletion in the
 //! app, its revoke-all, a logout and a restart, never deleted from a demo PC's own login (also not
-//! by a request of it that overlaps the iPad's deletion), and given no package by door 1. The ID and the password are made up: the real ones live only in
-//! the server's file.
+//! by a request of it that overlaps the iPad's deletion), and given no package by door 1. The ID
+//! and the password are made up: the real ones live only in the server's file.
 
 mod common;
 

@@ -160,15 +160,15 @@ service signs short-lived access tickets, and the server's connection broker che
 sets up a connection or takes a PC's registration. A logged-in app gets one with its login and again
 about halfway through its life (it lives 24 hours); a PC in your account gets one with each sync (72
 hours); the App Review account gets one that reaches only its demo PCs, and its demo PCs one that
-only lets them register (24 hours, never past the end of the account's file). A ticket holds the kind of
-holder (staff, App Review, the access password or a support code), what it is good for, a tag of the
-account (never the portal ID; none for the access password or a support code), the PC's ID and
-public key when it lets that PC register,
-the PCs it reaches when it is limited to some, and when it was made and when it ends. It is signed,
-not encrypted: whoever holds it can read it and use it until it ends, so the app sends it only over
-its encrypted connection to the server and never logs it. The account service does not keep tickets
-or a record of each one; it counts them by kind, in memory. The connection broker keeps, while a PC
-stays registered with a ticket, that ticket's key number and times, in memory.
+only lets them register (24 hours, never past the end of the account's file). A ticket holds the
+kind of holder (staff, App Review, the access password or a support code), what it is good for, a
+tag of the account (never the portal ID; none for the access password or a support code), the PC's
+ID and public key when it lets that PC register, the PCs it reaches when it is limited to some, and
+when it was made and when it ends. It is signed, not encrypted: whoever holds it can read it and use
+it until it ends, so the app sends it only over its encrypted connection to the server and never
+logs it. The account service does not keep tickets or a record of each one; it counts them by kind,
+in memory. The connection broker keeps, while a PC stays registered with a ticket, that ticket's key
+number and times, in memory.
 
 **The access password** (from version 1.8.0). Someone who does not log in can type the access
 password the operator gives out. The app seals it to the server's key, as it seals a login's

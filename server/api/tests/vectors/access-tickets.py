@@ -682,6 +682,8 @@ class Vectors:
         self.valid("bound-pc", "a bound PC's ticket from its sync (72 h)",
                    fields("staff", "both", sub=s, id=PC_ID, pk=pcpk, life=PC_LIFE),
                    [reg(PC_ID, pcpk, "ok"), ph(OTHER_ID, "ok"), rr(PC_ID, "ok")])
+        # since 1.9.2 hjv-api issues staff/pc to the App Review account's demo PC (24 h, never past
+        # its file's UNTIL); the why stays as it is: hbbs pins the SHA-256 of the vectors (0008)
         self.valid("staff-pc", "staff with use pc: a form hjv-api does not issue now, valid all the "
                    "same", fields("staff", "pc", sub=s, id=PC_ID, pk=pcpk, life=PC_LIFE),
                    [reg(PC_ID, pcpk, "ok"), ph(PC_ID, "wrong_use"), rr(PC_ID, "wrong_use")])
