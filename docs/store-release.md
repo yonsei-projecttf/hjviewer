@@ -233,7 +233,7 @@ environment를 선언하지 않은 잡(빌드 실행의 잡)은 environment 시�
 | 설정 | 지금 | 권장 |
 |---|---|---|
 | 비공개 저장소 main 보호 | 없음 | 규칙 하나: 강제 push와 삭제만 막습니다. PR 요구는 넣지 않습니다(Release record 잡의 커밋이 막힘) |
-| Actions의 SHA 고정 필수 | 두 저장소 모두 꺼짐 | 비공개 저장소에서 켭니다. 공개 저장소도 켤 수 있습니다. 워크플로 파일의 `uses:`는 1.9.2부터 모두 40자리 SHA입니다(마지막 태그 고정이던 `server.yml`의 `dtolnay/rust-toolchain@stable`도 바꿈. `scripts/test_store_workflows.py`가 모든 워크플로를 봄). composite 액션 안의 태그 참조는 남습니다: `subosito/flutter-action`이 부르는 `actions/cache`(v2.12.0 안은 `@v3`, 1a44944 안은 `@v5`). 둘 다 `cache`(1a44944는 `pub-cache`도) 입력을 켤 때만 돌고 이 워크플로는 켜지 않지만, 정책이 건너뛰는 단계까지 막는지는 확인하지 못했습니다. 켠 직후 `check_only` 빌드 한 번으로 확인하고, 막히면 끕니다 |
+| Actions의 SHA 고정 필수 | 두 저장소 모두 꺼짐 | 비공개 저장소에서 켭니다. 공개 저장소도 켤 수 있습니다. 워크플로 파일의 `uses:`는 1.9.2부터 모두 40자리 SHA입니다(마지막 태그 고정이던 `server.yml`의 `dtolnay/rust-toolchain@stable`도 바꿈. `scripts/test_store_workflows.py`가 모든 워크플로를 봄). composite 액션 안의 태그 참조는 남습니다: `subosito/flutter-action`이 부르는 `actions/cache`(v2.12.0 안은 `@v3`, 1a44944 안은 `@v5`). 둘 다 `cache`(1a44944는 `pub-cache`도) 입력을 켤 때만 돌고 이 워크플로는 켜지 않지만, 설정을 켜면 flutter-action을 쓰는 잡(Bridge codegen, Dart tests, Windows x64, Android arm64, iOS)이 시작에서 막힐 가능성이 큽니다. 러너는 잡을 시작할 때('Set up job'의 'Prepare all required actions') composite 액션 안의 액션까지, 단계의 조건을 보기 전에 GitHub에서 찾아 내려받기 때문입니다(actions/runner의 `src/Runner.Worker/ActionManager.cs`). 켠다면 직후 `check_only` 빌드 한 번으로 확인하고, 막히면 끕니다 |
 | 조직 2FA 필수 | 꺼짐 | 구성원이 모두 2FA를 켰는지 본 뒤 켭니다 |
 | 아티팩트 보관 상한, 기본 GITHUB_TOKEN 권한 | 90일, read | 그대로 |
 
