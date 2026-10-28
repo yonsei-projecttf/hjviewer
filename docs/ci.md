@@ -892,7 +892,7 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 
 합계는 약 $0.8입니다. macOS가 분당 가장 비싸므로 iOS가 필요할 때만 `ios`나 `all`을 고르세요. 실제 출시는 1.9.1(2026-10-26, 플랫폼마다 실행 하나)이 Linux 51분, Windows 54분, macOS 8분으로 $1.34였습니다(포함 시간 안). 1.9.2부터는 Bridge codegen과 Dart tests가 한 번씩만 돌고, TestFlight 업로드 실행이 macOS 몇 분을, Checks 잡과 Run summary 잡이 실행마다 Linux 1분씩을 더합니다. 1.9.2의 확인 빌드(2026-10-27, 세 플랫폼 한 실행, Rust 캐시 없음)는 잡마다 올려 Linux 53분, Windows 54분, macOS 11분, 분당 요금으로 약 $1.54였고, 포함 시간 안이라 청구액은 0이었습니다.
 
-분을 셀 때 실행의 timing API(`gh api repos/<저장소>/actions/runs/<ID>/timing`)는 쓰지 않습니다. 빌드 저장소의 실행에도 billable을 모두 0으로 답합니다. 분은 잡 API의 시작·끝 시각(Run summary와 `scripts/run-summary.py`의 표)을 잡마다 분 단위로 올려 세거나, 조직의 사용량(`gh api /organizations/<조직>/settings/billing/usage`: 잡마다 분과 요금이 한 줄씩, 끝난 뒤 조금 늦게 나타남)으로 봅니다. 1.9.1의 세 실행은 두 값이 같았습니다.
+분을 셀 때 실행의 timing API(`gh api repos/<저장소>/actions/runs/<ID>/timing`)는 쓰지 않습니다. 빌드 저장소의 실행에도 billable을 모두 0으로 답합니다. 분은 잡 API의 시작·끝 시각(Run summary와 `scripts/run-summary.py`의 표)을 잡마다 분 단위로 올려 셉니다. 조직의 사용량(`gh api /organizations/<조직>/settings/billing/usage`)은 실행이나 잡마다가 아니라 날짜(UTC)·SKU(`Actions Linux`, `Actions Windows`, `Actions macOS 3-core` 등)·저장소마다 한 줄이고, 그 수량은 그날 모든 실행의 합입니다. 그래서 한 실행의 분과 견줄 수 있는 것은 그날 그 저장소의 실행이 그 하나일 때뿐입니다. 1.9.1의 세 실행(10-26)은 셋의 합(Linux 51분, Windows 54분, macOS 8분)이, 1.9.2 확인 빌드(10-27)는 그 실행의 53·54·11분이 그날의 줄과 같았습니다. 그 줄은 늦게 채워집니다. 확인 빌드는 10-27 17:55Z에 끝났는데, 44분 뒤인 18:39Z에도 Linux 줄은 10분이었고 이튿날 01:09Z에는 53분이었습니다.
 
 Google Play 경로는 Android 실행마다 Linux 약 4분(AAB 단계), 약 $0.03을 더하고, 업로드하는 스토어 실행이 3–5분을 더합니다. AAB 단계(약 3분 15초)는 1.6.0, 1.6.1 출시 실행에서 잰 값입니다. AAB 아티팩트(약 30MB)는 30일 동안 저장 공간을 씁니다.
 
