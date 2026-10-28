@@ -94,13 +94,13 @@ appstore 1.9.1 <빌드> release - <소스 커밋 40자리> 2026-11-02 store #15
 
 | # | Android | iOS | 누가 |
 |---|---|---|---|
-| 0 | 빌드 전: `store/`의 글을 이 버전으로(두 `version.txt`, 두 언어의 `whats_new.txt`, `release_notes.txt`, [store/README.md](../store/README.md)). 소유자가 공개될 글을 확인한 뒤 push. 비공개 `build.yml`·`store.yml`의 고정 SHA를 그 커밋으로(공개 main의 조상인지 `git merge-base --is-ancestor <sha> origin/main`으로 확인) | 같음 | 에이전트 초안, 소유자 확인 |
+| 0 | 빌드 전: `store/`의 글을 이 버전으로(두 `version.txt`, 두 언어의 `whats_new.txt`, `release_notes.txt`, [store/README.md](../store/README.md)). 소유자가 공개될 글을 확인한 뒤 push. 비공개 `build.yml`·`store.yml`의 고정 SHA를 그 커밋으로(공개 main의 조상인지 `git merge-base --is-ancestor <sha> origin/main`으로 확인). 첫 App Store 버전의 판을 정하기 전이거나 그 판이 main의 글보다 앞 판일 때의 `store.yml`은 아래 "첫 App Store 버전만"대로 | 같음 | 에이전트 초안, 소유자 확인 |
 | 1 | `build.yml`(`platforms=all`): Windows·Android·iOS(와 hjv-relay)를 한 실행에서 함께 빌드합니다(2026-10-27 사용자 결정). 이 실행은 아무것도 나눠 주지 않습니다(Play에 올리지 않음, `-play` AAB는 30일) → **Windows 게이트**: 그 실행의 Windows 설치 시험 단계가 성공하고 소유자가 그 설치본을 Windows에서 확인한 것. 나눠 주는 일은 모두 게이트 뒤입니다 | 같은 실행이 서명된 IPA를 산출물로만 남깁니다 | 에이전트, 소유자 |
 | 2 | 게이트 뒤에 따로 할 빌드 없음(1의 APK와 `-play` AAB를 씀) | 게이트 뒤: `build.yml -f platforms=ios -f testflight=true -f testflight_run=<1의 실행 ID>`(빌드 없이 1의 IPA를 TestFlight에 올림, 7일 안) | 에이전트 |
 | 3 | 같은 실행의 APK로 확인(APK 설치본 기기) | `store.yml ios status`로 처리를 본 뒤 TestFlight에서 확인 | 소유자 |
 | 4 | 태그 `client-<버전>`, 산출물을 `build/release-<버전>/`에(스토어 정책을 낼 때까지 지우지 않음) | 같음 | 에이전트 |
 | 5 | 패키지 정책(Windows·APK, 빌드 뒤 7일 안) | ios는 그대로(`--hold ios`). 스토어 항목(android_play, ios)은 늘 스토어 정책(9번)에서 올리고, App Store 제출 중에는 반드시 그대로 | 에이전트 초안, 소유자 서명 |
-| 6 | 전제: 서버에 이 버전의 hjv-api(1.9.1: 계정 삭제)가 돌고 있음([server-runbook.md](server-runbook.md) 9-10). "내보내도 됨" → `store.yml android upload run_id=<1의 실행 ID>` | 같은 전제. "내보내도 됨" → `store.yml ios submit`(첫 제출은 아래) | 소유자 승인, 에이전트 실행 |
+| 6 | 전제: 서버에 이 버전의 hjv-api(1.9.1: 계정 삭제)가 돌고 있음([server-runbook.md](server-runbook.md) 9-10). "내보내도 됨" → `store.yml android upload run_id=<1의 실행 ID>` | 같은 전제. "내보내도 됨" → `store.yml ios submit`(첫 App Store 버전은 아래) | 소유자 승인, 에이전트 실행 |
 | 7 | Google 심사(몇 시간–7일) | App Review | — |
 | 8 | `store.yml android status` → `PUBLISHED` | 수동 출시면 `store.yml ios release`. after-approval이면 status가 `READY_FOR_DISTRIBUTION`을 보인 뒤 `store.yml ios release`를 한 번(이미 출시됨으로 성공하고 기록 줄을 남김) | 에이전트 |
 | 9 | 스토어 정책: `--play-live <versionCode>`. 첫 android_play 항목은 `--min android_play=<android의 min>`으로 | 스토어 정책: `--appstore-live <버전>` | 에이전트 초안, 소유자 서명 |
@@ -109,21 +109,26 @@ appstore 1.9.1 <빌드> release - <소스 커밋 40자리> 2026-11-02 store #15
 - 글만 고친 커밋(메타데이터 거절 뒤 등)이면 `store.yml`의 SHA가 `build.yml`보다 앞서도 됩니다. 빌드는 `build.yml`의 커밋, 스토어 글은 `store.yml`의 커밋에서 옵니다.
 
 - 둘째 App Store 버전부터는 `release_type=after-approval`, `phased=true`로 냅니다(소유자 결정: 승인 즉시 자동 + 단계적 출시). 문제가 보이면 App Store Connect에서 단계적 출시를 일시 중지합니다(합계 30일까지).
-- **첫 회(1.9.1)는 Android upload와 iOS submit을 하루 이상 엇갈립니다.** 두 심사자가 데모 계정 하나를 같은 때 쓰면 틀린 비밀번호 한도에 함께 걸릴 수 있습니다. 심사 중에는 status와 함께, 데모 계정이 잠기지 않았는지 허브-운영에게 봐 달라고 합니다.
+- **첫 스토어 실행은 Android upload와 iOS submit을 하루 이상 엇갈립니다.** 두 심사자가 데모 계정 하나를 같은 때 쓰면 틀린 비밀번호 한도에 함께 걸릴 수 있습니다. 심사 중에는 status와 함께, 데모 계정이 잠기지 않았는지 허브-운영에게 봐 달라고 합니다.
 - **App Store 제출이 열려 있는 동안**(제출부터 승인·거절까지) 정책의 ios latest와 min은 심사 중인 버전 이하로 둡니다. 심사 기기는 TestFlight 화면을 보므로, 정책이 앞서면 배너와 [TestFlight 열기]가 나옵니다. 정책 초안을 만들기 전에 `store.yml ios status`의 심사 중인 버전과 대조합니다.
 - **상태 확인 예산**: status는 플랫폼마다 하루 4번까지만 돌립니다. 심사 결과는 스토어의 알림 메일을 먼저 봅니다. status를 되풀이해 dispatch하지 않습니다(`/loop`, Monitor도 쓰지 않음).
 
-### 첫 App Store 제출 (1.9.1)만
+### 첫 App Store 버전만
 
-배포 방법은 **등록되지 않은 앱(Unlisted)**이고, 첫 버전은 **수동 출시**입니다(소유자 결정).
+배포 방법은 **등록되지 않은 앱(Unlisted)**이고, 첫 버전은 **수동 출시**입니다(소유자 결정). App Store에 나온 버전이 아직 없는 동안에는 거절 뒤에 다시 내는 제출도 이 절을 따릅니다.
 
-1. 막는 것 B1–B10(제출 분석 `build/appstore-listing/submit/SUBMIT-1.9.0.md` 0-3, 1.9.1 기준)을 점검합니다. 데모 Windows PC(B3), 학교의 서면 허락(B4), 1.9.1 화면의 스크린샷(B5), 처리방침(B7), 계정 종류마다의 심사 계정(B10)이 남아 있으면 제출하지 않습니다. 서버에 1.9.1의 hjv-api(앱 안 계정 삭제)가 돌고 있어야 합니다([server-runbook.md](server-runbook.md) 9-10의 확인 curl이 401). 심사자가 데모 계정을 지워 봅니다.
+**낼 판은 소유자가 정합니다.** 2026-10-26의 결정은 1.9.1이었고([distribution.md](distribution.md)), 지침 3.2 거절에 보낼 답장의 초안(개발 PC의 `build/appstore-listing/submit/reply-3.2-2026-10-28.md`)은 아래 1번의 조건이 갖춰진 때 TestFlight에서 처리를 마친 가장 높은 판을 권합니다(그때 1.9.2가 있으면 1.9.2). 스토어 실행은 `store.yml`이 고정한 커밋의 글을 보내고, 그 글의 `version.txt`가 입력 `version`과 다르면 Checks가 멈춥니다. main의 글은 413641d(`client: 1.9.2`)부터 1.9.2의 것입니다. 정하기 전에 1.9.2를 push하면 `store.yml`은 아래 1.9.1의 커밋(ac6aaf3)에 둡니다. 1.9.2의 스토어 실행은 태그 `client-1.9.2` 뒤에야 되므로 잃는 것이 없고, 1.9.1의 길도 열려 있습니다.
+
+- **1.9.2 이상으로 낼 때**: "릴리스마다" 0번대로 `store.yml`을 그 판의 커밋으로 옮깁니다. Play에 1.9.1을 올리지 않고 그 판을 올리면 Alpha의 테스터는 1.9.0에서 바로 오므로, `store/play/ko-KR/release_notes.txt`에 1.9.1의 변경(앱 안 계정 삭제 등)도 씁니다(덧붙는 두 줄까지 500자 안).
+- **1.9.1로 낼 때**: `store.yml`을 ac6aaf3에 고정합니다. 1.9.1의 글과 고친 심사 메모가 있는 마지막 커밋입니다. 1.9.2를 push할 때 `build.yml`은 1.9.2의 커밋으로, `store.yml`은 ac6aaf3으로 옮기고, `store.yml`은 1.9.1의 prepare·submit(과 1.9.1의 Play upload)이 끝날 때까지 그대로 둡니다. 그동안 1.9.2의 Play upload는 Checks가 멈춥니다(release는 글을 보내지 않으므로 어느 커밋에서도 돕니다). main에서는 1.9.1의 글을 더 고칠 수 없습니다. main의 글은 앱 버전의 것이어야 하고(`scripts/test_check_store_text.py`), 고정 SHA는 main의 조상이어야 하기 때문입니다(G2). 그래서 메모에 ac6aaf3에 없는 문장이 필요하면 1.9.1은 스토어 실행으로 낼 수 없습니다. 1번이 요구하는 학교의 허락서(B4)를 첨부할 때의 문장과 Unlisted 승인 뒤의 문장([store/README.md](../store/README.md)의 조건부 문장)이 그렇습니다. 그때는 1.9.2 이상으로 내거나(prepare가 편집할 수 있는 버전의 번호와 빌드를 바꾸고 submit이 열린 제출을 다시 냄. "실패와 대처"의 바이너리 거절과 같음), 소유자가 정하면 콘솔에서 손으로 냅니다(출시 기록에 submit 줄을 손으로 더함).
+
+1. 막는 것 B1–B10(제출 분석 `build/appstore-listing/submit/SUBMIT-1.9.0.md` 0-3, 1.9.1 기준)을 점검합니다. 데모 Windows PC(B3), 학교의 서면 허락(B4), 낼 판의 화면의 스크린샷(B5), 처리방침(B7), 계정 종류마다의 심사 계정(B10)이 남아 있으면 제출하지 않습니다. 서버에 1.9.1의 hjv-api(앱 안 계정 삭제)가 돌고 있어야 합니다([server-runbook.md](server-runbook.md) 9-10의 확인 curl이 401). 심사자가 데모 계정을 지워 봅니다.
 2. `prepare`(release_type=manual). 데모 PC 값(`REVIEW_DEMO_PC_*`)을 포함한 `REVIEW_*` 여덟 개가 모두 있어야 돕니다. 그 전(B3 전)에는 `dry_run=true`만 됩니다. 그다음 소유자가 App Store Connect에서 모든 칸, App Privacy, 스크린샷, 연령 등급을 봅니다. **글은 콘솔에서 고치지 않습니다.** 고칠 것이 있으면 `store/`를 고쳐 커밋하고, `store.yml`의 고정 SHA를 그 커밋으로 바꾼 뒤 prepare를 다시 돌립니다(`dry_run=true`가 콘솔과 다른 칸을 보여 줍니다). 글만 고친 커밋이면 `store.yml`의 SHA만 옮깁니다(`build.yml`보다 앞서도 됨).
 3. 심사 첨부 영상(SUBMIT 7-6)을 손으로 올립니다.
 4. `submit`. 심사 메모에 Apple이 요구하는 문장 "This app is intended for unlisted distribution."이 있어야 합니다(글 검사가 봅니다).
 5. 등록되지 않은 앱 요청 양식을 냅니다(SUBMIT 8-3). Apple은 이미 App Store에 있거나 최종 배포용으로 심사에 제출된 앱의 요청만 받습니다.
 6. 심사 승인과 Unlisted 승인을 모두 받은 뒤 `release`. 그 전에 두 가지를 App Store Connect에서 봅니다. 가격 및 사용 가능 여부의 배포 방법이 **등록되지 않은 앱(미등록)**으로 바뀌었는지, 앱 심사가 **개발자 출시 대기 중**인지. 그 전에 공개 목록에 나가지 않도록 수동 출시를 씁니다(첫 버전은 스크립트가 after-approval을 거부합니다).
-7. App Store에 나오면 다음 정책에서 `--appstore-live 1.9.1`로 App Store 표시를 켭니다. 그 정책을 서버에 넣기 전에 서버의 `hjv-update-verify.sh`를 1.9.1의 것으로 바꿉니다([server-runbook.md](server-runbook.md) 8-2).
+7. App Store에 나오면 다음 정책에서 `--appstore-live <그 판>`으로 App Store 표시를 켭니다. 서버의 `hjv-update-verify.sh`는 63c18d8 이후의 것이어야 그 정책을 받습니다([server-runbook.md](server-runbook.md) 8-2). 2026-10-27에 서버 묶음 `server-2026.10.27`의 것으로 바꿨으므로(9-10의 기록), 그 정책을 넣기 전에 그대로인지 봅니다.
 
 ## 실패와 대처
 
@@ -177,23 +182,23 @@ App Store Connect 오류는 Apple의 코드와 설명을 출력합니다(비밀�
 |---|---|
 | A1 | 비즈니스: 최신 계약, DSA(거래자 아님), 대한민국 규정 준수 정보 |
 | A2 | 앱 정보: 카테고리, 콘텐츠 권한(학교 허락 뒤), 연령 등급 |
-| A3 | 가격 무료, 판매 지역 대한민국만, Mac·Vision Pro 끔. 배포 방법은 **공개**로 둡니다. **비공개는 고르지 않습니다**(비공개 = 맞춤형 앱, 승인 뒤 되돌릴 수 없음). 등록되지 않은 앱(Unlisted)은 콘솔에서 고르는 값이 아니라, 제출 뒤 요청이 승인되면 Apple이 바꿉니다(첫 제출 5–6단계) |
+| A3 | 가격 무료, 판매 지역 대한민국만, Mac·Vision Pro 끔. 배포 방법은 **공개**로 둡니다. **비공개는 고르지 않습니다**(비공개 = 맞춤형 앱, 승인 뒤 되돌릴 수 없음). 등록되지 않은 앱(Unlisted)은 콘솔에서 고르는 값이 아니라, 제출 뒤 요청이 승인되면 Apple이 바꿉니다(위 "첫 App Store 버전만" 5–6단계) |
 | A4 | App Privacy 답과 게시(API 없음) |
-| A5 | 1.9.1 화면의 스크린샷 |
-| A6 | 사용자 및 액세스 → 통합 → 팀 키에서 키 둘을 만들고, 이 순서로 바꿉니다. ① **Developer** 역할(TestFlight 업로드용) → 저장소 시크릿 교체(`gh secret set ASC_KEY_ID -R $R`, `gh secret set ASC_PRIVATE_KEY -R $R < AuthKey_<키 ID>.p8`). ② **App Manager** 역할(스토어 실행용) → environment 시크릿 `ASC_STORE_KEY_ID`, `ASC_STORE_PRIVATE_KEY`. ③ 1.9.1 iOS 빌드의 TestFlight 업로드(Developer 키)와 G6의 ios status(App Manager 키)가 성공한 것을 봅니다. ④ 개발 PC의 로컬 App Store Connect 도우미가 쓰는 옛 Admin 키 파일의 쓰임을 정리한 뒤 Admin 키를 폐기합니다. 배포 인증서·프로파일을 갱신할 때는 웹이나 그때만 쓰는 임시 Admin 키를 씁니다(API로 갱신하려면 Admin 권한이 필요). `.p8`은 한 번만 받을 수 있으므로 넣은 뒤 지웁니다. 팀 키는 팀의 모든 앱에 걸리므로, 팀에 다른 앱이 있는지 소유자가 봅니다. Developer 키로 altool 업로드가 안 되면 메인 세션에 알립니다 |
+| A5 | 첫 App Store 버전으로 낼 판의 화면의 스크린샷(위 "첫 App Store 버전만" 1번의 B5) |
+| A6 | 사용자 및 액세스 → 통합 → 팀 키에서 키 둘을 만들고, 이 순서로 바꿉니다. ① **Developer** 역할(TestFlight 업로드용) → 저장소 시크릿 교체(`gh secret set ASC_KEY_ID -R $R`, `gh secret set ASC_PRIVATE_KEY -R $R < AuthKey_<키 ID>.p8`). ② **App Manager** 역할(스토어 실행용) → environment 시크릿 `ASC_STORE_KEY_ID`, `ASC_STORE_PRIVATE_KEY`. ③ 키를 바꾼 뒤의 첫 TestFlight 업로드 실행(Developer 키)과 G6의 ios status(App Manager 키)가 성공한 것을 봅니다. ④ 개발 PC의 로컬 App Store Connect 도우미가 쓰는 옛 Admin 키 파일의 쓰임을 정리한 뒤 Admin 키를 폐기합니다. 배포 인증서·프로파일을 갱신할 때는 웹이나 그때만 쓰는 임시 Admin 키를 씁니다(API로 갱신하려면 Admin 권한이 필요). `.p8`은 한 번만 받을 수 있으므로 넣은 뒤 지웁니다. 팀 키는 팀의 모든 앱에 걸리므로, 팀에 다른 앱이 있는지 소유자가 봅니다. Developer 키로 altool 업로드가 안 되면 메인 세션에 알립니다 |
 | A7 | 시크릿 `REVIEW_*`(아래) |
 
 ### GitHub (에이전트가 소유자 승인 뒤, 시크릿 값은 소유자가)
 
 | # | 할 일 |
 |---|---|
-| G1 | 공개 저장소 1.9.1 push. 그 전에 `hjv-release floor --live`. push 뒤 브라우저에서 `store/appstore/ko/support_url.txt`의 주소(`docs/privacy.md#10-문의와-변경`을 퍼센트 인코딩한 것)를 열어, GitHub의 앵커가 한국어 10절 '문의와 변경'에 닿는지 봅니다(App Store의 한국어 지원 URL) |
+| G1 | 공개 저장소 push(1.9.1은 push됨. push마다 그 전에 `hjv-release floor --live`). 첫 스토어 실행 전에 브라우저에서 `store/appstore/ko/support_url.txt`의 주소(`docs/privacy.md#10-문의와-변경`을 퍼센트 인코딩한 것)를 열어, GitHub의 앵커가 한국어 10절 '문의와 변경'에 닿는지 봅니다(App Store의 한국어 지원 URL) |
 | G2 | 비공개 저장소: 고정할 SHA가 공개 main의 조상인지 확인(`git merge-base --is-ancestor <sha> origin/main`, 포크의 커밋도 `@SHA`로 풀리기 때문). 그다음 `build.yml`과 `store.yml`의 고정 SHA, `store-releases.txt`, README |
 | G3 | **첫 `store.yml` 실행 전에** environment `store`: Settings → Environments → New environment `store` → Deployment branches and tags를 Selected로, `main`만. 먼저 돌리면 GitHub가 배포 브랜치 제한 없는 `store`를 저절로 만듭니다 |
 | G4 | 시크릿(소유자의 터미널, 아래)과 변수 `REVIEW_DEMO_UNTIL`. 저장소 시크릿에 남은 `PLAY_SA_*`를 지웁니다(아래 명령). `gh secret list -R $R`(`--env` 없이)에 `PLAY_SA_*`, `ASC_STORE_*`, `REVIEW_*`가 없어야 합니다. 있으면 store.yml이 그 값을 넘겨 environment로 옮기지 않은 것이 드러나지 않고, 빌드 실행의 `secrets: inherit` 범위에도 남습니다 |
 | G5 | 저장소 설정(아래) |
 | G6 | 읽기만 하는 확인: `store.yml platform=android action=status`, `platform=ios action=status`(version 없이). 키가 맞는지, alpha의 1.9.0이 보이는지 봅니다. 그 전에 G4의 `gh secret list -R $R`을 한 번 더 봅니다(environment 값이 잡에 닿는지가 이 실행으로 확인됨). Google Play·App Store 잡의 첫 단계에 찍힌 `job.workflow_ref is …` 줄이 `@<고정한 40자리 SHA>`로 끝나는지도 봅니다. `@refs/heads/main`이나 태그로 끝나면 `store.yml`이 SHA에 고정하지 않은 것입니다. 잡은 이 줄로 멈추지 않습니다(`job.workflow_sha`는 늘 40자리라서, 잡의 검사로는 고정했는지 알 수 없음) |
-| G7 | 1.9.1 빌드와 태그 뒤, 첫 upload·prepare 전에 같은 입력으로 `dry_run=true`를 한 번씩 돌립니다. 요약에 upload는 validated…nothing was released, prepare는 계획만 있고 비밀값이 없는지 봅니다 |
+| G7 | 첫 스토어 실행에 낼 판의 빌드와 태그 뒤(1.9.1은 태그 `client-1.9.1`이 있음), 첫 upload·prepare 전에 같은 입력으로 `dry_run=true`를 한 번씩 돌립니다. 요약에 upload는 validated…nothing was released, prepare는 계획만 있고 비밀값이 없는지 봅니다 |
 
 **시크릿과 변수** (이름만. 값은 채팅, 저장소, `build/`에 두지 않습니다)
 
