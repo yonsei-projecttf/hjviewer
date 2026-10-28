@@ -227,7 +227,10 @@ class StoreTextTest(unittest.TestCase):
                    ("On the demo PC, please", "On a demo PC, please"),
                    ("type the demo PC's ID", "type a demo PC's ID"))
         no_webcam = (("which we do not give out).", "which we do not give out; the demo PCs have no camera)."),)
-        for old, new in two_pcs + no_webcam:
+        no_video = (("The screenshot of the My PCs list and the attached video show what the demo account cannot: "
+                     "a staff account's PC list and a support code.",
+                     "The screenshot of the My PCs list shows what the demo account cannot: a staff account's PC list."),)
+        for old, new in two_pcs + no_webcam + no_video:
             self.assertEqual(notes.count(old), 1, old)
             self.assertIn(f"`{new}`", guide, new)
         self.assertIn(f"`{tested}`", guide)
@@ -246,11 +249,11 @@ class StoreTextTest(unittest.TestCase):
                 text = text.replace(name, value)
             return text
 
-        # 1.9.2's submission by hand: the one-PC template and the devices tested on, also once
-        # Apple has approved (3846 and 3926 bytes on 2026-10-29). No permission sentence: the
-        # owner decided on 2026-10-29 to attach no written permission
-        self.assertLessEqual(self.worst_size(copy, hand(notes, tested_on=True)), cst.REVIEW_NOTES_BYTES)
-        self.assertLessEqual(self.worst_size(copy, with_approval(hand(notes, tested_on=True))),
+        # 1.9.2's submission by hand: the one-PC template without the video and with the devices
+        # tested on, also once Apple has approved (3805 and 3885 bytes on 2026-10-29). No permission
+        # sentence: the owner decided on 2026-10-29 to attach neither a written permission nor a video
+        self.assertLessEqual(self.worst_size(copy, hand(notes, no_video, tested_on=True)), cst.REVIEW_NOTES_BYTES)
+        self.assertLessEqual(self.worst_size(copy, with_approval(hand(notes, no_video, tested_on=True))),
                              cst.REVIEW_NOTES_BYTES)
         # the longest two-PC form store/README.md says fits: two PCs, the university's permission
         # and Apple's approval, without Tested on (3989 bytes on 2026-10-29)
