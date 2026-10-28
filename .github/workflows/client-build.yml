@@ -279,11 +279,12 @@ jobs:
       BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
       CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
       FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
-    # for the run summary
+    # for the run summary. actions/cache/restore sets cache-hit only when it found an entry (true for
+    # the exact key, which this one alone has), so a miss is 'false' here: the files were generated
     outputs:
       image: ${{ steps.image.outputs.image }}
       rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
-      bridge_cache: ${{ steps.bridge-out.outputs.cache-hit }}
+      bridge_cache: ${{ steps.bridge-out.outputs.cache-hit || 'false' }}
     steps:
       - name: Check out hjviewer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

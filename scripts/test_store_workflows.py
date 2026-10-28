@@ -367,6 +367,9 @@ class ClientBuildWorkflowTest(unittest.TestCase):
                 self.assertIn("vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}", outputs, build)
                 self.assertIn("vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}", outputs, build)
             (image,) = [s for s in steps(self.jobs[build]) if name_of(s) == "Runner image and rustup directory"]
+            # actions/cache/restore leaves cache-hit unset on a miss, which the summary reads as generated
+            if build == "generate-bridge":
+                self.assertIn("bridge_cache: ${{ steps.bridge-out.outputs.cache-hit || 'false' }}", outputs)
             self.assertIn('echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"', image)
             names = [name_of(s) for s in steps(self.jobs[build])]
             self.assertEqual(names.index("Install Rust toolchain"), names.index("Runner image and rustup directory") + 1, build)
@@ -439,6 +442,12 @@ class RunSummaryTest(unittest.TestCase):
         self.assertIn("| android | ubuntu24 20261012.334 | miss or fallback | 0 of 26 | disk left 21G |", out)
         self.assertIn("| generate-bridge |  |  |  | bridge files from the cache |", out)
         self.assertNotIn("| relay |", out)
+        # a miss, which the Bridge codegen job's output gives as 'false', with its Rust cache
+        missed = {"generate-bridge": {"result": "success", "outputs": {
+            "image": "ubuntu22 20261023.322.3", "rust_cache": "true", "bridge_cache": "false"}}}
+        code, out = self.summary(json.dumps(self.JOBS[0]), missed)
+        self.assertEqual(code, 0)
+        self.assertIn("| generate-bridge | ubuntu22 20261023.322.3 | hit |  | bridge files generated |", out)
 
     def test_what_it_cannot_read_becomes_a_line(self):
         code, out = self.summary("{not json", {"windows": {"outputs": {"image": "x"}}})
