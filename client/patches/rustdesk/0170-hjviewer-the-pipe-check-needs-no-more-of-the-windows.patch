@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:08:42 +0900
+Subject: [PATCH 170/182] hjviewer: the pipe check needs no more of the windows
+ crate, and its start test must reach its end
+
+The check of a pipe's DACL read one constant, the type of an "access
+allowed" ACE, from Win32_System_SystemServices, a feature of the windows
+crate that the Windows build of HJViewer compiled for that constant
+alone. The value (0) is now a constant of src/ipc/windows.rs and the
+feature leaves Cargo.toml again, which is so the same list as in 1.9.2.
+The Windows test of the window that survives a taken pipe name ran
+itself as a child and took any exit with 0 as a pass, which a child that
+ran no test at all gives too; the child now ends with 42 after its last
+assertion and the parent wants that code.
+
+Backported from rustdesk/rustdesk cbde394666633a630f4d4151c06b0004ea8f9f00 (fix(windows): address IPC review follow-ups (#16885))
+Upstream's diff unchanged (the Cargo.toml hunk in our longer list).
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ Cargo.toml         |  1 -
+ src/ipc/windows.rs |  8 +++-----
+ src/server.rs      | 11 +++++++----
+ 3 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 6814442..5ad32a6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -151,7 +151,6 @@ windows = { version = "0.61", features = [
+     "Win32_System_Power",
+     "Win32_System_Registry",
+     "Win32_System_SystemInformation",
+-    "Win32_System_SystemServices",
+     "Win32_System_Threading",
+     "Win32_UI_Shell",
+     "Win32_UI_WindowsAndMessaging",
+diff --git a/src/ipc/windows.rs b/src/ipc/windows.rs
+index 1bb36d3..b98729c 100644
+--- a/src/ipc/windows.rs
++++ b/src/ipc/windows.rs
+@@ -23,10 +23,7 @@ use windows::{
+         Storage::FileSystem::{
+             FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_WRITE_DATA, SECURITY_IDENTIFICATION,
+         },
+-        System::{
+-            Pipes::{GetNamedPipeServerProcessId, GetNamedPipeServerSessionId},
+-            SystemServices::ACCESS_ALLOWED_ACE_TYPE,
+-        },
++        System::Pipes::{GetNamedPipeServerProcessId, GetNamedPipeServerSessionId},
+     },
+ };
+ 
+@@ -36,6 +33,7 @@ const CLIENT_ACCESS: u32 = FILE_GENERIC_READ.0 | FILE_WRITE_DATA.0;
+ const PIPE_BUSY_RETRY: Duration = Duration::from_millis(50);
+ const AUTH_LOG_INTERVAL: Duration = Duration::from_secs(5);
+ const SYSTEM_SID: &str = "S-1-5-18";
++const ACCESS_ALLOWED_ACE_TYPE_U8: u8 = 0;
+ 
+ struct LocalAllocation(*mut c_void);
+ 
+@@ -174,7 +172,7 @@ fn ensure_restricted_dacl(dacl: *const ACL, owner: PSID) -> ResultType<()> {
+         unsafe { GetAce(dacl, index.into(), &mut ace) }
+             .context("Failed to read IPC server access rule")?;
+         let header = unsafe { &*(ace as *const ACE_HEADER) };
+-        if header.AceType != (ACCESS_ALLOWED_ACE_TYPE as u8)
++        if header.AceType != ACCESS_ALLOWED_ACE_TYPE_U8
+             || usize::from(header.AceSize) < std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+         {
+             bail!("Unsupported IPC server access rule");
+diff --git a/src/server.rs b/src/server.rs
+index ea22aa1..b8aed9f 100644
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -968,6 +968,8 @@ mod windows_gui_startup_tests {
+ 
+     const CHILD_TEST: &str = "RUSTDESK_TEST_GUI_IPC_CHILD";
+     const CHILD_TIMEOUT_MS: u32 = 10_000;
++    // An unmatched test filter exits with zero without running the child assertions.
++    const CHILD_SUCCESS_EXIT_CODE: i32 = 42;
+ 
+     #[test]
+     fn windows_gui_survives_ipc_bind_failure() {
+@@ -986,7 +988,7 @@ mod windows_gui_startup_tests {
+             });
+             start_server(true, false);
+             assert!(!crate::common::is_server_running());
+-            return;
++            std::process::exit(CHILD_SUCCESS_EXIT_CODE);
+         }
+ 
+         let mut child = Command::new(std::env::current_exe().unwrap())
+@@ -1005,9 +1007,10 @@ mod windows_gui_startup_tests {
+             child.wait().unwrap();
+             panic!("GUI IPC startup test timed out or failed to wait: {result:?}");
+         }
+-        assert!(
+-            child.wait().unwrap().success(),
+-            "GUI process did not survive"
++        assert_eq!(
++            child.wait().unwrap().code(),
++            Some(CHILD_SUCCESS_EXIT_CODE),
++            "GUI subprocess did not complete the startup assertions"
+         );
+     }
+ }

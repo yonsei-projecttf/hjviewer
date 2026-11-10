@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:00:09 +0900
+Subject: [PATCH 168/182] hjviewer: the privacy window's helper is started by
+ its full path, not guessed from a command line
+
+HJViewer's "hide the screen when connecting" turns privacy mode on, and
+on Windows 10 2004 and later (and with the Magnifier way before it) that
+starts RuntimeBroker_rustdesk.exe from the install folder in the user's
+session. CreateProcessAsUserW got no application name and the unquoted
+path as its command line, so Windows took each prefix that ends at a
+space as a candidate program. Our default install folder is under
+"C:\Program Files", so the first candidate was C:\Program: on a PC where
+a file of that name exists, Windows loaded that file (error 193 when it
+is no program, and any program a local administrator's leftover put
+there otherwise) and the screen was not hidden. The helper's path now
+goes in as the application name, and the command line is the same path
+in quotes, held in a buffer the call may write to as its LPWSTR
+parameter says.
+
+Backported from rustdesk/rustdesk 59f2953c94b8373f124dc38d4fd0635098f7c5cd (fix(windows): name the privacy window executable explicitly (#16711))
+Upstream's diff applies unchanged.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/privacy_mode/win_topmost_window.rs | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/privacy_mode/win_topmost_window.rs b/src/privacy_mode/win_topmost_window.rs
+index b30db5f..c8f865e 100644
+--- a/src/privacy_mode/win_topmost_window.rs
++++ b/src/privacy_mode/win_topmost_window.rs
+@@ -226,7 +226,14 @@ impl PrivacyModeImpl {
+             .to_string();
+ 
+         unsafe {
+-            let cmd_utf16: Vec<u16> = cmdline.encode_utf16().chain(Some(0).into_iter()).collect();
++            // The path goes in as `lpApplicationName` too: given only a command line, Windows
++            // treats every whitespace-delimited prefix as a candidate image, and the default
++            // install path contains a space.
++            let app_utf16: Vec<u16> = cmdline.encode_utf16().chain(Some(0).into_iter()).collect();
++            let mut cmd_utf16: Vec<u16> = format!("\"{cmdline}\"")
++                .encode_utf16()
++                .chain(Some(0).into_iter())
++                .collect();
+ 
+             let mut start_info = STARTUPINFOW {
+                 cb: 0,
+@@ -263,8 +270,8 @@ impl PrivacyModeImpl {
+ 
+             let create_res = CreateProcessAsUserW(
+                 token,
+-                NULL as _,
+-                cmd_utf16.as_ptr() as _,
++                app_utf16.as_ptr() as _,
++                cmd_utf16.as_mut_ptr() as _,
+                 NULL as _,
+                 NULL as _,
+                 FALSE,

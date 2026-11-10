@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:08:55 +0900
+Subject: [PATCH 171/182] hjviewer: the service's process tries the main pipe
+ once more before it ends the window that holds it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The main window of an installed HJViewer whose service is stopped serves
+the main pipe itself. Pressing 서비스 시작 in it starts the service, and
+the service's process (--server, SYSTEM) comes up while that window
+still holds the pipe: the window has yet to start the window and the
+tray that replace it and end. The process could not bind the pipe,
+ended the window at once and could leave the PC with a working service
+and no window. Since the pipes are checked, the process can also no
+longer ask such a window to close over the pipe (a SYSTEM client takes
+no pipe a user owns), so ending it is all that is left. It now waits
+one second and tries the pipe again, and only then ends the window as
+before.
+
+Backported from rustdesk/rustdesk 2228db8a1098f84e01577d983453e805cca3c3a1 (fix(windows): retry service IPC before terminating the GUI (#16913))
+Upstream's diff applies unchanged.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/server.rs | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/server.rs b/src/server.rs
+index b8aed9f..8770231 100644
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -683,6 +683,16 @@ pub async fn start_server(is_server: bool, no_server: bool) {
+                 if let Err(err) = crate::ipc::start("") {
+                     log::error!("Failed to start ipc: {}", err);
+                     if crate::is_server() {
++                        #[cfg(windows)]
++                        {
++                            const MAIN_IPC_STARTUP_GRACE: Duration = Duration::from_secs(1);
++                            // Give the GUI time to arrange its replacement before forced takeover.
++                            std::thread::sleep(MAIN_IPC_STARTUP_GRACE);
++                            match crate::ipc::start("") {
++                                Ok(()) => return,
++                                Err(err) => log::error!("Failed to retry ipc startup: {err}"),
++                            }
++                        }
+                         log::error!("ipc is occupied by another process, try kill it");
+                         std::thread::spawn(stop_main_window_process).join().ok();
+                     }

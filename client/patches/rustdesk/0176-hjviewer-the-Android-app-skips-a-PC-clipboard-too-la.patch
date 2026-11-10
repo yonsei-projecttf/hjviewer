@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:15:05 +0900
+Subject: [PATCH 176/182] hjviewer: the Android app skips a PC clipboard too
+ large for Android instead of crashing
+
+An Android phone that controls a PC takes the PC's copied text into its
+own clipboard. Android hands a clip to the system in one Binder
+transaction of about 1 MB; a larger text (a long log, an Excel sheet
+copied as text) made setPrimaryClip throw TransactionTooLargeException
+and the app closed in the middle of the session. The app now measures
+the clip as Android sends it and leaves a clip over 800 KB out (logged),
+and any other failure of setPrimaryClip is logged instead of ending the
+app. The last clip it remembers is set only after a successful write, so
+the next change still syncs.
+
+Backported from rustdesk/rustdesk f9586e171427c1b078b4f3fe81a5729a5d21aa5c (fix(android): prevent crash on large clipboard payload (>1MB) (#16767))
+Upstream's diff unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../carriez/flutter_hbb/RdClipboardManager.kt | 25 +++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt
+index 8c9d850..fc50c37 100644
+--- a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt
+@@ -7,6 +7,7 @@ import java.util.TimerTask
+ import android.content.ClipData
+ import android.content.ClipDescription
+ import android.content.ClipboardManager
++import android.os.Parcel
+ import android.util.Log
+ import androidx.annotation.Keep
+ 
+@@ -17,6 +18,10 @@ import hbb.MessageOuterClass.MultiClipboards
+ import ffi.FFI
+ 
+ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
++    companion object {
++        private const val MAX_CLIPBOARD_PARCEL_BYTES = 800 * 1024
++    }
++
+     private val logTag = "RdClipboardManager"
+     private val supportedMimeTypes = arrayOf(
+         ClipDescription.MIMETYPE_TEXT_PLAIN,
+@@ -191,7 +196,23 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
+             return
+         }
+         val clipData = ClipData(clipDescription, item)
+-        lastUpdatedClipData = clipData
+-        clipboardManager.setPrimaryClip(clipData)
++        val parcel = Parcel.obtain()
++        val isTooLarge = try {
++            clipData.writeToParcel(parcel, 0)
++            parcel.dataSize() > MAX_CLIPBOARD_PARCEL_BYTES
++        } finally {
++            parcel.recycle()
++        }
++        if (isTooLarge) {
++            Log.w(logTag, "Remote clipboard text is too large for Android clipboard")
++            return
++        }
++
++        try {
++            clipboardManager.setPrimaryClip(clipData)
++            lastUpdatedClipData = clipData
++        } catch (e: Exception) {
++            Log.e(logTag, "Failed to set primary clip", e)
++        }
+     }
+ }

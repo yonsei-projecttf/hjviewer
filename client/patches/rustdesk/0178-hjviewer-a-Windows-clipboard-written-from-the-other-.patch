@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:18:59 +0900
+Subject: [PATCH 178/182] hjviewer: a Windows clipboard written from the other
+ side carries its owner mark first
+
+When text or other content comes in from the other side, HJViewer puts
+it on the Windows clipboard together with a mark that says "this came
+from HJViewer", so the next clipboard check does not send it back. The
+Windows setter empties the clipboard and writes the formats in order,
+stopping at the first one that fails; with the mark written last, a
+failed format left unmarked content behind. HJViewer then read it as a
+new local copy and sent it back, and the other side emptied its own
+clipboard for it, which for Excel ends the "copied" state (the moving
+border) of a selection the user just copied. The mark now goes first on
+Windows, so a partial write is still known as HJViewer's. Other
+platforms keep it last; every reader looks for the mark anywhere in the
+list.
+
+Backported from rustdesk/rustdesk 8d74ff0e57765f4fab7a4a4ada32f4c38811c5c2 (fix(windows): write the clipboard owner marker first (#16695))
+Upstream's diff unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/clipboard.rs | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/clipboard.rs b/src/clipboard.rs
+index 9a1bd60..78136a8 100644
+--- a/src/clipboard.rs
++++ b/src/clipboard.rs
+@@ -281,10 +281,16 @@ fn do_update_clipboard_(mut to_update_data: Vec<ClipboardData>, side: ClipboardS
+ 
+ #[cfg(not(target_os = "android"))]
+ fn append_owner_marker(mut data: Vec<ClipboardData>, side: ClipboardSide) -> Vec<ClipboardData> {
+-    data.push(ClipboardData::Special((
++    let marker = ClipboardData::Special((
+         RUSTDESK_CLIPBOARD_OWNER_FORMAT.to_owned(),
+         side.get_owner_data(),
+-    )));
++    ));
++    // The Windows setter stops at the first format it fails to write, so a marker placed
++    // last can be skipped, leaving content RustDesk no longer recognizes as its own.
++    #[cfg(target_os = "windows")]
++    data.insert(0, marker);
++    #[cfg(not(target_os = "windows"))]
++    data.push(marker);
+     data
+ }
+ 

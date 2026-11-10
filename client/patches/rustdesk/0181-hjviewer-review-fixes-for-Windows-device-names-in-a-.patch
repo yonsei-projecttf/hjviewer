@@ -1,0 +1,201 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 23:05:34 +0900
+Subject: [PATCH 181/182] hjviewer: review fixes for Windows device names in a
+ download
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On a Windows controller the download checks (libs/base fs/download.rs
+validate_component, Dart DownloadPaths.validName) refused separators,
+':' streams, <>"|?* and trailing dots or spaces, but not Windows device
+names. A modified PC could list or send "COM1" or "nul.txt"; the
+controller then opened '<folder>\COM1', '.download' and '.digest',
+which Windows 10 opens as devices: a confusing overwrite question and a
+failed download at best, bytes sent to a local device at worst.
+Upstream has the same gap; 1.9.2 had it too.
+
+Both checks now also refuse, on Windows only, a name whose part before
+the first '.' (trailing spaces dropped) is CON, PRN, AUX, NUL, CONIN$,
+CONOUT$, COM0-9 or LPT0-9 (also with a superscript 1-3), in any case and
+with any extension. The job then ends as "오류 · 저장할 수 없는 파일 이름"
+like the other refused names (the core's "invalid Windows download file
+name" text, already mapped). Tests: the name rule on every platform
+(download_tests.rs, test/download_paths_test.dart, a pure Dart test
+that needs no bridge), and on Windows validated_target and
+validate_download_name refusing such names.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/utils/download_paths.dart | 12 +++++++-
+ flutter/test/download_paths_test.dart | 32 ++++++++++++++++++++
+ libs/base/src/fs/download.rs          | 24 +++++++++++++++
+ libs/base/src/fs/download_tests.rs    | 43 ++++++++++++++++++++++++++-
+ 4 files changed, 109 insertions(+), 2 deletions(-)
+ create mode 100644 flutter/test/download_paths_test.dart
+
+diff --git a/flutter/lib/utils/download_paths.dart b/flutter/lib/utils/download_paths.dart
+index 54d9fe6..ee641e0 100644
+--- a/flutter/lib/utils/download_paths.dart
++++ b/flutter/lib/utils/download_paths.dart
+@@ -25,9 +25,19 @@ class DownloadPaths {
+     return !windows ||
+         (!name.contains(RegExp(r'[<>:"\\|?*]')) &&
+             !name.endsWith('.') &&
+-            !name.endsWith(' '));
++            !name.endsWith(' ') &&
++            !isWindowsDeviceName(name));
+   }
+ 
++  static final _windowsDevice = RegExp(
++      r'^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$',
++      caseSensitive: false);
++
++  /// Windows opens these names as devices, in any case and with any extension ("nul.txt"), as
++  /// libs/base/src/fs/download.rs is_windows_device_name.
++  static bool isWindowsDeviceName(String name) => _windowsDevice
++      .hasMatch(name.split('.').first.replaceFirst(RegExp(r' +$'), ''));
++
+   static String mapDirectory(
+       String remoteRoot, String remotePath, String localRoot,
+       {required bool remoteWindows, required bool localWindows}) {
+diff --git a/flutter/test/download_paths_test.dart b/flutter/test/download_paths_test.dart
+new file mode 100644
+index 0000000..0010a5a
+--- /dev/null
++++ b/flutter/test/download_paths_test.dart
+@@ -0,0 +1,32 @@
++import 'package:flutter_hbb/utils/download_paths.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// Pure: needs no bridge (download_path_test.dart, which drives the file model, needs the real one).
++void main() {
++  test('a Windows device name cannot be a download name on Windows (1.9.3)',
++      () {
++    for (final name in [
++      'CON', 'con', 'Prn', 'aux.txt', 'NUL.tar.gz', 'nul .txt', 'COM1', //
++      'com9.log', 'LPT0', 'lpt\u00b9', 'CONIN\$', 'conout\$.txt'
++    ]) {
++      expect(DownloadPaths.isWindowsDeviceName(name), isTrue, reason: name);
++      expect(DownloadPaths.validName(name, windows: true), isFalse,
++          reason: name);
++    }
++    for (final name in [
++      'CONSOLE', 'con1', 'COM', 'COM10', 'LPTX', 'my nul.txt', '.nul', //
++      'file.con', 'auxiliary'
++    ]) {
++      expect(DownloadPaths.isWindowsDeviceName(name), isFalse, reason: name);
++      expect(DownloadPaths.validName(name, windows: true), isTrue,
++          reason: name);
++    }
++    // only Windows opens them as devices
++    expect(DownloadPaths.validName('nul.txt', windows: false), isTrue);
++    expect(
++        () => DownloadPaths.mapDirectory(
++            r'C:\docs', r'C:\docs\COM1\a', r'D:\in',
++            remoteWindows: true, localWindows: true),
++        throwsFormatException);
++  });
++}
+diff --git a/libs/base/src/fs/download.rs b/libs/base/src/fs/download.rs
+index 61bad48..c9f4f9f 100644
+--- a/libs/base/src/fs/download.rs
++++ b/libs/base/src/fs/download.rs
+@@ -62,12 +62,36 @@ fn validate_component(name: &str) -> ResultType<()> {
+     if name.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
+         || name.ends_with('.')
+         || name.ends_with(' ')
++        || is_windows_device_name(name)
+     {
+         bail!("invalid Windows download file name: {name}");
+     }
+     Ok(())
+ }
+ 
++/// Windows opens these names as devices, in any case and with any extension ("nul.txt").
++#[cfg_attr(not(windows), allow(dead_code))]
++pub(super) fn is_windows_device_name(name: &str) -> bool {
++    let stem = name
++        .split('.')
++        .next()
++        .unwrap_or("")
++        .trim_end_matches(' ')
++        .to_ascii_uppercase();
++    if matches!(
++        stem.as_str(),
++        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
++    ) {
++        return true;
++    }
++    if !(stem.starts_with("COM") || stem.starts_with("LPT")) {
++        return false;
++    }
++    let number = &stem[3..];
++    (number.len() == 1 && number.as_bytes()[0].is_ascii_digit())
++        || matches!(number, "\u{b9}" | "\u{b2}" | "\u{b3}")
++}
++
+ pub(super) fn validated_target(base: &PathBuf, name: &str) -> ResultType<PathBuf> {
+     let parent = base
+         .parent()
+diff --git a/libs/base/src/fs/download_tests.rs b/libs/base/src/fs/download_tests.rs
+index 3c43ee8..899edd4 100644
+--- a/libs/base/src/fs/download_tests.rs
++++ b/libs/base/src/fs/download_tests.rs
+@@ -269,13 +269,54 @@ async fn download_does_not_publish_or_remove_unreceived_staging_files() {
+ #[cfg(windows)]
+ fn download_rejects_windows_streams_and_ambiguous_components() {
+     let dir = DownloadDir::new();
+-    for name in ["nested/file:stream", "nested/.. /outside", "nested/file."] {
++    for name in [
++        "nested/file:stream",
++        "nested/.. /outside",
++        "nested/file.",
++        "nested/COM1",
++        "nul.txt",
++        "con/file.txt",
++    ] {
+         assert!(
+             download::validated_target(&dir.0.join("docs"), name).is_err(),
+             "{}",
+             name
+         );
+     }
++    assert!(download::validate_download_name("folder\\Lpt3.log", true).is_err());
++}
++
++#[test]
++fn windows_device_names_are_known_in_any_case_and_with_an_extension() {
++    for name in [
++        "CON",
++        "con",
++        "Prn",
++        "aux.txt",
++        "NUL.tar.gz",
++        "nul .txt",
++        "COM1",
++        "com9.log",
++        "LPT0",
++        "lpt\u{b9}",
++        "CONIN$",
++        "conout$.txt",
++    ] {
++        assert!(download::is_windows_device_name(name), "{name}");
++    }
++    for name in [
++        "CONSOLE",
++        "con1",
++        "COM",
++        "COM10",
++        "LPTX",
++        "my nul.txt",
++        ".nul",
++        "file.con",
++        "auxiliary",
++    ] {
++        assert!(!download::is_windows_device_name(name), "{name}");
++    }
+ }
+ 
+ #[tokio::test]

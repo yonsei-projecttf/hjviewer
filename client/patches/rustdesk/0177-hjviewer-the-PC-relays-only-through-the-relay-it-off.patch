@@ -1,0 +1,308 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:18:37 +0900
+Subject: [PATCH 177/182] hjviewer: the PC relays only through the relay it
+ offered, with a bounded relay uuid
+
+The PC dialed whatever relay address and uuid a forwarded RequestRelay
+named. hbbs forwards a controller's RequestRelay to the PC as it is, so
+anyone who could get one forwarded chose the address the PC's
+SYSTEM-started process connected to, and in a WebSocket build check_ws
+passes a ws:// or wss:// value through unchanged: the request picked the
+whole URL. The PC now accepts a RequestRelay only for a relay it put in
+its own punch reply in the last ten minutes or the relay it would pick
+by itself; anything else is dropped (throttled log line) before any
+lookup or connect. A pinned build's relay is always the server it is
+pinned to (relay-server is an overwrite setting), and a genuine
+controller only echoes the relay the PC sent: the PunchHoleSent or
+LocalAddr relay that hbbs copies into PunchHoleResponse, or the PC's
+own RelayResponse when it starts the relay itself (WebSocket, forced
+relay, the WebRTC race). Our hbbs runs without --mask, so it never
+rewrites that relay for a LAN. Every genuine request therefore names
+the pinned server and passes the second branch, also after the ten
+minutes, so an idle PC's reconnects are not affected. The relay uuid
+must be 1-128 ASCII letters, digits, '-' or '_' on both sides (the PC
+for RequestRelay, the controller for RelayResponse); all our uuids are
+Uuid::new_v4 strings.
+
+Backported from rustdesk/rustdesk 2c085f91db7909cf0fa7245609460c3ca37a9306 (Only relay to addresses this peer offered, and bound relay uuids (#16858))
+Against upstream's diff: the check_relay_uuid line in Client::create_relay
+and the two test-module hunks placed by hand (context differs in our
+series; the rendezvous_mediator tests import Duration and Instant
+there). One test added: a ws:// or wss:// relay value is refused even
+when its host is a relay this PC offered.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/client.rs              |   1 +
+ src/common.rs              |  30 +++++++
+ src/rendezvous_mediator.rs | 156 ++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 184 insertions(+), 3 deletions(-)
+
+diff --git a/src/client.rs b/src/client.rs
+index 6b94bba..1dfa95e 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -1859,6 +1859,7 @@ impl Client {
+         conn_type: ConnType,
+         ipv4: bool,
+     ) -> ResultType<Stream> {
++        crate::common::check_relay_uuid(&uuid)?;
+         let mut conn = connect_tcp(
+             ipv4_to_ipv6(check_port(relay_server, RELAY_PORT), ipv4),
+             CONNECT_TIMEOUT,
+diff --git a/src/common.rs b/src/common.rs
+index 54afa07..a1a397f 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -982,6 +982,20 @@ pub fn increase_port<T: std::string::ToString>(host: T, offset: i32) -> String {
+     hbb_common::socket_client::increase_port(host, offset)
+ }
+ 
++/// A relay uuid arrives from the network and is sent on to the relay address, so bound what it
++/// may carry; it is an opaque pairing key, so do not pin today's UUID format.
++pub fn check_relay_uuid(uuid: &str) -> ResultType<()> {
++    if uuid.is_empty()
++        || uuid.len() > 128
++        || !uuid
++            .bytes()
++            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
++    {
++        bail!("invalid relay uuid (length {})", uuid.len());
++    }
++    Ok(())
++}
++
+ pub const POSTFIX_SERVICE: &'static str = "_service";
+ 
+ #[inline]
+@@ -2951,6 +2965,22 @@ mod tests {
+     };
+     use std::collections::HashSet;
+ 
++    #[test]
++    fn relay_uuid_rejects_control_bytes_but_not_other_id_formats() {
++        for uuid in [
++            "e4c181d0-41c7-4ae6-8ef0-36581b6b2b12",
++            "E4C181D0-41C7-4AE6-8EF0-36581B6B2B12",
++            "01890a5d-ac96-774b-bcce-b302099a8057",
++            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
++        ] {
++            assert!(check_relay_uuid(uuid).is_ok(), "rejected {uuid:?}");
++        }
++        let too_long = "a".repeat(129);
++        for uuid in ["", "\r\nPING\r\n", "a b", "a\0", too_long.as_str()] {
++            assert!(check_relay_uuid(uuid).is_err(), "accepted {uuid:?}");
++        }
++    }
++
+     #[test]
+     fn a_cursor_content_id_fits_a_web_client_number() {
+         const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+diff --git a/src/rendezvous_mediator.rs b/src/rendezvous_mediator.rs
+index b574d6e..e88bbdd 100644
+--- a/src/rendezvous_mediator.rs
++++ b/src/rendezvous_mediator.rs
+@@ -49,6 +49,35 @@ fn connection_meta(
+     }
+ }
+ 
++// Relays this peer put in its punch replies, from its `relay-server` option or a rendezvous
++// server. A genuine RequestRelay echoes one back; this bounds where a request can send this peer,
++// it does not authenticate the request.
++static REPORTED_RELAYS: std::sync::Mutex<VecDeque<(String, Instant)>> =
++    std::sync::Mutex::new(VecDeque::new());
++const MAX_REPORTED_RELAYS: usize = 32;
++// Far longer than a controller's direct attempts before it asks for the relay, yet a relay
++// dropped from the configuration stops being accepted.
++const REPORTED_RELAY_TTL: Duration = Duration::from_secs(600);
++
++fn remember_reported_relay(relay_server: &str, now: Instant) {
++    let relay_server = check_port(relay_server, config::RELAY_PORT);
++    let mut relays = REPORTED_RELAYS.lock().unwrap();
++    relays.retain(|(r, at)| {
++        *r != relay_server && now.saturating_duration_since(*at) < REPORTED_RELAY_TTL
++    });
++    if relays.len() >= MAX_REPORTED_RELAYS {
++        relays.pop_front();
++    }
++    relays.push_back((relay_server, now));
++}
++
++fn is_reported_relay(relay_server: &str, now: Instant) -> bool {
++    let relay_server = check_port(relay_server, config::RELAY_PORT);
++    REPORTED_RELAYS.lock().unwrap().iter().any(|(r, at)| {
++        *r == relay_server && now.saturating_duration_since(*at) < REPORTED_RELAY_TTL
++    })
++}
++
+ lazy_static::lazy_static! {
+     static ref SOLVING_PK_MISMATCH: Mutex<String> = Default::default();
+     static ref LAST_MSG: Mutex<(SocketAddr, Instant)> = Mutex::new((SocketAddr::new([0; 4].into(), 0), Instant::now()));
+@@ -671,6 +700,10 @@ impl RendezvousMediator {
+     }
+ 
+     async fn handle_request_relay(&self, rr: RequestRelay, server: ServerPtr) -> ResultType<()> {
++        if let Err(err) = self.check_relay_request(&rr, Instant::now()) {
++            hbb_common::throttled_log!(PUNCH_LOG_INTERVAL, warn, "Ignored relay request: {}", err);
++            return Ok(());
++        }
+         let addr = AddrMangle::decode(&rr.socket_addr);
+         let last = *LAST_RELAY_MSG.lock().await;
+         *LAST_RELAY_MSG.lock().await = (addr, Instant::now());
+@@ -772,6 +805,7 @@ impl RendezvousMediator {
+         }
+         let peer_addr_v6 = hbb_common::AddrMangle::decode(&fla.socket_addr_v6);
+         let relay_server = self.get_relay_server(fla.relay_server.clone());
++        remember_reported_relay(&relay_server, Instant::now());
+         let relay = use_ws() || Config::is_proxy();
+         let mut socket_addr_v6 = Default::default();
+         let meta = connection_meta(
+@@ -1120,6 +1154,7 @@ impl RendezvousMediator {
+             .await;
+         }
+         let relay_server = self.get_relay_server(ph.relay_server);
++        remember_reported_relay(&relay_server, Instant::now());
+         // for ensure, websocket go relay directly
+         // A symmetric NAT relays the legacy transports but deliberately not WebRTC: the answer
+         // built above rides along on the relay request, and ICE probes the candidate pairs rather
+@@ -1341,6 +1376,20 @@ impl RendezvousMediator {
+         }
+         relay_server
+     }
++
++    fn check_relay_request(&self, rr: &RequestRelay, now: Instant) -> ResultType<()> {
++        crate::common::check_relay_uuid(&rr.uuid)?;
++        if !is_reported_relay(&rr.relay_server, now)
++            && check_port(&rr.relay_server, config::RELAY_PORT)
++                != check_port(self.get_relay_server(String::new()), config::RELAY_PORT)
++        {
++            bail!(
++                "relay server {:?} was not offered by this peer",
++                rr.relay_server
++            );
++        }
++        Ok(())
++    }
+ }
+ 
+ fn get_direct_port() -> i32 {
+@@ -1732,9 +1781,10 @@ impl Drop for CheckIfResendPk {
+ #[cfg(test)]
+ mod tests {
+     use super::{
+-        connection_meta, mpsc, socket_client, tokio, udp_nat_listen, AnswererSlot, Arc, IceRoute,
+-        IntoTargetAddr, Ordering, PunchHoleSent, RendezvousMediator, RendezvousMessage,
+-        ICE_DEDUP_WINDOW, MAX_PENDING_REMOTE_ICE, MAX_WEBRTC_ANSWERERS, TCP_PUNCHES, UDP_PUNCHES,
++        connection_meta, mpsc, socket_client, tokio, udp_nat_listen, AnswererSlot, Arc, Duration,
++        IceRoute, Instant, IntoTargetAddr, Ordering, PunchHoleSent, RendezvousMediator,
++        RendezvousMessage, ICE_DEDUP_WINDOW, MAX_PENDING_REMOTE_ICE, MAX_WEBRTC_ANSWERERS,
++        TCP_PUNCHES, UDP_PUNCHES,
+     };
+     use hbb_common::{protobuf::Message as _, tcp::new_listener};
+     use std::net::SocketAddr;
+@@ -2117,4 +2167,104 @@ mod tests {
+         drop(held);
+         assert!(AnswererSlot::take().is_some());
+     }
++
++    #[test]
++    fn relay_request_must_name_a_relay_this_peer_offered() {
++        let host: std::net::SocketAddr = "127.0.0.1:21116".parse().unwrap();
++        let mediator = RendezvousMediator {
++            addr: host.into_target_addr().unwrap(),
++            host: host.to_string(),
++            host_prefix: String::new(),
++            keep_alive: 0,
++        };
++        let now = Instant::now();
++        super::remember_reported_relay("reported-relay.example", now);
++        let request = |relay_server: &str, uuid: &str| super::RequestRelay {
++            relay_server: relay_server.to_owned(),
++            uuid: uuid.to_owned(),
++            ..Default::default()
++        };
++        let uuid = "e4c181d0-41c7-4ae6-8ef0-36581b6b2b12";
++        let reported = request("reported-relay.example:21117", uuid);
++        assert!(mediator.check_relay_request(&reported, now).is_ok());
++        let unknown = request("other-host.example:21117", uuid);
++        assert!(mediator.check_relay_request(&unknown, now).is_err());
++        let bad_uuid = request("reported-relay.example", "a\r\nb");
++        assert!(mediator.check_relay_request(&bad_uuid, now).is_err());
++        let fallback = request(&mediator.get_relay_server(String::new()), uuid);
++        assert!(mediator.check_relay_request(&fallback, now).is_ok());
++        let expired = now + super::REPORTED_RELAY_TTL;
++        assert!(mediator.check_relay_request(&reported, expired).is_err());
++        // Not at `expired`: an insert that late would purge what parallel tests just reported.
++        super::remember_reported_relay(
++            "reported-relay.example",
++            now + super::REPORTED_RELAY_TTL / 2,
++        );
++        assert!(mediator.check_relay_request(&reported, expired).is_ok());
++    }
++
++    #[test]
++    fn reported_relay_is_refused_once_it_expires() {
++        let reported_at = Instant::now();
++        super::remember_reported_relay("expiring-relay.example", reported_at);
++        let just_before = reported_at + super::REPORTED_RELAY_TTL - Duration::from_secs(1);
++        assert!(super::is_reported_relay(
++            "expiring-relay.example:21117",
++            just_before
++        ));
++        let expired = reported_at + super::REPORTED_RELAY_TTL;
++        assert!(!super::is_reported_relay(
++            "expiring-relay.example:21117",
++            expired
++        ));
++    }
++
++    #[test]
++    fn reporting_a_relay_again_restarts_its_expiry() {
++        let first = Instant::now();
++        let again = first + super::REPORTED_RELAY_TTL / 2;
++        super::remember_reported_relay("refreshed-relay.example", first);
++        super::remember_reported_relay("refreshed-relay.example", again);
++        let past_first = first + super::REPORTED_RELAY_TTL;
++        assert!(super::is_reported_relay(
++            "refreshed-relay.example",
++            past_first
++        ));
++        let past_again = again + super::REPORTED_RELAY_TTL;
++        assert!(!super::is_reported_relay(
++            "refreshed-relay.example",
++            past_again
++        ));
++    }
++
++    // HJViewer: check_ws passes a ws:// or wss:// value through as it is, so a request must not
++    // turn a relay this peer offered into a URL of the requester's choosing.
++    #[test]
++    fn a_websocket_url_is_not_a_relay_this_peer_offered() {
++        let host: std::net::SocketAddr = "127.0.0.1:21116".parse().unwrap();
++        let mediator = RendezvousMediator {
++            addr: host.into_target_addr().unwrap(),
++            host: host.to_string(),
++            host_prefix: String::new(),
++            keep_alive: 0,
++        };
++        let now = Instant::now();
++        super::remember_reported_relay("offered-relay.example", now);
++        let uuid = "e4c181d0-41c7-4ae6-8ef0-36581b6b2b12";
++        for relay_server in [
++            "wss://offered-relay.example/ws/relay",
++            "ws://offered-relay.example/ws/relay",
++            "wss://other-host.example/ws/relay",
++        ] {
++            let request = super::RequestRelay {
++                relay_server: relay_server.to_owned(),
++                uuid: uuid.to_owned(),
++                ..Default::default()
++            };
++            assert!(
++                mediator.check_relay_request(&request, now).is_err(),
++                "accepted {relay_server:?}"
++            );
++        }
++    }
+ }

@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 23:03:21 +0900
+Subject: [PATCH 180/182] hjviewer: review fixes for the privacy-mode end in
+ the PC's incoming list
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The privacy-mode fix ("a refused privacy-mode request leaves another
+controller's privacy mode on") ends the PC's other remote screen
+connections with on_close reason "privacy mode". The incoming history
+(hjviewer_incoming.rs end_of) knew every other literal reason but not
+this one, so it fell through to "lost": the PC's list said
+"연결이 끊어짐" for a session the PC ended itself, and continued_by()
+took a quick reconnect of that controller as a reconnect of the old row
+("다시 연결 1번"), which hid why the session ended.
+
+"privacy mode" now has its own end code "privacy" (in ENDS, so a stored
+line keeps it), labelled "다른 연결이 개인정보 보호 모드를 켜서 끊김" /
+"Ended: privacy mode turned on by another connection". It is not "lost",
+so a reconnect starts a row of its own. Tests: the reason's end code,
+the fold keeping a privacy end apart from a reconnect, the label in
+both languages.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_incoming_rules.dart |  2 ++
+ flutter/test/hjviewer_incoming_test.dart        |  3 ++-
+ src/hjviewer_incoming.rs                        | 12 +++++++-----
+ src/hjviewer_incoming/tests.rs                  | 15 +++++++++++++++
+ 4 files changed, 26 insertions(+), 6 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_incoming_rules.dart b/flutter/lib/common/hjviewer_incoming_rules.dart
+index f21da28..ba97b49 100644
+--- a/flutter/lib/common/hjviewer_incoming_rules.dart
++++ b/flutter/lib/common/hjviewer_incoming_rules.dart
+@@ -231,6 +231,8 @@ class HjvIncomingTexts {
+         'scope' => _t('허용되지 않은 동작으로 끊김', 'Ended for an action not allowed'),
+         'revoked' => _t('계정에서 로그아웃한 기기라 끊음',
+             'Ended: the device was logged out of the account'),
++        'privacy' => _t('다른 연결이 개인정보 보호 모드를 켜서 끊김',
++            'Ended: privacy mode turned on by another connection'),
+         'lost' => _t('연결이 끊어짐', 'Connection lost'),
+         'other' => _t('끝남', 'Ended'),
+         'unknown' => _t('끝을 기록하지 못함(PC가 꺼졌거나 다시 시작됨)',
+diff --git a/flutter/test/hjviewer_incoming_test.dart b/flutter/test/hjviewer_incoming_test.dart
+index 965c880..81bb9e8 100644
+--- a/flutter/test/hjviewer_incoming_test.dart
++++ b/flutter/test/hjviewer_incoming_test.dart
+@@ -70,7 +70,7 @@ void main() {
+         () {
+       const ends = [
+         'peer', 'pc', 'idle', 'service', 'switch', 'scope', 'revoked', //
+-        'lost', 'other', 'unknown', 'open'
++        'privacy', 'lost', 'other', 'unknown', 'open'
+       ];
+       const auths = [
+         'account',
+@@ -98,6 +98,7 @@ void main() {
+       expect(ko.end('pc'), '이 PC에서 끊음');
+       expect(
+           en.end('revoked'), 'Ended: the device was logged out of the account');
++      expect(ko.end('privacy'), '다른 연결이 개인정보 보호 모드를 켜서 끊김');
+       expect(ko.auth('click'), '이 PC에서 수락');
+       expect(en.kind('forward'), 'Port forwarding');
+     });
+diff --git a/src/hjviewer_incoming.rs b/src/hjviewer_incoming.rs
+index 7588f64..5773aa4 100644
+--- a/src/hjviewer_incoming.rs
++++ b/src/hjviewer_incoming.rs
+@@ -23,9 +23,9 @@
+ //! The answer, newest first: `{"on":true,"rows":[{"t0":<Unix s>,"t1":<Unix s>|null,"id":"…",
+ //! "name":"…","dev":"…","own":"…","ver":"same-account"|"staff"|"unverified-name"|"","auth":
+ //! "account"|"recent"|"otp"|"permanent"|"click"|"switch"|"","kind":"remote"|"file"|"camera"|
+-//! "terminal"|"forward","end":"peer"|"pc"|"idle"|"service"|"switch"|"scope"|"revoked"|"lost"|
+-//! "other"|"unknown"|"open","re":<reconnects>}]}`; `"on":false` (and no rows) where this process
+-//! does not record. The screens get `{"error":"ipc"}` when the service did not answer.
++//! "terminal"|"forward","end":"peer"|"pc"|"idle"|"service"|"switch"|"scope"|"revoked"|"privacy"|
++//! "lost"|"other"|"unknown"|"open","re":<reconnects>}]}`; `"on":false` (and no rows) where this
++//! process does not record. The screens get `{"error":"ipc"}` when the service did not answer.
+ 
+ use hbb_common::config::Config;
+ use serde_derive::{Deserialize, Serialize};
+@@ -241,6 +241,8 @@ fn end_of(reason: &str) -> &'static str {
+         "switch sides" => "switch",
+         "Session scope violation" => "scope",
+         "hjv: account key no longer trusted" => "revoked",
++        // another connection turned privacy mode on, so this PC ended the screen sessions
++        "privacy mode" => "privacy",
+         _ if reason.starts_with("connection manager error") => "other",
+         // Timeout, Reset by the peer and the stream's errors
+         _ => "lost",
+@@ -479,8 +481,8 @@ fn fold(text: &str, run: &str, now: u64) -> Vec<Entry> {
+     rows
+ }
+ 
+-const ENDS: [&str; 9] = [
+-    "peer", "pc", "idle", "service", "switch", "scope", "revoked", "lost", "other",
++const ENDS: [&str; 10] = [
++    "peer", "pc", "idle", "service", "switch", "scope", "revoked", "privacy", "lost", "other",
+ ];
+ const AUTHS: [&str; 6] = ["account", "recent", "otp", "permanent", "click", "switch"];
+ const KINDS: [&str; 5] = ["remote", "file", "camera", "terminal", "forward"];
+diff --git a/src/hjviewer_incoming/tests.rs b/src/hjviewer_incoming/tests.rs
+index d54ca6e..a4d4575 100644
+--- a/src/hjviewer_incoming/tests.rs
++++ b/src/hjviewer_incoming/tests.rs
+@@ -50,6 +50,7 @@ fn how_a_session_ended_follows_on_closes_reason() {
+         ("switch sides", "switch"),
+         ("Session scope violation", "scope"),
+         ("hjv: account key no longer trusted", "revoked"),
++        ("privacy mode", "privacy"),
+         ("Timeout", "lost"),
+         ("Reset by the peer", "lost"),
+         ("Connection reset by peer (os error 104)", "lost"),
+@@ -280,6 +281,20 @@ fn a_reconnect_before_the_lost_end_continues_its_row() {
+     );
+ }
+ 
++/// A session this PC ended because another connection turned privacy mode on keeps that end,
++/// also when the same controller comes back right away.
++#[test]
++fn a_privacy_mode_end_is_not_folded_into_a_reconnect() {
++    let lines = text(&[
++        start(RUN, 1, NOW - 1000, "111", 7, "remote"),
++        end(RUN, 1, NOW - 900, end_of("privacy mode")),
++        start(RUN, 2, NOW - 890, "111", 7, "remote"),
++    ]);
++    let rows = fold(&lines, RUN, NOW);
++    let ends: Vec<_> = rows.iter().map(|r| (r.end.as_str(), r.re)).collect();
++    assert_eq!(ends, [("open", 0), ("privacy", 0)]);
++}
++
+ /// W9-D3's bound holds for rows that reconnect often: a row takes at most MAX_RE reconnects, and
+ /// the kept rows at most KEEP_KEYS connections, so the compacted file stays bounded too.
+ #[test]

@@ -1,0 +1,115 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:00:23 +0900
+Subject: [PATCH 172/182] hjviewer: a refused privacy-mode request leaves
+ another controller's privacy mode on
+
+Two staff members can be connected to the same PC. When the second one's
+privacy-mode request was refused because the first one owns privacy mode, the
+PC's error path turned privacy mode off for whoever owned it and told nobody:
+the first controller's screen kept saying "on" while the PC's monitor showed
+the work again. The error path now passes its own connection's id, so the
+ownership check keeps the other connection's privacy mode. When privacy mode
+starts, the PC also closes the other remote-screen connections itself (they
+get "Someone turns on privacy mode, exit" first) instead of trusting each
+controller to leave on its own.
+
+Backported from rustdesk/rustdesk 67090d3aa14cec95af702aa01e1f3800c0c8e13c (fix: a refused privacy-mode request no longer turns off another connection's (#16507))
+Upstream's diff unchanged; only the hunk offsets differ in our series. The
+close of the other connections ends them with on_close("privacy mode", false),
+so our end-of-session lock does not lock for it.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/privacy_mode.rs      | 28 ++++++++++++++++++++++++++++
+ src/server/connection.rs | 17 +++++++++++++----
+ 2 files changed, 41 insertions(+), 4 deletions(-)
+
+diff --git a/src/privacy_mode.rs b/src/privacy_mode.rs
+index 234004d..5757dee 100644
+--- a/src/privacy_mode.rs
++++ b/src/privacy_mode.rs
+@@ -75,6 +75,11 @@ pub trait PrivacyMode: Sync + Send {
+         Ok(false)
+     }
+ 
++    /// `INVALID_PRIVACY_MODE_CONN_ID` deliberately bypasses the ownership check, meaning
++    /// "turn it off whoever owns it": shutdown (`ipc::Data::Close`), `reset_all`, and
++    /// `TurnOnGuard`, which undoes a half-finished turn-on however far it got. A caller
++    /// acting for one connection must pass that connection's own id, or it can turn off
++    /// privacy mode belonging to another.
+     #[inline]
+     fn check_off_conn_id(&self, conn_id: i32) -> ResultType<()> {
+         let pre_conn_id = self.pre_conn_id();
+@@ -289,6 +294,29 @@ fn turn_on_privacy_sync(impl_key: &str, conn_id: i32) -> Option<ResultType<bool>
+     Some(privacy_mode_lock.as_mut()?.turn_on_privacy(conn_id))
+ }
+ 
++#[cfg(not(target_os = "ios"))]
++pub(crate) fn close_other_remote_connections_for_privacy(owner_id: i32) {
++    use crate::server::{AuthConnType, AUTHED_CONNS};
++
++    let privacy_mode_lock = PRIVACY_MODE.lock().unwrap();
++    // Ownership can change while the caller validates the capturer.
++    if privacy_mode_lock.as_ref().map(|mode| mode.pre_conn_id()) != Some(owner_id) {
++        return;
++    }
++    for connection in AUTHED_CONNS.lock().unwrap().iter() {
++        if connection.conn_type != AuthConnType::Remote || connection.conn_id == owner_id {
++            continue;
++        }
++        if let Err(err) = connection.sender.send(crate::ipc::Data::Close) {
++            hbb_common::log::debug!(
++                "Failed to close connection {} for privacy mode: {}",
++                connection.conn_id,
++                err
++            );
++        }
++    }
++}
++
+ #[inline]
+ pub fn turn_off_privacy(conn_id: i32, state: Option<PrivacyModeState>) -> Option<ResultType<()>> {
+     Some(
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index f1ec2dc..f190b49 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -1164,6 +1164,14 @@ impl Connection {
+                 },
+                 Some(data) = rx_from_authed.recv() => {
+                     match data {
++                        ipc::Data::Close => {
++                            conn.send(crate::common::make_privacy_mode_msg(
++                                back_notification::PrivacyModeState::PrvOnByOther,
++                                String::new(),
++                            )).await;
++                            conn.on_close("privacy mode", false).await;
++                            break;
++                        }
+                         #[cfg(all(target_os = "windows", feature = "flutter"))]
+                         ipc::Data::PrinterData(data) => {
+                             if Self::permission(keys::OPTION_ENABLE_REMOTE_PRINTER, &conn.control_permissions) {
+@@ -5193,6 +5201,7 @@ impl Connection {
+                             5_000,
+                         );
+                         if err_msg.is_empty() {
++                            privacy_mode::close_other_remote_connections_for_privacy(self.inner.id);
+                             crate::common::make_privacy_mode_msg(
+                                 back_notification::PrivacyModeState::PrvOnSucceeded,
+                                 impl_key,
+@@ -5219,10 +5228,10 @@ impl Connection {
+                 Some(Err(e)) => {
+                     log::error!("Failed to turn on privacy mode. {}", e);
+                     if privacy_mode::is_in_privacy_mode() {
+-                        let _ = Self::turn_off_privacy_to_msg(
+-                            privacy_mode::INVALID_PRIVACY_MODE_CONN_ID,
+-                            String::new(),
+-                        );
++                        // Use this connection's ID so a failed request cannot disable another
++                        // connection's privacy mode: INVALID_PRIVACY_MODE_CONN_ID would bypass
++                        // the ownership check (see `check_off_conn_id`).
++                        let _ = Self::turn_off_privacy_to_msg(self.inner.id, String::new());
+                     }
+                     crate::common::make_privacy_mode_msg_with_details(
+                         back_notification::PrivacyModeState::PrvOnFailed,

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Wed, 28 Oct 2026 11:19:28 +0900
-Subject: [PATCH 167/167] hjviewer: a pinned build's status row starts without
+Subject: [PATCH 167/182] hjviewer: a pinned build's status row starts without
  RustDesk's pricing link
 
 The desktop status row shows upstream's ", setup_server_tip" link, which

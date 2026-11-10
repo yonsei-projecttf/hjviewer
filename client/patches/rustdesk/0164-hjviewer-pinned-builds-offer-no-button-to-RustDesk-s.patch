@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Wed, 28 Oct 2026 09:05:28 +0900
-Subject: [PATCH 164/167] hjviewer: pinned builds offer no button to RustDesk's
+Subject: [PATCH 164/182] hjviewer: pinned builds offer no button to RustDesk's
  pages
 
 A message box showed upstream's [JumpLink] wherever its message had a

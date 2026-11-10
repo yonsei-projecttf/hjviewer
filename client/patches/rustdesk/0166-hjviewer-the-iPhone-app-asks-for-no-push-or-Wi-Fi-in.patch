@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Wed, 28 Oct 2026 09:14:14 +0900
-Subject: [PATCH 166/167] hjviewer: the iPhone app asks for no push or Wi-Fi
+Subject: [PATCH 166/182] hjviewer: the iPhone app asks for no push or Wi-Fi
  information entitlement
 
 Upstream's Runner.entitlements asks for aps-environment (push) and

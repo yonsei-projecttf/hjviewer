@@ -1,0 +1,202 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 23:05:45 +0900
+Subject: [PATCH 182/182] hjviewer: review fixes for the question after a
+ cut-off download
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Since the download checks ("a download checks the PC's file names,
+folders and the overwrite answer on this device") the core asks before
+it writes over a download's leftover '<name>.download' or '.digest'
+(download_digest answers NeedConfirm), where 1.9.2 restarted such a
+file without a word. After a dropped
+session or a closed app those files stay, so the next download of that
+file showed the danger-styled "이 파일이 이미 있습니다. 덮어쓸까요?" for a
+file that is not in the folder. On the phones, which keep no job list to
+resume, that is the usual way back after a dropped session.
+
+The core's answer stays (it guards against writing over files it did
+not make). The controller now words the question for what is there:
+when a download's local target is missing but its '.download' or
+'.digest' is present (DownloadPaths.partlyDownloaded, links not
+followed), the dialog says "다시 받기" / "받다 만 파일이 있습니다. 처음부터
+다시 받을까요?" with a plain "처음부터 받기" button instead of the danger
+"덮어쓰기". The answers do the same as before: the button starts the file
+over, 건너뛰기 or 취소 leave it ('건너뜀'), and "모든 충돌에 대해 이렇게 하세요" is
+remembered as before. A desktop resume of a paused job still continues
+without a question (the core confirms it itself). Uploads and web are
+unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_session_look.dart     |  5 +++
+ flutter/lib/models/file_model.dart           | 35 ++++++++++++++------
+ flutter/lib/utils/download_paths.dart        |  9 +++++
+ flutter/test/download_paths_test.dart        | 18 ++++++++++
+ flutter/test/hjviewer_session_look_test.dart |  8 +++++
+ 5 files changed, 65 insertions(+), 10 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_session_look.dart b/flutter/lib/common/hjv_session_look.dart
+index 96610a6..bccfc1a 100644
+--- a/flutter/lib/common/hjv_session_look.dart
++++ b/flutter/lib/common/hjv_session_look.dart
+@@ -158,6 +158,11 @@ class HjvFileTexts {
+   String get overwriteAsk =>
+       _t('이 파일이 이미 있습니다. 덮어쓸까요?', 'This file already exists. Overwrite it?');
+   String get overwrite => _t('덮어쓰기', 'Overwrite');
++  // the question when only an interrupted download's files are there (1.9.3)
++  String get restartTitle => _t('다시 받기', 'Download again');
++  String get restartAsk => _t('받다 만 파일이 있습니다. 처음부터 다시 받을까요?',
++      'A download of this file was cut off. Start it over?');
++  String get restart => _t('처음부터 받기', 'Start over');
+   // the phone's sheet while a job moves data
+   String get sending => _t('보내는 중', 'Sending');
+   String get receiving => _t('받는 중', 'Receiving');
+diff --git a/flutter/lib/models/file_model.dart b/flutter/lib/models/file_model.dart
+index 8a5b984..e8df16c 100644
+--- a/flutter/lib/models/file_model.dart
++++ b/flutter/lib/models/file_model.dart
+@@ -175,10 +175,18 @@ class FileModel {
+     // If `skip == true`, it means to skip this file without showing dialog.
+     // Because `resp` may be null after the user operation or the last remembered operation,
+     // and we should distinguish them.
++    // HJViewer (1.9.3): the core also asks when only an interrupted download's files are there
++    final readPath = "${evt['read_path']}";
++    final restart = overrideConfirm == null &&
++        !skip &&
++        !isWeb &&
++        evt['is_upload'] == "false" &&
++        DownloadPaths.partlyDownloaded(readPath);
+     final resp = overrideConfirm ??
+         (!skip
+-            ? await showFileConfirmDialog(translate("Overwrite"),
+-                "${evt['read_path']}", true, evt['is_identical'] == "true")
++            ? await showFileConfirmDialog(translate("Overwrite"), readPath,
++                true, evt['is_identical'] == "true",
++                restart: restart)
+             : null);
+     if (!jobController.hasTransferConflictJob(id)) {
+       debugPrint("Ignore override confirm result for inactive job: $evt");
+@@ -217,7 +225,8 @@ class FileModel {
+   bool fileConfirmCheckboxRemember = false;
+ 
+   Future<bool?> showFileConfirmDialog(
+-      String title, String content, bool showCheckbox, bool isIdentical) async {
++      String title, String content, bool showCheckbox, bool isIdentical,
++      {bool restart = false}) async {
+     fileConfirmCheckboxRemember = false;
+     return await parent.target?.dialogManager.show<bool?>(
+         (setState, Function(bool? v) close, context) {
+@@ -226,9 +235,12 @@ class FileModel {
+       // HJViewer (U15): an identical file is no danger to overwrite
+       final t = HjvFileTexts(translate('Cancel') == '취소');
+       return CustomAlertDialog(
+-        title: isIdentical
+-            ? Text(title)
+-            : HjvDialogTitle(Icons.warning_amber_rounded, title, danger: true),
++        title: restart
++            ? Text(t.restartTitle)
++            : isIdentical
++                ? Text(title)
++                : HjvDialogTitle(Icons.warning_amber_rounded, title,
++                    danger: true),
+         contentBoxConstraints: BoxConstraints(
+             minHeight: 100,
+             minWidth: HjvDialogWidth.md,
+@@ -237,7 +249,7 @@ class FileModel {
+             crossAxisAlignment: CrossAxisAlignment.start,
+             mainAxisSize: MainAxisSize.min,
+             children: [
+-              Text(t.overwriteAsk,
++              Text(restart ? t.restartAsk : t.overwriteAsk,
+                   style: TextStyle(
+                       fontWeight: FontWeight.w600,
+                       color: HjvPalette.of(context).text)),
+@@ -292,9 +304,12 @@ class FileModel {
+             onPressed: () => close(null),
+             isOutline: true,
+           ),
+-          isIdentical
+-              ? hjvButton(t.overwrite, submit)
+-              : hjvDangerButton(t.overwrite, submit),
++          // HJViewer (1.9.3): nor is starting over a download that was cut off
++          restart
++              ? hjvButton(t.restart, submit)
++              : isIdentical
++                  ? hjvButton(t.overwrite, submit)
++                  : hjvDangerButton(t.overwrite, submit),
+         ],
+         onSubmit: submit,
+         onCancel: cancel,
+diff --git a/flutter/lib/utils/download_paths.dart b/flutter/lib/utils/download_paths.dart
+index ee641e0..bb05288 100644
+--- a/flutter/lib/utils/download_paths.dart
++++ b/flutter/lib/utils/download_paths.dart
+@@ -38,6 +38,15 @@ class DownloadPaths {
+   static bool isWindowsDeviceName(String name) => _windowsDevice
+       .hasMatch(name.split('.').first.replaceFirst(RegExp(r' +$'), ''));
+ 
++  /// Whether a download's local target is missing but an interrupted download of it left its
++  /// '.download' or '.digest' file: the core then asks before it starts that file over.
++  static bool partlyDownloaded(String target) =>
++      FileSystemEntity.typeSync(target, followLinks: false) ==
++          FileSystemEntityType.notFound &&
++      ['download', 'digest'].any((suffix) =>
++          FileSystemEntity.typeSync('$target.$suffix', followLinks: false) !=
++          FileSystemEntityType.notFound);
++
+   static String mapDirectory(
+       String remoteRoot, String remotePath, String localRoot,
+       {required bool remoteWindows, required bool localWindows}) {
+diff --git a/flutter/test/download_paths_test.dart b/flutter/test/download_paths_test.dart
+index 0010a5a..0e3fe68 100644
+--- a/flutter/test/download_paths_test.dart
++++ b/flutter/test/download_paths_test.dart
+@@ -1,5 +1,8 @@
++import 'dart:io';
++
+ import 'package:flutter_hbb/utils/download_paths.dart';
+ import 'package:flutter_test/flutter_test.dart';
++import 'package:path/path.dart' as path;
+ 
+ // Pure: needs no bridge (download_path_test.dart, which drives the file model, needs the real one).
+ void main() {
+@@ -29,4 +32,19 @@ void main() {
+             remoteWindows: true, localWindows: true),
+         throwsFormatException);
+   });
++
++  test('only a download cut off with the target missing is partly downloaded',
++      () {
++    final dir = Directory.systemTemp.createTempSync('hjv-partly');
++    addTearDown(() => dir.deleteSync(recursive: true));
++    final target = path.join(dir.path, 'report.pdf');
++    expect(DownloadPaths.partlyDownloaded(target), isFalse);
++    File('$target.digest').writeAsStringSync('{}');
++    expect(DownloadPaths.partlyDownloaded(target), isTrue);
++    File('$target.digest').deleteSync();
++    File('$target.download').writeAsStringSync('part');
++    expect(DownloadPaths.partlyDownloaded(target), isTrue);
++    File(target).writeAsStringSync('whole');
++    expect(DownloadPaths.partlyDownloaded(target), isFalse);
++  });
+ }
+diff --git a/flutter/test/hjviewer_session_look_test.dart b/flutter/test/hjviewer_session_look_test.dart
+index f509da7..3fe6886 100644
+--- a/flutter/test/hjviewer_session_look_test.dart
++++ b/flutter/test/hjviewer_session_look_test.dart
+@@ -196,4 +196,12 @@ void main() {
+       expect(en.refused(err), '', reason: err);
+     }
+   });
++
++  test('a cut-off download asks to start over, not to overwrite (1.9.3)', () {
++    const ko = HjvFileTexts(true), en = HjvFileTexts(false);
++    expect((ko.restartTitle, ko.restartAsk, ko.restart),
++        ('다시 받기', '받다 만 파일이 있습니다. 처음부터 다시 받을까요?', '처음부터 받기'));
++    expect((en.restartTitle, en.restart), ('Download again', 'Start over'));
++    expect(ko.restartAsk, isNot(ko.overwriteAsk));
++  });
+ }

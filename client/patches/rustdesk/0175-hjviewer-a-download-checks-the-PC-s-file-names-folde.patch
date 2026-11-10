@@ -1,0 +1,1525 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:09:08 +0900
+Subject: [PATCH 175/182] hjviewer: a download checks the PC's file names,
+ folders and the overwrite answer on this device
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The controller trusted what the PC sent during a download. A modified PC
+could list a file under a name such as "..\x" or an absolute path, name
+an "empty folder" outside the folder being fetched, or send a file's
+blocks after the question "overwrite?" was answered with no or not asked
+at all, and the controller wrote where the PC said: outside the folder
+the user chose, or over an existing file. The controller now checks all
+of it itself: the names of a remote folder listing by the PC's naming
+rules, the name being downloaded before anything is sent, every
+empty-folder path against the chosen folder (and no link on the way),
+the destination and its .download/.digest staging names for links, and
+it writes over an existing file or a stale staging file only for the
+file the user (or the remembered answer) approved. A refused download
+ends as an error instead of being printed to the log. Uploads to the PC
+and the PC's own code do not change.
+
+Backported from rustdesk/rustdesk b44b71cfabe9898d5eada9b07cb583fe995ed45e (Fix/download path validation (#16601))
+Against upstream's diff:
+- file_model.dart: the import hunk added by hand (our import list
+  differs); the other hunks as upstream.
+- native_model.dart: PlatformFFI.setBindingForTesting, the two-line test
+  hook upstream's Flutter test needs. Upstream added it with its keyboard
+  shortcuts feature (074006386), which we do not have; nothing else of
+  that commit is taken.
+- Korean texts. Upstream's new errors are English and neither upstream's
+  nor our file screens showed a job's error text, only "오류". Our screens
+  now say why this device refused a transfer: HjvFileTexts.refused maps
+  the errors to a few words ("저장할 수 없는 파일 이름", "폴더 경로가
+  올바르지 않음", "받는 폴더에 링크가 있음", "같은 이름의 파일이 이미
+  있음", "이어받을 파일이 맞지 않음", "원격에서 파일 목록을 바꿈"; English
+  where the app is English), the desktop job card shows them after "오류"
+  and the phone's sheet under "오류!". The sheet's texts now take the
+  width its buttons leave and end in an ellipsis. Any other error stays
+  the bare word as before.
+- Tests: upstream's Rust tests unchanged; upstream's Flutter test also
+  checks the Korean reason of each refusal and that the phone's sheet
+  fits it at 320 px and 130 % text; hjviewer_session_look_test.dart
+  holds the mapping.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_session_look.dart      |  46 +++
+ .../lib/desktop/pages/file_manager_page.dart  |   5 +-
+ .../lib/mobile/pages/file_manager_page.dart   |  48 ++-
+ flutter/lib/models/file_model.dart            |  55 +++
+ flutter/lib/models/native_model.dart          |   3 +
+ flutter/lib/utils/download_paths.dart         |  52 +++
+ flutter/test/download_path_test.dart          | 210 +++++++++++
+ flutter/test/hjviewer_session_look_test.dart  |  47 +++
+ libs/base/src/fs.rs                           |  38 +-
+ libs/base/src/fs/download.rs                  | 331 ++++++++++++++++++
+ libs/base/src/fs/download_tests.rs            | 324 +++++++++++++++++
+ src/client/io_loop.rs                         |  54 ++-
+ 12 files changed, 1180 insertions(+), 33 deletions(-)
+ create mode 100644 flutter/lib/utils/download_paths.dart
+ create mode 100644 flutter/test/download_path_test.dart
+ create mode 100644 libs/base/src/fs/download.rs
+ create mode 100644 libs/base/src/fs/download_tests.rs
+
+diff --git a/flutter/lib/common/hjv_session_look.dart b/flutter/lib/common/hjv_session_look.dart
+index 3fbf709..96610a6 100644
+--- a/flutter/lib/common/hjv_session_look.dart
++++ b/flutter/lib/common/hjv_session_look.dart
+@@ -108,6 +108,52 @@ class HjvFileTexts {
+   String get paused => _t('일시 중지됨', 'Paused');
+   String get canceled => _t('취소됨', 'Canceled');
+   String get skipped => _t('건너뜀', 'Skipped');
++
++  /// Why a transfer was refused (1.9.3: a download's file names, folders, links and overwrite
++  /// are checked on this device), in a few words beside '오류'; '' for any other error, which
++  /// stays the bare word. `err` is the job's error as the core or file_model.dart worded it.
++  String refused(String err) {
++    final e = err.toLowerCase();
++    // the messages that end in a name from the other side come first, by their start
++    if (e.startsWith('invalid file name') ||
++        e.startsWith('invalid download file name') ||
++        e.startsWith('invalid windows download file name')) {
++      return _t('저장할 수 없는 파일 이름', 'File name cannot be saved here');
++    }
++    if (e.startsWith('download directory contains a link')) {
++      return _t('받는 폴더에 링크가 있음', 'Destination holds a link');
++    }
++    if (e.startsWith('invalid download directory') ||
++        e.startsWith('failed to validate path component')) {
++      return _t('폴더 경로가 올바르지 않음', 'Folder path is not valid');
++    }
++    if (e == 'download overwrite requires confirmation') {
++      return _t('같은 이름의 파일이 이미 있음', 'A file of this name exists');
++    }
++    if (e == 'symlink path component is not allowed' ||
++        e == 'hard-linked download resume staging file is not allowed') {
++      return _t('받는 폴더에 링크가 있음', 'Destination holds a link');
++    }
++    if (e.startsWith('download resume')) {
++      return _t('이어받을 파일이 맞지 않음', 'Resume file does not match');
++    }
++    if (e == 'cannot replace an accepted download file list') {
++      return _t('원격에서 파일 목록을 바꿈', 'The remote changed the file list');
++    }
++    if (e == 'file name contains null bytes' ||
++        e == 'path traversal detected in file name' ||
++        e == 'absolute path detected in file name' ||
++        e == 'empty file name in multi-file transfer' ||
++        e == 'invalid file name component') {
++      return _t('저장할 수 없는 파일 이름', 'File name cannot be saved here');
++    }
++    if (e == 'download destination has no parent' ||
++        e == 'invalid download destination' ||
++        e == 'download file has no parent') {
++      return _t('폴더 경로가 올바르지 않음', 'Folder path is not valid');
++    }
++    return '';
++  }
+   // the overwrite question and its action
+   String get overwriteAsk =>
+       _t('이 파일이 이미 있습니다. 덮어쓸까요?', 'This file already exists. Overwrite it?');
+diff --git a/flutter/lib/desktop/pages/file_manager_page.dart b/flutter/lib/desktop/pages/file_manager_page.dart
+index 1412f93..0105b05 100644
+--- a/flutter/lib/desktop/pages/file_manager_page.dart
++++ b/flutter/lib/desktop/pages/file_manager_page.dart
+@@ -1694,7 +1694,10 @@ String _hjvJobStatus(JobProgress job) {
+     JobState.done when job.err == 'cancel' => t.canceled,
+     JobState.done when job.err == 'skipped' => t.skipped,
+     JobState.done => t.done,
+-    JobState.error => t.error,
++    // 1.9.3: why this app refused a download, beside the word
++    JobState.error => [t.error, t.refused(job.err)]
++        .where((s) => s.isNotEmpty)
++        .join(' · '),
+     JobState.paused => t.paused,
+     _ => '',
+   };
+diff --git a/flutter/lib/mobile/pages/file_manager_page.dart b/flutter/lib/mobile/pages/file_manager_page.dart
+index 470a1e4..1e70590 100644
+--- a/flutter/lib/mobile/pages/file_manager_page.dart
++++ b/flutter/lib/mobile/pages/file_manager_page.dart
+@@ -661,7 +661,8 @@ class _FileManagerPageState extends State<FileManagerPage> {
+             leading: Icon(Icons.error_outline_rounded,
+                 color: HjvPalette.of(context).danger),
+             title: "${translate("Error")}!",
+-            text: "",
++            // HJViewer (1.9.3): why this app refused a download
++            text: t.refused(activeJob.err),
+             onCanceled: () => jobTable.clear(),
+           );
+         case JobState.none:
+@@ -1036,23 +1037,34 @@ class BottomSheetBody extends StatelessWidget {
+                   child: Row(
+                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                     children: [
+-                      Row(
+-                        children: [
+-                          leading,
+-                          SizedBox(width: 16),
+-                          Column(
+-                            mainAxisAlignment: MainAxisAlignment.center,
+-                            crossAxisAlignment: CrossAxisAlignment.start,
+-                            children: [
+-                              Text(title,
+-                                  style: HjvText.titleSmall
+-                                      .copyWith(color: p.text)),
+-                              Text(text,
+-                                  style: TextStyle(
+-                                      fontSize: 13, color: p.textSecondary))
+-                            ],
+-                          )
+-                        ],
++                      // HJViewer (1.9.3): the texts take the width the buttons leave and a
++                      // long one ends in an ellipsis instead of running under them
++                      Expanded(
++                        child: Row(
++                          children: [
++                            leading,
++                            SizedBox(width: 16),
++                            Expanded(
++                              child: Column(
++                                mainAxisAlignment: MainAxisAlignment.center,
++                                crossAxisAlignment: CrossAxisAlignment.start,
++                                children: [
++                                  Text(title,
++                                      maxLines: 1,
++                                      overflow: TextOverflow.ellipsis,
++                                      style: HjvText.titleSmall
++                                          .copyWith(color: p.text)),
++                                  Text(text,
++                                      maxLines: 1,
++                                      overflow: TextOverflow.ellipsis,
++                                      style: TextStyle(
++                                          fontSize: 13,
++                                          color: p.textSecondary))
++                                ],
++                              ),
++                            )
++                          ],
++                        ),
+                       ),
+                       Row(children: () {
+                         _actions.add(IconButton(
+diff --git a/flutter/lib/models/file_model.dart b/flutter/lib/models/file_model.dart
+index aeeb410..8a5b984 100644
+--- a/flutter/lib/models/file_model.dart
++++ b/flutter/lib/models/file_model.dart
+@@ -6,6 +6,7 @@ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_session_look.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
++import 'package:flutter_hbb/utils/download_paths.dart';
+ import 'package:flutter_hbb/utils/event_loop.dart';
+ import 'package:get/get.dart';
+ import 'package:path/path.dart' as path;
+@@ -637,6 +638,17 @@ class FileController {
+     final transferJobIds = <int>[];
+     for (var from in items.items) {
+       final jobID = jobController.addTransferJob(from, isRemoteToLocal);
++      // Keep this check before PathUtil.join: Rust does not receive the selected
++      // root separately, and Web transfers bypass Rust validation.
++      if (isRemoteToLocal &&
++          !DownloadPaths.validName(from.name, windows: isWindows)) {
++        jobController.jobError({
++          'id': '$jobID',
++          'file_num': '0',
++          'err': 'Invalid file name: ${from.name}',
++        });
++        continue;
++      }
+       transferJobs.add((from, jobID));
+       transferJobIds.add(jobID);
+     }
+@@ -661,6 +673,15 @@ class FileController {
+       return;
+     }
+ 
++    if (isRemoteToLocal) {
++      for (final (entry, jobID) in transferJobs) {
++        if (entry.isDirectory) {
++          await _downloadEmptyDirectories(entry, jobID, otherSideData);
++        }
++      }
++      return;
++    }
++
+     final List<Entry> entrys = items.items.toList();
+     var isRemote = isLocal == true ? true : false;
+ 
+@@ -693,6 +714,35 @@ class FileController {
+     });
+   }
+ 
++  Future<void> _downloadEmptyDirectories(
++      Entry entry, int jobID, DirectoryData destination) async {
++    try {
++      final emptyDirs = await fileFetcher.readEmptyDirs(
++          entry.path, false, destination.options.showHidden);
++      final localRoot = PathUtil.join(destination.directory.path, entry.name,
++          destination.options.isWindows);
++      final paths = emptyDirs
++          .map((dir) => DownloadPaths.mapDirectory(
++              entry.path, dir.path, localRoot,
++              remoteWindows: options.value.isWindows,
++              localWindows: destination.options.isWindows))
++          .toList();
++      for (final path in paths) {
++        await DownloadPaths.ensureNoLinks(destination.directory.path, path);
++      }
++      for (final path in paths) {
++        await createDirWithRemote(path, false);
++      }
++    } on FormatException catch (err) {
++      await bind.sessionCancelJob(sessionId: sessionId, actId: jobID);
++      jobController.jobError({
++        'id': '$jobID',
++        'file_num': '0',
++        'err': err.message,
++      });
++    }
++  }
++
+   bool _removeCheckboxRemember = false;
+ 
+   Future<void> removeAction(SelectedItems items) async {
+@@ -1130,6 +1180,11 @@ class JobController {
+       return true;
+     }
+     final job = jobTable[jobIndex];
++    if (job.type == JobType.transfer &&
++        job.isRemoteToLocal &&
++        job.state == JobState.error) {
++      return true;
++    }
+     job.recvJobRes = true;
+     if (job.type == JobType.deleteFile) {
+       job.state = JobState.done;
+diff --git a/flutter/lib/models/native_model.dart b/flutter/lib/models/native_model.dart
+index d56d58f..a5307fb 100644
+--- a/flutter/lib/models/native_model.dart
++++ b/flutter/lib/models/native_model.dart
+@@ -59,6 +59,9 @@ class PlatformFFI {
+   final _toAndroidChannel = const MethodChannel('mChannel');
+ 
+   RustdeskImpl get ffiBind => _ffiBind;
++  @visibleForTesting
++  void setBindingForTesting(RustdeskImpl binding) => _ffiBind = binding;
++
+   F3? _session_get_rgba;
+ 
+   static get localeName => Platform.localeName;
+diff --git a/flutter/lib/utils/download_paths.dart b/flutter/lib/utils/download_paths.dart
+new file mode 100644
+index 0000000..54d9fe6
+--- /dev/null
++++ b/flutter/lib/utils/download_paths.dart
+@@ -0,0 +1,52 @@
++import 'dart:io';
++
++import 'package:path/path.dart' as path;
++
++class DownloadPaths {
++  static Future<void> ensureNoLinks(String root, String destination) async {
++    if (!path.isWithin(root, destination)) {
++      throw FormatException('Invalid download directory: $destination');
++    }
++    var current = root;
++    for (final name in path.split(path.relative(destination, from: root))) {
++      current = path.join(current, name);
++      if (await FileSystemEntity.type(current, followLinks: false) ==
++          FileSystemEntityType.link) {
++        throw FormatException('Download directory contains a link: $current');
++      }
++    }
++  }
++
++  static bool validName(String name, {required bool windows}) {
++    if (name.isEmpty || name == '.' || name == '..' || name.contains('\x00')) {
++      return false;
++    }
++    if (name.contains('/')) return false;
++    return !windows ||
++        (!name.contains(RegExp(r'[<>:"\\|?*]')) &&
++            !name.endsWith('.') &&
++            !name.endsWith(' '));
++  }
++
++  static String mapDirectory(
++      String remoteRoot, String remotePath, String localRoot,
++      {required bool remoteWindows, required bool localWindows}) {
++    final remote = path.Context(
++        style: remoteWindows ? path.Style.windows : path.Style.posix);
++    final local = path.Context(
++        style: localWindows ? path.Style.windows : path.Style.posix);
++    if (remotePath.contains('\x00') ||
++        remote.split(remotePath).contains('..') ||
++        (!remote.equals(remoteRoot, remotePath) &&
++            !remote.isWithin(remoteRoot, remotePath))) {
++      throw FormatException('Invalid download directory: $remotePath');
++    }
++    final relative = remote.relative(remotePath, from: remoteRoot);
++    if (relative == '.') return localRoot;
++    final names = remote.split(relative);
++    if (names.any((name) => !validName(name, windows: localWindows))) {
++      throw FormatException('Invalid download directory: $remotePath');
++    }
++    return local.joinAll([localRoot, ...names]);
++  }
++}
+diff --git a/flutter/test/download_path_test.dart b/flutter/test/download_path_test.dart
+new file mode 100644
+index 0000000..ec42027
+--- /dev/null
++++ b/flutter/test/download_path_test.dart
+@@ -0,0 +1,210 @@
++import 'dart:io';
++
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_session_look.dart';
++import 'package:flutter_hbb/generated_bridge.dart';
++import 'package:flutter_hbb/mobile/pages/file_manager_page.dart';
++import 'package:flutter_hbb/models/file_model.dart';
++import 'package:flutter_hbb/models/model.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:uuid/uuid.dart';
++
++final _sessionId = UuidValue('00000000-0000-4000-8000-000000000001');
++
++class _Binding extends Fake implements RustdeskImpl {
++  final sent = <String>[];
++  final created = <String>[];
++  int nextId = 0;
++
++  @override
++  String mainGetCommonSync({required String key, dynamic hint}) =>
++      '${++nextId}';
++
++  @override
++  int versionToNumber({required String v, dynamic hint}) =>
++      v == '1.3.3' ? 1 : 2;
++
++  @override
++  Future<void> sessionSendFiles({
++    required UuidValue sessionId,
++    required int actId,
++    required String path,
++    required String to,
++    required int fileNum,
++    required bool includeHidden,
++    required bool isRemote,
++    required bool isDir,
++    dynamic hint,
++  }) async {
++    expect(isRemote, isTrue);
++    sent.add(to);
++  }
++
++  @override
++  Future<void> sessionCreateDir({
++    required UuidValue sessionId,
++    required int actId,
++    required String path,
++    required bool isRemote,
++    dynamic hint,
++  }) async {
++    expect(isRemote, isFalse);
++    created.add(path);
++  }
++
++  @override
++  Future<void> sessionCancelJob({
++    required UuidValue sessionId,
++    required int actId,
++    dynamic hint,
++  }) async {}
++}
++
++class _Session extends Fake implements FFI {
++  @override
++  final String id = 'download-test';
++  @override
++  UuidValue get sessionId => _sessionId;
++  @override
++  late final ffiModel = FfiModel(WeakReference(this));
++}
++
++class _Fetcher extends FileFetcher {
++  _Fetcher() : super(() => _sessionId);
++  List<String> emptyDirectories = [];
++
++  @override
++  Future<List<FileDirectory>> readEmptyDirs(
++          String path, bool isLocal, bool showHidden) async =>
++      emptyDirectories.map((path) => FileDirectory()..path = path).toList();
++}
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  late _Binding binding;
++  late _Session session;
++  late _Fetcher fetcher;
++  late FileController controller;
++  late DirectoryData destination;
++
++  setUp(() {
++    binding = _Binding();
++    platformFFI.setBindingForTesting(binding);
++    session = _Session();
++    session.ffiModel.pi.version = '1.5.1';
++    fetcher = _Fetcher();
++    destination =
++        DirectoryData(FileDirectory()..path = '/downloads', DirectoryOptions());
++    controller = FileController(
++      isLocal: false,
++      getSessionID: () => _sessionId,
++      rootState: WeakReference(session),
++      jobController: JobController(() => _sessionId, () => null),
++      fileFetcher: fetcher,
++      getOtherSideDirectoryData: () => destination,
++    );
++    controller.directory.value.path = '/remote';
++  });
++
++  tearDown(() => session.ffiModel.dispose());
++
++  // HJViewer: the refused job is an error whose reason the file screens say in Korean
++  void expectRefused(String reason) {
++    final job = controller.jobController.jobTable.last;
++    expect(job.state, JobState.error);
++    expect(const HjvFileTexts(true).refused(job.err), reason, reason: job.err);
++  }
++
++  Future<void> download(String name, {bool directory = false}) async {
++    final entry = Entry()
++      ..name = name
++      ..path = '/remote/$name'
++      ..entryType = directory ? 0 : 4;
++    final items = SelectedItems(isLocal: false)..add(entry);
++    await controller.sendFiles(items, destination);
++  }
++
++  test('downloads refuse peer listing names that escape the local folder',
++      () async {
++    await download('report.txt');
++    expect(binding.sent, ['/downloads/report.txt']);
++    binding.sent.clear();
++    for (final windows in [false, true]) {
++      destination.options.isWindows = windows;
++      destination.directory.path = windows ? r'C:\downloads' : '/downloads';
++      for (final name in [
++        '../outside.txt',
++        '/outside.txt',
++        '.',
++        '..',
++        '',
++        'bad\x00name',
++        if (windows) ...[r'..\outside.txt', r'C:\outside.txt', r'\\host\share'],
++      ]) {
++        await download(name);
++        expect(binding.sent, isEmpty, reason: name);
++        expectRefused('저장할 수 없는 파일 이름');
++      }
++    }
++    await controller.jobController.jobDone({
++      'id': '${controller.jobController.jobTable.last.id}',
++      'file_num': '0',
++    });
++    expect(controller.jobController.jobTable.last.state, JobState.error);
++  });
++
++  test('empty-directory downloads reject paths outside the selected folder',
++      () async {
++    for (final path in ['/remote/other/empty', '/remote/docs/../out']) {
++      fetcher.emptyDirectories = ['/remote/docs/ok', path];
++      await download('docs', directory: true);
++      expect(binding.created, isEmpty, reason: path);
++      expectRefused('폴더 경로가 올바르지 않음');
++    }
++    fetcher.emptyDirectories = ['/remote/docs', '/remote/docs/sub/empty'];
++    await download('docs', directory: true);
++    expect(binding.created, ['/downloads/docs', '/downloads/docs/sub/empty']);
++  });
++
++  test('empty-directory downloads refuse existing local links', () async {
++    final temporary =
++        await Directory.systemTemp.createTemp('rustdesk_download_');
++    addTearDown(() => temporary.delete(recursive: true));
++    final outside = await Directory('${temporary.path}/outside').create();
++    final downloads = await Directory('${temporary.path}/downloads').create();
++    await Link('${downloads.path}/docs').create(outside.path);
++    destination.directory.path = downloads.path;
++    destination.options.isWindows = Platform.isWindows;
++    fetcher.emptyDirectories = ['/remote/docs/empty'];
++    await download('docs', directory: true);
++    expect(binding.created, isEmpty);
++    expectRefused('받는 폴더에 링크가 있음');
++  });
++
++  // HJViewer: the phone's sheet shows the reason; on a narrow phone at the largest text size
++  // (130 %) a long line ends in an ellipsis beside the close button instead of overflowing.
++  testWidgets('the phone sheet fits a refused download\'s reason',
++      (tester) async {
++    tester.view.physicalSize = const Size(320, 640);
++    tester.view.devicePixelRatio = 1;
++    addTearDown(tester.view.reset);
++    const reason = '같은 이름의 파일이 이미 있음';
++    await tester.pumpWidget(MaterialApp(
++        home: MediaQuery(
++            data: const MediaQueryData(
++                size: Size(320, 640), textScaler: TextScaler.linear(1.3)),
++            child: Scaffold(
++                bottomSheet: BottomSheetBody(
++                    leading: const Icon(Icons.error_outline_rounded),
++                    title: '오류!',
++                    text: '$reason · $reason',
++                    onCanceled: () {})))));
++    expect(tester.takeException(), isNull);
++    expect(find.text('오류!'), findsOneWidget);
++    expect(find.text('$reason · $reason'), findsOneWidget);
++    final line = tester.getRect(find.text('$reason · $reason'));
++    final close = tester.getRect(find.byIcon(Icons.cancel_outlined));
++    expect(line.right, lessThanOrEqualTo(close.left));
++  });
++}
+diff --git a/flutter/test/hjviewer_session_look_test.dart b/flutter/test/hjviewer_session_look_test.dart
+index b302619..f509da7 100644
+--- a/flutter/test/hjviewer_session_look_test.dart
++++ b/flutter/test/hjviewer_session_look_test.dart
+@@ -149,4 +149,51 @@ void main() {
+     expect(ko.items(6), '6개 항목');
+     expect(ko.selected(2, remote: true), '원격에서 2개 선택됨');
+   });
++
++  test('a refused download says why in a few words (1.9.3)', () {
++    const ko = HjvFileTexts(true), en = HjvFileTexts(false);
++    // the job errors file_model.dart, utils/download_paths.dart and the core's
++    // libs/base/src/fs.rs and fs/download.rs word, with the names they end in
++    const name = '저장할 수 없는 파일 이름';
++    const folder = '폴더 경로가 올바르지 않음';
++    const link = '받는 폴더에 링크가 있음';
++    final reasons = {
++      'Invalid file name: ../outside.txt': name,
++      'invalid file name in remote directory listing: a/b': name,
++      'invalid download file name: .': name,
++      'invalid Windows download file name: a:b': name,
++      'path traversal detected in file name': name,
++      'absolute path detected in file name': name,
++      'file name contains null bytes': name,
++      'Invalid download directory: /remote/docs/../out': folder,
++      'invalid download destination': folder,
++      'Download directory contains a link: /downloads/docs': link,
++      'symlink path component is not allowed': link,
++      'hard-linked download resume staging file is not allowed': link,
++      'download overwrite requires confirmation': '같은 이름의 파일이 이미 있음',
++      'download resume offset does not match staging file size':
++          '이어받을 파일이 맞지 않음',
++      'cannot replace an accepted download file list': '원격에서 파일 목록을 바꿈',
++    };
++    reasons.forEach((err, reason) {
++      expect(ko.refused(err), reason, reason: err);
++      expect(en.refused(err), isNot(anyOf('', reason)), reason: err);
++    });
++    // a name from the other side cannot choose the words
++    expect(
++        ko.refused(
++            'Invalid file name: download overwrite requires confirmation'),
++        name);
++    // any other error stays the bare word, as before
++    for (final err in [
++      '',
++      'cancel',
++      'skipped',
++      'Permission denied (os error 13)',
++      'Wrong id'
++    ]) {
++      expect(ko.refused(err), '', reason: err);
++      expect(en.refused(err), '', reason: err);
++    }
++  });
+ }
+diff --git a/libs/base/src/fs.rs b/libs/base/src/fs.rs
+index 1adb590..0089118 100644
+--- a/libs/base/src/fs.rs
++++ b/libs/base/src/fs.rs
+@@ -27,6 +27,12 @@ use hbb_common::{
+ 
+ static NEXT_JOB_ID: AtomicI32 = AtomicI32::new(1);
+ 
++pub mod download;
++
++#[cfg(test)]
++#[path = "fs/download_tests.rs"]
++mod download_tests;
++
+ pub fn get_next_job_id() -> i32 {
+     NEXT_JOB_ID.fetch_add(1, Ordering::SeqCst)
+ }
+@@ -417,6 +423,8 @@ pub struct TransferJob {
+     default_overwrite_strategy: Option<bool>,
+     #[serde(skip_serializing)]
+     digest: FileDigest,
++    #[serde(skip)]
++    download: Option<download::DownloadState>,
+ }
+ 
+ #[derive(Debug, Default, Serialize, Deserialize, Clone)]
+@@ -587,6 +595,7 @@ impl TransferJob {
+             files: Vec::new(),
+             total_size: 0,
+             enable_overwrite_detection,
++            download: (is_remote && r#type == JobType::Generic).then(Default::default),
+             ..Default::default()
+         }
+     }
+@@ -648,6 +657,9 @@ impl TransferJob {
+ 
+     #[inline]
+     pub fn set_files(&mut self, files: Vec<FileEntry>) -> ResultType<()> {
++        if self.is_download() && !self.files.is_empty() {
++            bail!("cannot replace an accepted download file list");
++        }
+         validate_transfer_file_names(&files)?;
+         if let DataSource::FilePath(base) = &self.data_source {
+             for file in &files {
+@@ -692,7 +704,12 @@ impl TransferJob {
+ 
+     fn resolve_entry_path(&self, base: &PathBuf, name: &str) -> Option<PathBuf> {
+         if self.r#type == JobType::Generic {
+-            match join_validated_path(base, name) {
++            let result = if self.is_download() {
++                download::validated_target(base, name)
++            } else {
++                join_validated_path(base, name)
++            };
++            match result {
+                 Ok(path) => Some(path),
+                 Err(err) => {
+                     log::error!("Invalid file name in transfer job {}: {}", self.id, err);
+@@ -705,6 +722,12 @@ impl TransferJob {
+     }
+ 
+     pub fn modify_time(&self) {
++        if self.is_download() {
++            if let Err(err) = self.finish_download() {
++                log::error!("Failed to finish download {}: {}", self.id, err);
++            }
++            return;
++        }
+         if self.r#type == JobType::Printer {
+             return;
+         }
+@@ -729,6 +752,9 @@ impl TransferJob {
+     }
+ 
+     pub fn remove_download_file(&self) {
++        if self.is_download() && self.data_stream.is_none() {
++            return;
++        }
+         if self.r#type == JobType::Printer {
+             return;
+         }
+@@ -761,6 +787,9 @@ impl TransferJob {
+     }
+ 
+     pub async fn write(&mut self, block: FileTransferBlock) -> ResultType<()> {
++        if self.is_download() {
++            return self.write_download(block).await;
++        }
+         if block.id != self.id {
+             bail!("Wrong id");
+         }
+@@ -1160,6 +1189,13 @@ impl TransferJob {
+     }
+ 
+     pub async fn confirm(&mut self, r: &FileTransferSendConfirmRequest) -> bool {
++        if self.is_download() {
++            self.confirm_download(r);
++            // Open receiver resume streams in write() so validation errors reach the caller.
++            if matches!(r.union, Some(file_transfer_send_confirm_request::Union::OffsetBlk(offset)) if offset > 0) {
++                return true;
++            }
++        }
+         if self.file_num() != r.file_num {
+             // This branch will always be hit if:
+             // 1. `confirm()` is called in `ui_cm_interface.rs`
+diff --git a/libs/base/src/fs/download.rs b/libs/base/src/fs/download.rs
+new file mode 100644
+index 0000000..61bad48
+--- /dev/null
++++ b/libs/base/src/fs/download.rs
+@@ -0,0 +1,331 @@
++use super::{
++    get_string, is_write_need_confirmation, join_validated_path, validate_file_name_no_traversal,
++    validate_no_symlink_components, DataSource, DataStream, DigestCheckResult, TransferJob,
++};
++use crate::message_proto::{
++    file_transfer_send_confirm_request, FileEntry, FileTransferBlock, FileTransferDigest,
++    FileTransferSendConfirmRequest, FileType,
++};
++use hbb_common::{anyhow::anyhow, bail, compress::decompress, ResultType};
++use std::{
++    borrow::Cow,
++    io::ErrorKind,
++    path::{Path, PathBuf},
++};
++use tokio::{
++    fs::{self, OpenOptions},
++    io::{AsyncSeekExt, AsyncWriteExt},
++};
++
++const SINGLE_LINK_COUNT: u64 = 1;
++
++#[derive(Default, Debug)]
++pub(super) struct DownloadState {
++    pub(super) confirmation: Option<(i32, u32)>,
++}
++
++pub fn validate_listing(entries: &[FileEntry], peer_windows: bool) -> ResultType<()> {
++    for entry in entries {
++        let name = &entry.name;
++        if entry.entry_type.enum_value() == Ok(FileType::DirDrive)
++            && matches!(name.as_bytes(), [drive, b':'] if drive.is_ascii_alphabetic())
++        {
++            continue;
++        }
++        if name.is_empty()
++            || name == "."
++            || name == ".."
++            || name.contains('\0')
++            || name.contains('/')
++            || (peer_windows
++                && (name.contains('\\')
++                    || matches!(name.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic())))
++        {
++            bail!("invalid file name in remote directory listing: {name}");
++        }
++    }
++    Ok(())
++}
++
++pub fn validate_download_name(path: &str, peer_windows: bool) -> ResultType<()> {
++    let separator = |c| c == '/' || (peer_windows && c == '\\');
++    let path = path.trim_end_matches(separator);
++    validate_component(path.rsplit(separator).next().unwrap_or(""))
++}
++
++fn validate_component(name: &str) -> ResultType<()> {
++    validate_file_name_no_traversal(name)?;
++    if name.is_empty() || name == "." || name.contains('/') {
++        bail!("invalid download file name: {name}");
++    }
++    #[cfg(windows)]
++    if name.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
++        || name.ends_with('.')
++        || name.ends_with(' ')
++    {
++        bail!("invalid Windows download file name: {name}");
++    }
++    Ok(())
++}
++
++pub(super) fn validated_target(base: &PathBuf, name: &str) -> ResultType<PathBuf> {
++    let parent = base
++        .parent()
++        .ok_or_else(|| anyhow!("download destination has no parent"))?;
++    let leaf = base
++        .file_name()
++        .and_then(|name| name.to_str())
++        .ok_or_else(|| anyhow!("invalid download destination"))?;
++    validate_component(leaf)?;
++    #[cfg(windows)]
++    for component in name.split(['/', '\\']).filter(|part| !part.is_empty()) {
++        validate_component(component)?;
++    }
++    validate_no_symlink_components(&parent.to_path_buf(), leaf)?;
++    let target = join_validated_path(base, name)?;
++    let parent = target
++        .parent()
++        .ok_or_else(|| anyhow!("download file has no parent"))?;
++    let leaf = target
++        .file_name()
++        .and_then(|name| name.to_str())
++        .ok_or_else(|| anyhow!("invalid download file name"))?;
++    for suffix in ["download", "digest"] {
++        validate_no_symlink_components(&parent.to_path_buf(), &format!("{leaf}.{suffix}"))?;
++    }
++    Ok(target)
++}
++
++fn remove_if_exists(path: &Path) -> ResultType<()> {
++    match std::fs::remove_file(path) {
++        Ok(()) => Ok(()),
++        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
++        Err(err) => Err(err.into()),
++    }
++}
++
++async fn remove_if_exists_async(path: &Path) -> ResultType<()> {
++    match fs::remove_file(path).await {
++        Ok(()) => Ok(()),
++        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
++        Err(err) => Err(err.into()),
++    }
++}
++
++async fn validate_resume_file(file: &tokio::fs::File) -> ResultType<()> {
++    let metadata = file.metadata().await?;
++    if !metadata.is_file() {
++        bail!("download resume staging path is not a regular file");
++    }
++    #[cfg(unix)]
++    let links = std::os::unix::fs::MetadataExt::nlink(&metadata);
++    #[cfg(windows)]
++    let links = {
++        use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
++        use winapi::{
++            shared::minwindef::FALSE,
++            um::fileapi::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
++        };
++        let file = file.try_clone().await?;
++        tokio::task::spawn_blocking(move || -> ResultType<u64> {
++            let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
++            if unsafe {
++                GetFileInformationByHandle(file.as_raw_handle() as _, information.as_mut_ptr())
++            } == FALSE
++            {
++                return Err(std::io::Error::last_os_error().into());
++            }
++            Ok(u64::from(
++                unsafe { information.assume_init() }.nNumberOfLinks,
++            ))
++        })
++        .await??
++    };
++    if links != SINGLE_LINK_COUNT {
++        bail!("hard-linked download resume staging file is not allowed");
++    }
++    Ok(())
++}
++
++impl TransferJob {
++    pub(super) fn is_download(&self) -> bool {
++        self.download.is_some()
++    }
++
++    pub fn download_target(&self, file_num: i32) -> ResultType<PathBuf> {
++        let entry = self
++            .files
++            .get(file_num as usize)
++            .ok_or_else(|| anyhow!("Wrong file number"))?;
++        let DataSource::FilePath(base) = &self.data_source else {
++            bail!("download destination is not a file path");
++        };
++        validated_target(base, &entry.name)
++    }
++
++    pub fn download_digest(
++        &mut self,
++        can_resume: bool,
++        digest: &FileTransferDigest,
++    ) -> ResultType<DigestCheckResult> {
++        if self.file_num != digest.file_num && self.data_stream.is_some() {
++            let result = self.finish_download();
++            self.data_stream.take();
++            result?;
++        }
++        let target = self.download_target(digest.file_num)?;
++        let resume = can_resume && self.is_resume && !target.try_exists()?;
++        let result = is_write_need_confirmation(resume, &get_string(&target), digest)?;
++        if matches!(result, DigestCheckResult::NoSuchFile)
++            && (Path::new(&format!("{}.download", target.display())).try_exists()?
++                || Path::new(&format!("{}.digest", target.display())).try_exists()?)
++        {
++            return Ok(DigestCheckResult::NeedConfirm(FileTransferDigest {
++                id: digest.id,
++                file_num: digest.file_num,
++                ..Default::default()
++            }));
++        }
++        Ok(result)
++    }
++
++    pub(super) fn confirm_download(&mut self, request: &FileTransferSendConfirmRequest) {
++        if request.id != self.id {
++            return;
++        }
++        let Some(download) = self.download.as_mut() else {
++            return;
++        };
++        download.confirmation = self.files.get(request.file_num as usize).and_then(|_| {
++            let offset = match request.union {
++                Some(file_transfer_send_confirm_request::Union::OffsetBlk(offset)) => offset,
++                Some(file_transfer_send_confirm_request::Union::Skip(false)) => 0,
++                _ => return None,
++            };
++            Some((request.file_num, offset))
++        });
++    }
++
++    fn download_confirmation_offset(&self, file_num: i32) -> Option<u32> {
++        let (confirmed, offset) = self.download.as_ref()?.confirmation.as_ref()?;
++        (*confirmed == file_num).then_some(*offset)
++    }
++
++    async fn start_download_file(&mut self, file_num: i32) -> ResultType<()> {
++        let result = self.finish_download();
++        self.data_stream.take();
++        result?;
++        let target = self.download_target(file_num)?;
++        let staging = PathBuf::from(format!("{}.download", target.display()));
++        let digest = PathBuf::from(format!("{}.digest", target.display()));
++        let confirmation = self.download_confirmation_offset(file_num);
++        if (fs::try_exists(&target).await?
++            || fs::try_exists(&staging).await?
++            || fs::try_exists(&digest).await?)
++            && confirmation.is_none()
++        {
++            bail!("download overwrite requires confirmation");
++        }
++        if let Some(offset) = confirmation.filter(|offset| *offset > 0) {
++            return self.resume_download(file_num, offset).await;
++        }
++        if let Some(parent) = target.parent() {
++            fs::create_dir_all(parent).await?;
++        }
++        remove_if_exists_async(&staging).await?;
++        let file = OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&staging)
++            .await?;
++        self.file_num = file_num;
++        self.data_stream = Some(DataStream::FileStream(file));
++        remove_if_exists_async(&digest).await?;
++        let mut metadata = OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&digest)
++            .await?;
++        metadata
++            .write_all(serde_json::to_string(&self.digest)?.as_bytes())
++            .await?;
++        metadata.flush().await?;
++        Ok(())
++    }
++
++    async fn resume_download(&mut self, file_num: i32, offset: u32) -> ResultType<()> {
++        let target = self.download_target(file_num)?;
++        if fs::try_exists(&target).await? {
++            bail!("download overwrite requires confirmation");
++        }
++        let digest = fs::metadata(format!("{}.digest", target.display())).await?;
++        if !digest.is_file() {
++            bail!("download resume metadata is not a regular file");
++        }
++        let mut file = OpenOptions::new()
++            .write(true)
++            .open(format!("{}.download", target.display()))
++            .await?;
++        validate_resume_file(&file).await?;
++        if file.metadata().await?.len() != u64::from(offset) {
++            bail!("download resume offset does not match staging file size");
++        }
++        file.seek(std::io::SeekFrom::Start(u64::from(offset)))
++            .await?;
++        self.file_num = file_num;
++        self.data_stream = Some(DataStream::FileStream(file));
++        self.transferred += u64::from(offset);
++        self.finished_size += u64::from(offset);
++        Ok(())
++    }
++
++    pub(super) async fn write_download(&mut self, block: FileTransferBlock) -> ResultType<()> {
++        if block.id != self.id {
++            bail!("Wrong id");
++        }
++        if block.file_num as usize >= self.files.len() {
++            bail!("Wrong file number");
++        }
++        if block.file_num != self.file_num || self.data_stream.is_none() {
++            self.start_download_file(block.file_num).await?;
++        }
++        let data = if block.compressed {
++            Cow::Owned(decompress(&block.data))
++        } else {
++            Cow::Borrowed(block.data.as_ref())
++        };
++        let Some(DataStream::FileStream(stream)) = self.data_stream.as_mut() else {
++            bail!("download file stream is missing");
++        };
++        stream.write_all(&data).await?;
++        stream.flush().await?;
++        self.finished_size += data.len() as u64;
++        self.transferred += block.data.len() as u64;
++        Ok(())
++    }
++
++    pub fn finish_download(&self) -> ResultType<()> {
++        if !self.is_download() {
++            self.modify_time();
++            return Ok(());
++        }
++        if self.data_stream.is_none() {
++            return Ok(());
++        }
++        let target = self.download_target(self.file_num)?;
++        if target.try_exists()? && self.download_confirmation_offset(self.file_num) != Some(0) {
++            bail!("download overwrite requires confirmation");
++        }
++        std::fs::rename(format!("{}.download", target.display()), &target)?;
++        remove_if_exists(&PathBuf::from(format!("{}.digest", target.display())))?;
++        let entry = self
++            .files
++            .get(self.file_num as usize)
++            .ok_or_else(|| anyhow!("Wrong file number"))?;
++        filetime::set_file_mtime(
++            &target,
++            filetime::FileTime::from_unix_time(entry.modified_time as _, 0),
++        )?;
++        Ok(())
++    }
++}
+diff --git a/libs/base/src/fs/download_tests.rs b/libs/base/src/fs/download_tests.rs
+new file mode 100644
+index 0000000..3c43ee8
+--- /dev/null
++++ b/libs/base/src/fs/download_tests.rs
+@@ -0,0 +1,324 @@
++use super::*;
++
++struct DownloadDir(PathBuf);
++
++impl DownloadDir {
++    fn new() -> Self {
++        static NEXT_DIRECTORY: AtomicI32 = AtomicI32::new(1);
++        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
++        let nonce = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .unwrap()
++            .as_nanos();
++        let path = std::env::temp_dir().join(format!(
++            "rustdesk_download_{}_{nonce}_{sequence}",
++            std::process::id()
++        ));
++        std::fs::create_dir(&path).unwrap();
++        Self(path)
++    }
++
++    fn job(&self) -> TransferJob {
++        self.job_with_files(vec![FileEntry::default()])
++    }
++
++    fn job_with_files(&self, files: Vec<FileEntry>) -> TransferJob {
++        TransferJob::new_write(
++            1,
++            JobType::Generic,
++            "/remote/file.txt".into(),
++            DataSource::FilePath(self.0.join("file.txt")),
++            0,
++            false,
++            true,
++            true,
++        )
++        .with_files(files)
++        .unwrap()
++    }
++}
++
++impl Drop for DownloadDir {
++    fn drop(&mut self) {
++        std::fs::remove_dir_all(&self.0).unwrap();
++    }
++}
++
++fn block() -> FileTransferBlock {
++    FileTransferBlock {
++        id: 1,
++        file_num: 0,
++        data: b"received".to_vec().into(),
++        ..Default::default()
++    }
++}
++
++fn approval(file_num: i32, offset: u32) -> FileTransferSendConfirmRequest {
++    FileTransferSendConfirmRequest {
++        id: 1,
++        file_num,
++        union: Some(file_transfer_send_confirm_request::Union::OffsetBlk(offset)),
++        ..Default::default()
++    }
++}
++
++#[test]
++fn download_listing_rejects_unsafe_names_and_keeps_drive_rows() {
++    for name in ["../outside", "/outside", ".", "..", "", "dir/file"] {
++        let entry = FileEntry {
++            name: name.into(),
++            ..Default::default()
++        };
++        assert!(
++            download::validate_listing(&[entry], false).is_err(),
++            "{}",
++            name
++        );
++    }
++    let entries = [
++        FileEntry {
++            name: "report.txt".into(),
++            ..Default::default()
++        },
++        FileEntry {
++            name: "report:notes".into(),
++            ..Default::default()
++        },
++        FileEntry {
++            name: "C:".into(),
++            entry_type: FileType::DirDrive.into(),
++            ..Default::default()
++        },
++    ];
++    download::validate_listing(&entries, true).unwrap();
++}
++
++#[tokio::test]
++async fn download_requires_confirmation_to_overwrite() {
++    let dir = DownloadDir::new();
++    let target = dir.0.join("file.txt");
++    std::fs::write(&target, b"original").unwrap();
++    let mut job = dir.job();
++    assert!(job.write(block()).await.is_err());
++    assert_eq!(std::fs::read(&target).unwrap(), b"original");
++    assert!(!dir.0.join("file.txt.download").exists());
++
++    job.confirm(&approval(0, 0)).await;
++    job.write(block()).await.unwrap();
++    assert!(job.set_files(vec![FileEntry::default()]).is_err());
++    job.finish_download().unwrap();
++    assert_eq!(std::fs::read(&target).unwrap(), b"received");
++}
++
++#[tokio::test]
++async fn download_requires_separate_confirmation_for_each_existing_file() {
++    let dir = DownloadDir::new();
++    let mut job = dir.job_with_files(vec![
++        FileEntry {
++            name: "first.txt".into(),
++            ..Default::default()
++        },
++        FileEntry {
++            name: "second.txt".into(),
++            ..Default::default()
++        },
++    ]);
++    job.write(block()).await.unwrap();
++    let second = dir.0.join("file.txt/second.txt");
++    std::fs::write(&second, b"original").unwrap();
++    assert!(job
++        .write(FileTransferBlock {
++            file_num: 1,
++            ..block()
++        })
++        .await
++        .is_err());
++    assert_eq!(std::fs::read(&second).unwrap(), b"original");
++    assert_eq!(
++        std::fs::read(dir.0.join("file.txt/first.txt")).unwrap(),
++        b"received"
++    );
++    job.confirm(&approval(1, 0)).await;
++    job.write(FileTransferBlock {
++        file_num: 1,
++        ..block()
++    })
++    .await
++    .unwrap();
++    job.finish_download().unwrap();
++    assert_eq!(std::fs::read(&second).unwrap(), b"received");
++}
++
++#[tokio::test]
++async fn download_preserves_received_files_when_publication_fails() {
++    for next_is_digest in [false, true] {
++        let dir = DownloadDir::new();
++        let files = ["first.txt", "second.txt"]
++            .iter()
++            .map(|&name| FileEntry {
++                name: name.into(),
++                ..Default::default()
++            })
++            .collect();
++        let mut job = dir.job_with_files(files);
++        job.write(block()).await.unwrap();
++        let target = dir.0.join("file.txt/first.txt");
++        std::fs::write(&target, b"existing").unwrap();
++        if next_is_digest {
++            assert!(job
++                .download_digest(
++                    true,
++                    &FileTransferDigest {
++                        id: 1,
++                        file_num: 1,
++                        ..Default::default()
++                    },
++                )
++                .is_err());
++        } else {
++            assert!(job
++                .write(FileTransferBlock {
++                    file_num: 1,
++                    ..block()
++                })
++                .await
++                .is_err());
++        }
++        job.remove_download_file();
++        assert_eq!(std::fs::read(target).unwrap(), b"existing");
++        assert_eq!(
++            std::fs::read(dir.0.join("file.txt/first.txt.download")).unwrap(),
++            b"received"
++        );
++        assert!(dir.0.join("file.txt/first.txt.digest").exists());
++    }
++}
++
++#[tokio::test]
++async fn download_recovers_interrupted_transfer() {
++    for (resuming, changed) in [(false, false), (true, true), (true, false)] {
++        let dir = DownloadDir::new();
++        let mut digest = FileTransferDigest {
++            id: 1,
++            file_size: block().data.len() as _,
++            last_modified: 1,
++            ..Default::default()
++        };
++        let mut interrupted = dir.job();
++        interrupted.set_digest(digest.file_size, digest.last_modified);
++        let partial = FileTransferBlock {
++            data: b"rec".to_vec().into(),
++            ..block()
++        };
++        interrupted.write(partial).await.unwrap();
++        drop(interrupted);
++
++        let mut job = dir.job();
++        job.is_resume = resuming;
++        digest.last_modified += u64::from(changed);
++        job.set_digest(digest.file_size, digest.last_modified);
++        let confirmation = match job.download_digest(true, &digest).unwrap() {
++            DigestCheckResult::NeedConfirm(confirmation) => confirmation,
++            _ => panic!("interrupted download must require confirmation"),
++        };
++        let offset = if resuming && !changed {
++            b"rec".len()
++        } else {
++            0
++        };
++        assert_eq!(confirmation.is_identical, offset > 0);
++        assert_eq!(confirmation.transferred_size, offset as u64);
++        assert!(job.write(block()).await.is_err());
++        assert_eq!(
++            std::fs::read(dir.0.join("file.txt.download")).unwrap(),
++            b"rec"
++        );
++        job.confirm(&approval(0, offset as _)).await;
++        job.write(FileTransferBlock {
++            data: block().data.slice(offset..),
++            ..block()
++        })
++        .await
++        .unwrap();
++        job.finish_download().unwrap();
++        assert_eq!(std::fs::read(dir.0.join("file.txt")).unwrap(), b"received");
++    }
++}
++
++#[tokio::test]
++async fn download_does_not_publish_or_remove_unreceived_staging_files() {
++    let dir = DownloadDir::new();
++    let target = dir.0.join("file.txt");
++    let staging = dir.0.join("file.txt.download");
++    std::fs::write(&target, b"original").unwrap();
++    std::fs::write(&staging, b"another transfer").unwrap();
++    let job = dir.job();
++    job.modify_time();
++    job.remove_download_file();
++    assert_eq!(std::fs::read(&target).unwrap(), b"original");
++    assert_eq!(std::fs::read(&staging).unwrap(), b"another transfer");
++
++    let metadata_only = DownloadDir::new();
++    let metadata = metadata_only.0.join("file.txt.digest");
++    std::fs::write(&metadata, b"unrelated file").unwrap();
++    assert!(metadata_only.job().write(block()).await.is_err());
++    assert_eq!(std::fs::read(metadata).unwrap(), b"unrelated file");
++}
++
++#[test]
++#[cfg(windows)]
++fn download_rejects_windows_streams_and_ambiguous_components() {
++    let dir = DownloadDir::new();
++    for name in ["nested/file:stream", "nested/.. /outside", "nested/file."] {
++        assert!(
++            download::validated_target(&dir.0.join("docs"), name).is_err(),
++            "{}",
++            name
++        );
++    }
++}
++
++#[tokio::test]
++#[cfg_attr(windows, ignore = "requires symlink privilege")]
++async fn download_refuses_symlink_destination_directory() {
++    let dir = DownloadDir::new();
++    let outside = dir.0.join("outside");
++    let link = dir.0.join("file.txt");
++    std::fs::create_dir_all(&outside).unwrap();
++    #[cfg(unix)]
++    std::os::unix::fs::symlink(&outside, &link).unwrap();
++    #[cfg(windows)]
++    std::os::windows::fs::symlink_dir(&outside, &link).unwrap();
++    let mut job = dir.job_with_files(vec![FileEntry {
++        name: "child.txt".into(),
++        ..Default::default()
++    }]);
++    assert!(job.write(block()).await.is_err());
++    job.modify_time();
++    assert!(!outside.join("child.txt").exists());
++    assert!(!outside.join("child.txt.download").exists());
++}
++
++#[tokio::test]
++#[cfg_attr(windows, ignore = "requires symlink privilege")]
++async fn download_refuses_linked_target_and_staging_files() {
++    for suffix in ["", ".download", ".digest"] {
++        let dir = DownloadDir::new();
++        let outside = dir.0.join("outside.txt");
++        let link = dir.0.join(format!("file.txt{suffix}"));
++        std::fs::write(&outside, b"original").unwrap();
++        #[cfg(unix)]
++        std::os::unix::fs::symlink(&outside, &link).unwrap();
++        #[cfg(windows)]
++        std::os::windows::fs::symlink_file(&outside, &link).unwrap();
++        let mut job = dir.job();
++        assert!(job.write(block()).await.is_err());
++        job.modify_time();
++        job.remove_download_file();
++        assert_eq!(std::fs::read(&outside).unwrap(), b"original");
++        assert!(std::fs::symlink_metadata(link)
++            .unwrap()
++            .file_type()
++            .is_symlink());
++    }
++}
+diff --git a/src/client/io_loop.rs b/src/client/io_loop.rs
+index 1a8e1ff..c4d1df2 100644
+--- a/src/client/io_loop.rs
++++ b/src/client/io_loop.rs
+@@ -811,7 +811,16 @@ impl<T: InvokeUiSession> Remote<T> {
+                 if is_remote {
+                     log::debug!("New job {}, write to {} from remote {}", id, to, path);
+                     let to = match r#type {
+-                        fs::JobType::Generic => fs::DataSource::FilePath(PathBuf::from(&to)),
++                        fs::JobType::Generic => {
++                            if let Err(err) = fs::download::validate_download_name(
++                                &path,
++                                self.handler.peer_platform() == "Windows",
++                            ) {
++                                self.handle_job_status(id, -1, Some(err.to_string()));
++                                return true;
++                            }
++                            fs::DataSource::FilePath(PathBuf::from(&to))
++                        }
+                         fs::JobType::Printer => {
+                             fs::DataSource::MemoryCursor(std::io::Cursor::new(Vec::new()))
+                         }
+@@ -1788,6 +1797,15 @@ impl<T: InvokeUiSession> Remote<T> {
+                                     fs::transform_windows_path(&mut entries);
+                                 }
+                             }
++                            if fd.id <= 0 {
++                                if let Err(err) = fs::download::validate_listing(
++                                    &entries,
++                                    self.handler.peer_platform() == "Windows",
++                                ) {
++                                    self.handle_job_status(fd.id, -1, Some(err.to_string()));
++                                    return true;
++                                }
++                            }
+                             // We cannot call cancel_transfer_job/handle_job_status while holding
+                             // a mutable borrow from fs::get_job(&mut self.write_jobs), so defer
+                             // the error handling until after the borrow scope ends.
+@@ -1883,11 +1901,7 @@ impl<T: InvokeUiSession> Remote<T> {
+                                                 crate::is_support_file_transfer_resume_num(
+                                                     peer_ver,
+                                                 );
+-                                            match fs::is_write_need_confirmation(
+-                                                is_support_resume && job.is_resume,
+-                                                &write_path,
+-                                                &digest,
+-                                            ) {
++                                            match job.download_digest(is_support_resume, &digest) {
+                                                 Ok(res) => match res {
+                                                     DigestCheckResult::IsSame => {
+                                                         let req = FileTransferSendConfirmRequest {
+@@ -1944,13 +1958,19 @@ impl<T: InvokeUiSession> Remote<T> {
+                                                         union: Some(file_transfer_send_confirm_request::Union::OffsetBlk(0)),
+                                                         ..Default::default()
+                                                     };
+-                                                        job.confirm(&req).await;
++                                                        // This did not approve replacing an existing local file.
+                                                         let msg = new_send_confirm(req);
+                                                         allow_err!(peer.send(&msg).await);
+                                                     }
+                                                 },
+                                                 Err(err) => {
+-                                                    println!("error receiving digest: {}", err);
++                                                    self.cancel_transfer_job(digest.id, peer).await;
++                                                    self.handle_job_status(
++                                                        digest.id,
++                                                        -1,
++                                                        Some(err.to_string()),
++                                                    );
++                                                    return true;
+                                                 }
+                                             }
+                                         }
+@@ -1959,22 +1979,30 @@ impl<T: InvokeUiSession> Remote<T> {
+                             }
+                         }
+                         Some(file_response::Union::Block(block)) => {
++                            let id = block.id;
++                            let mut write_error = None;
+                             if let Some(job) = fs::get_job(block.id, &mut self.write_jobs) {
+-                                if let Err(_err) = job.write(block).await {
+-                                    // to-do: add "skip" for writing job
+-                                }
++                                let result = job.write(block).await;
+                                 if job.r#type == fs::JobType::Generic {
++                                    write_error = result.err().map(|err| err.to_string());
+                                     self.update_jobs_status();
+                                 }
+                             }
++                            if let Some(err) = write_error {
++                                self.cancel_transfer_job(id, peer).await;
++                                self.handle_job_status(id, -1, Some(err));
++                            }
+                         }
+                         Some(file_response::Union::Done(d)) => {
+                             let mut err: Option<String> = None;
+                             let mut job_type = fs::JobType::Generic;
+                             let mut printer_data = None;
+                             if let Some(job) = fs::remove_job(d.id, &mut self.write_jobs) {
+-                                job.modify_time();
+-                                err = job.job_error();
++                                err = job
++                                    .finish_download()
++                                    .err()
++                                    .map(|err| err.to_string())
++                                    .or_else(|| job.job_error());
+                                 job_type = job.r#type;
+                                 printer_data = match job.get_buf_data().await {
+                                     Ok(d) => d,
