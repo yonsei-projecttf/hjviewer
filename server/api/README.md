@@ -836,8 +836,9 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
   no alarm. All well: one line in the journal. A finding: an error line each, the findings in
   `/run/hjviewer-api-check/findings`, and the unit fails.
 - The operator's files that end (1.9.3, `src/opfiles.rs`): `review.conf`, `guest.conf` and
-  `door2.conf` carry an `UNTIL=`, at most 90 days ahead by the tools that write them, and past it
-  each one is a filter per request that tells nobody (the review login fails, the access password
+  `door2.conf` carry an `UNTIL=` (`review.conf` and `guest.conf` at most 90 days ahead, by
+  `review-conf.py` and `guest-conf.py`; `door2.conf` as `hjv-release`'s `--door2-until` sets it,
+  with no such bound), and past it each one is a filter per request that tells nobody (the review login fails, the access password
   is "closed" and counted like a wrong one, door 2's link is 404); one that does not parse is
   taken as absent. So `health` carries each configured file's state (`files`: `name` `review`,
   `guest` or `door2`, `state` `absent`, `active`, `ended` or `refused`, and `until`; a check and a

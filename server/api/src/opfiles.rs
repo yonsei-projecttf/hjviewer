@@ -2,11 +2,12 @@
 
 //! The operator's files that end (1.9.3): the App Review account's (HJV_API_REVIEW_FILE,
 //! review.rs), the access password's (HJV_API_GUEST_FILE, guest.rs) and door 2's
-//! (HJV_API_DOOR2_FILE, update.rs). Each carries an `UNTIL=`, at most 90 days ahead by the tools
-//! that write it, and past it each is a filter per request that tells nobody: the review login
-//! fails, the access password is "closed" and counted like a wrong one, door 2's link is 404. A
-//! file that does not parse is treated as absent, with one err line in the journal when a request
-//! first reads it.
+//! (HJV_API_DOOR2_FILE, update.rs). Each carries an `UNTIL=` (the review and access password
+//! files at most 90 days ahead, by review-conf.py and guest-conf.py; door 2's as hjv-release's
+//! `--door2-until` sets it, with no such bound), and past it each is a filter per request that
+//! tells nobody: the review login fails, the access password is "closed" and counted like a wrong
+//! one, door 2's link is 404. A file that does not parse is treated as absent, with one err line
+//! in the journal when a request first reads it.
 //!
 //! So `health` (check.rs) carries each configured file's state, [`OpFile`], and the five-minute
 //! check finds a file that ends within [`ENDING_SOON`] (`file_ending`), one whose `UNTIL` has
