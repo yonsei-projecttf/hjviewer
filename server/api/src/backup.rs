@@ -4,7 +4,9 @@
 //! service while it serves, and written by the command line into a directory only root may enter.
 //!
 //! The service takes the copy with `VACUUM INTO`, SQLite's online copy of a live database: one
-//! read transaction, so the copy is consistent while requests go on. It writes it to a file of its
+//! read transaction, so the copy is consistent. It runs in `Db::call`, which holds the service's
+//! one connection, so the requests that need the database wait for it (milliseconds at today's
+//! size). It writes it to a file of its
 //! own next to the database (created 0600 before SQLite opens it), makes it a standalone file
 //! (rollback journal, so that it opens without -wal and -shm files, and the application ID
 //! [`APPLICATION_ID`], by which `--keep-days` tells its backups from other files), checks it

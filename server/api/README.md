@@ -870,8 +870,9 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
 ## Backup and restore
 
 `sudo hjv-api admin backup [--keep-days N] <file>.sqlite3 | <directory>` (`src/backup.rs`): the
-running service takes a consistent copy of its database (`VACUUM INTO`, one read transaction
-while requests go on), makes it a standalone file (rollback journal, application ID `HJVA`),
+running service takes a consistent copy of its database (`VACUUM INTO`, one read transaction on
+the service's one database connection, so the requests that need the database wait for the copy:
+milliseconds at today's size), makes it a standalone file (rollback journal, application ID `HJVA`),
 checks it (`PRAGMA quick_check`), counts its rows and sends it over the admin socket; the command
 line writes it 0600 under a temporary name, checks size, SHA-256, schema and every table's rows
 against the service's counts, and only then gives it its name, which must not exist yet. The
@@ -1577,7 +1578,8 @@ GET, HEAD /api/hjv/s/<link>/  the page            â€¦/<link>/HJViewer-<v>.exe, â
   is still `open`; a code leaves the list when it leaves memory (ten minutes after its end).
   `rev` goes up by one at every change of that key's codes (made, traded, a key ended, ten
   minutes noticed, gone from memory), in memory only (a restart counts from 0; the app looks only
-  whether it is the same). Without `rev`, or with another than the key's now, the answer comes at
+  whether it is the same). A key whose last code left memory is forgotten, its `rev` 0 again, and
+  its next change starts above every `rev` forgotten since the start. Without `rev`, or with another than the key's now, the answer comes at
   once; with the key's, hjv-api holds it until a change, until the first of the key's open codes
   ends, or 20 seconds, whichever is first. At most 2 held per account key and 200 in all; past
   that, and while hjv-api stops, the answer comes at once. Another key, the same account's other

@@ -82,7 +82,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -359,15 +359,20 @@ impl Drop for WaitHold<'_> {
 }
 
 /// The codes and the revision of each account key's (the waiting room's `rev`), under one lock.
+/// A key's revision is kept while it holds a code, and forgotten with its last code: its rev is
+/// 0 again, and its next change starts above every rev forgotten (`floor`), so that an app that
+/// still holds an old rev never takes a new one for it.
 #[derive(Default)]
 struct Held {
     codes: HashMap<CodeKey, Entry>,
     revs: HashMap<i64, u64>,
+    floor: u64,
 }
 
 impl Held {
     fn bump(&mut self, ckid: i64) {
-        *self.revs.entry(ckid).or_insert(0) += 1;
+        let floor = self.floor;
+        *self.revs.entry(ckid).or_insert(floor) += 1;
     }
 
     /// Forgets the codes past [`ENDED_KEPT_SECS`], and marks those whose ten minutes are over:
@@ -393,6 +398,15 @@ impl Held {
         for ckid in &changed {
             self.bump(*ckid);
         }
+        let holding: HashSet<i64> = self.codes.values().map(|e| e.maker.ckid).collect();
+        let floor = &mut self.floor;
+        self.revs.retain(|ckid, rev| {
+            let keep = holding.contains(ckid);
+            if !keep {
+                *floor = (*floor).max(*rev);
+            }
+            keep
+        });
         !changed.is_empty()
     }
 }
@@ -1453,9 +1467,18 @@ mod tests {
         assert_eq!(w.rev, 8);
         assert_eq!(w.codes, vec![json!({"wait": late.wait, "state": "over"})]);
         assert_eq!(codes.waiting(me.ckid, AT + 31 + CODE_SECS).rev, 8);
-        let w = codes.waiting(me.ckid, AT + 30 + CODE_SECS + ENDED_KEPT_SECS);
-        assert_eq!((w.rev, w.codes.len()), (9, 0));
+        // the last one gone: the key is forgotten, rev 0 as before its first code, and its next
+        // change comes after every rev it had (an app that still holds 1 hears of a new code)
+        let at = AT + 30 + CODE_SECS + ENDED_KEPT_SECS;
+        let w = codes.waiting(me.ckid, at);
+        assert_eq!((w.rev, w.codes.len()), (0, 0));
+        assert!(codes.held().revs.is_empty());
         assert_eq!(codes.waiting(other.ckid, AT + 3 + ENDED_KEPT_SECS).rev, 0);
+        codes.make(me.clone(), Use::Pc, at + 1).unwrap();
+        assert_eq!(codes.waiting(me.ckid, at + 1).rev, 10);
+        codes.make(other.clone(), Use::Pc, at + 2).unwrap();
+        assert_eq!(codes.waiting(other.ckid, at + 2).rev, 10);
+        assert_eq!(codes.held().revs.len(), 2);
     }
 
     #[test]
