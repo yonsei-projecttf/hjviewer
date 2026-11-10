@@ -1,0 +1,248 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:38:33 +0900
+Subject: [PATCH 11/11] hbbs: forward a controller's ICE candidates only after
+ its punch hole
+
+An IceCandidate with an id went to that peer from any connection, without
+a key or a ticket: anyone could push candidates at every registered PC,
+each one up to the message bound and queued on the PC's signaling
+connection. A controller trickles on the connection of its punch hole
+request, addressed to the peer it asked for (client.rs,
+spawn_webrtc_ice_bridge, which never reconnects that socket). So hbbs
+now notes on each connection the peer its last punch hole request
+reached, after the key, minimum version and access ticket checks, and
+forwards a candidate with an id only to that peer from that connection;
+others are dropped, with a debug line, and the connection stays. In
+enforce mode that is a controller with an admitted ticket.
+
+The other direction stays as it was: the PC trickles to the controller
+on a connection of its own (rendezvous_mediator, one per WebRTC
+session) that carries no id, so hbbs cannot tell its sender without a
+change of the protocol. Such a candidate reaches only a connection that
+asked for a punch hole or a relay, and the controller drops candidates
+whose session_key is not its session's.
+
+Tests: tests/untrusted_input.rs, candidates from a connection without a
+punch hole request, from one whose request had the wrong key, and to
+another peer are dropped, while the controller's reach its peer;
+tests/access.rs, in enforce mode, from a connection whose request had no
+good ticket they are dropped, from one with a staff ticket they arrive.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/rendezvous_server.rs | 24 +++++++++++----
+ tests/access.rs          | 48 +++++++++++++++++++++++++++++
+ tests/untrusted_input.rs | 65 ++++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 130 insertions(+), 7 deletions(-)
+
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index e8a3392..43ff36e 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -80,6 +80,9 @@ struct TcpConn {
+     peer_id: Option<String>,
+     /// HJViewer: what is kept of the access ticket that registration came with
+     hjv_ticket: Option<crate::hjv_access::Admitted>,
++    /// HJViewer: the peer that the last punch hole request on this connection reached, after
++    /// the key, version and access ticket checks; the one peer its ICE candidates may go to
++    punched: Option<String>,
+ }
+ // A peer registered over TCP/WebSocket gets an empty frame this often and echoes it, which
+ // refreshes its online state and keeps NATs and proxies from idling the connection out.
+@@ -563,7 +566,10 @@ impl RendezvousServer {
+                         .lock()
+                         .await
+                         .insert(try_into_v4(addr), conn.tx.clone());
+-                    allow_err!(self.handle_tcp_punch_hole_request(addr, ph, key, ws).await);
++                    let id = ph.id.clone();
++                    let reached = self.handle_tcp_punch_hole_request(addr, ph, key, ws).await;
++                    conn.punched = matches!(reached, Ok(true)).then_some(id);
++                    allow_err!(reached);
+                     return true;
+                 }
+                 Some(rendezvous_message::Union::RequestRelay(mut rf)) => {
+@@ -611,6 +617,12 @@ impl RendezvousServer {
+                     // the connection of its punch hole request; the controlled peer answers on a
+                     // connection of its own, addressed by that request's socket_addr.
+                     if !ice.id.is_empty() {
++                        // HJViewer: only on the connection whose punch hole request reached
++                        // that peer, as the controller's are; anyone else's are dropped
++                        if conn.punched.as_deref() != Some(ice.id.as_str()) {
++                            log::debug!("Drop IceCandidate from {addr}: no punch hole to it");
++                            return true;
++                        }
+                         if let Some(peer) = self.pm.get_in_memory(&ice.id).await {
+                             let id = ice.id.clone();
+                             let peer_addr = peer.read().await.socket_addr;
+@@ -1058,21 +1070,22 @@ impl RendezvousServer {
+     }
+ 
+     #[inline]
++    /// Whether the request went on to the peer (HJViewer).
+     async fn handle_tcp_punch_hole_request(
+         &mut self,
+         addr: SocketAddr,
+         ph: PunchHoleRequest,
+         key: &str,
+         ws: bool,
+-    ) -> ResultType<()> {
++    ) -> ResultType<bool> {
+         let id = ph.id.clone();
+         let (msg, to_addr) = self.handle_punch_hole_request(addr, ph, key, ws).await?;
+         if let Some(addr) = to_addr {
+             self.send_to_peer(&id, addr, msg).await;
+-        } else {
+-            self.send_to_tcp_sync(msg, addr).await?;
++            return Ok(true);
+         }
+-        Ok(())
++        self.send_to_tcp_sync(msg, addr).await?;
++        Ok(false)
+     }
+ 
+     #[inline]
+@@ -1491,6 +1504,7 @@ impl RendezvousServer {
+             tx,
+             peer_id: None,
+             hjv_ticket: None,
++            punched: None,
+         };
+         let mut heartbeat = interval(Duration::from_millis(TCP_HEARTBEAT_MS));
+         let mut last_recv = Instant::now();
+diff --git a/tests/access.rs b/tests/access.rs
+index 6e20e10..7440bdf 100644
+--- a/tests/access.rs
++++ b/tests/access.rs
+@@ -1607,3 +1607,51 @@ fn the_refusal_also_goes_out_over_plain_tcp() {
+         );
+     });
+ }
++
++#[test]
++fn ice_candidates_go_only_after_a_punch_hole_with_a_good_ticket() {
++    let server = Hbbs::start("ice", Told::Env, Some(&enforce()));
++    runtime().block_on(async {
++        let mut pc = admitted_pc(&server, PEER_ID, &Ticket::pc(PEER_ID)).await;
++        let ice = |candidate: &str| {
++            let mut msg = RendezvousMessage::new();
++            msg.set_ice_candidate(IceCandidate {
++                id: PEER_ID.to_owned(),
++                session_key: "session".to_owned(),
++                candidate: candidate.to_owned(),
++                ..Default::default()
++            });
++            msg
++        };
++        // one that sent no punch hole request, and one whose request had no good ticket
++        let mut stranger = Client::controller(&server).await;
++        stranger.send(ice("stranger")).await;
++        pc.expect_silence().await;
++        let mut refused = Client::controller(&server).await;
++        refused
++            .send(punch_hole_request(&server, PEER_ID, "1.8.0", ""))
++            .await;
++        assert_eq!(refused.expect_punch_hole_refused().await, TEXT);
++        refused.send(ice("refused")).await;
++        pc.expect_silence().await;
++        // a controller with a good ticket trickles on its punch hole's connection
++        let mut admitted = Client::controller(&server).await;
++        admitted
++            .send(punch_hole_request(
++                &server,
++                PEER_ID,
++                "1.8.0",
++                &Ticket::staff_ctl().sign(),
++            ))
++            .await;
++        let rendezvous_message::Union::PunchHole(_) = pc.recv().await else {
++            panic!("expected the punch hole");
++        };
++        admitted.send(ice("admitted")).await;
++        let rendezvous_message::Union::IceCandidate(got) = pc.recv().await else {
++            panic!("expected the admitted controller's candidate");
++        };
++        assert_eq!(got.candidate, "admitted");
++        pc.expect_silence().await;
++    });
++}
+diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
+index a7b0a1b..ae2fc05 100644
+--- a/tests/untrusted_input.rs
++++ b/tests/untrusted_input.rs
+@@ -2,8 +2,9 @@
+ //! than any client's is refused, and leaves nothing in the peer map, the database or the log; a
+ //! message over the bound (MAX_MESSAGE_KB, 64 KiB) ends the connection it came on, on the
+ //! WebSocket port and the TCP port alike; the address in X-Real-IP is the client's, in the IPv4
+-//! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; and a relay server one
+-//! client names to another is one hbbs is configured with.
++//! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; a relay server one
++//! client names to another is one hbbs is configured with; and ICE candidates for a peer go
++//! only from the connection whose punch hole request reached it.
+ 
+ use hbb_common::{
+     bytes::Bytes,
+@@ -661,3 +662,63 @@ fn no_relay_configured_leaves_the_names_as_upstream() {
+         assert_eq!(named.acknowledgement, Some(String::new()));
+     });
+ }
++
++fn ice_candidate(id: &str, candidate: &str) -> RendezvousMessage {
++    let mut msg = RendezvousMessage::new();
++    msg.set_ice_candidate(IceCandidate {
++        id: id.to_owned(),
++        session_key: "session".to_owned(),
++        candidate: candidate.to_owned(),
++        ..Default::default()
++    });
++    msg
++}
++
++#[test]
++fn ice_candidates_for_a_peer_go_only_from_the_connection_whose_punch_hole_reached_it() {
++    let server = Hbbs::start("ice", &[]);
++    runtime().block_on(async {
++        let mut pc = registered_pc(&server).await;
++        let mut other = Client::connect(&server, "203.0.113.30", Some(40030)).await;
++        assert_eq!(
++            register(&mut other, "987654321", b"other-uuid", &[8u8; 32]).await,
++            register_pk_response::Result::OK
++        );
++
++        // a connection that sent no punch hole request
++        let mut stranger = Client::connect(&server, "198.51.100.30", Some(50030)).await;
++        stranger.send(ice_candidate(PEER_ID, "stranger")).await;
++        assert_eq!(pc.recv_soon().await, None);
++        // one whose punch hole request was refused
++        let mut refused = Client::connect(&server, "198.51.100.31", Some(50031)).await;
++        let mut msg = punch_hole_request(&server);
++        msg.mut_punch_hole_request().licence_key = "not-the-key".to_owned();
++        refused.send(msg).await;
++        let rendezvous_message::Union::PunchHoleResponse(res) = refused.recv().await else {
++            panic!("expected a punch hole response");
++        };
++        assert_eq!(
++            res.failure.enum_value(),
++            Ok(punch_hole_response::Failure::LICENSE_MISMATCH)
++        );
++        refused.send(ice_candidate(PEER_ID, "refused")).await;
++        assert_eq!(pc.recv_soon().await, None);
++
++        // The controller trickles on the connection of its punch hole request, to that peer.
++        let mut controller = Client::connect(&server, "198.51.100.32", Some(50032)).await;
++        controller.send(punch_hole_request(&server)).await;
++        let rendezvous_message::Union::PunchHole(_) = pc.recv().await else {
++            panic!("expected a punch hole");
++        };
++        for candidate in ["controller-1", "controller-2"] {
++            controller.send(ice_candidate(PEER_ID, candidate)).await;
++            let rendezvous_message::Union::IceCandidate(ice) = pc.recv().await else {
++                panic!("expected the controller's candidate");
++            };
++            assert_eq!(ice.candidate, candidate);
++            // not to another peer
++            controller.send(ice_candidate("987654321", candidate)).await;
++            assert_eq!(other.recv_soon().await, None);
++        }
++    });
++}

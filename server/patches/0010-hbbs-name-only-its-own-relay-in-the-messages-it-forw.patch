@@ -1,0 +1,364 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:35:55 +0900
+Subject: [PATCH 10/11] hbbs: name only its own relay in the messages it
+ forwards between clients
+
+hbbs forwarded the relay_server a client wrote: from a controller's
+RequestRelay to the controlled PC, which dials it (a ws:// or wss:// value
+as it is, from the PC's SYSTEM process), and from a PC's RelayResponse,
+PunchHoleSent or LocalAddr to the controller, which dials it too. A
+controller with a ticket, or anything that could answer a controller,
+could so point the other side at any address. The client's own fix
+reaches only the PCs that update; this covers every installed version.
+
+With one relay configured (production runs hbbs -r <domain>), a forwarded
+message names that one whatever the sender wrote. Genuine sessions get the
+name they get today: an HJViewer build pins its relay-server option to
+HJV_SERVER, the domain hbbs is started with, so the PC's RelayResponse,
+PunchHoleSent and LocalAddr name it already, and the controller asks for
+the relay its punch hole response named. With several configured, a name
+in the list passes unchanged and one outside it drops the message, with
+a warning "Drop <message> from <addr>: relay server <name> is not
+configured" (RequestRelay and RelayResponse also end their connection).
+With none configured, names pass as upstream's. Upstream's LAN handling
+of RelayResponse comes first, a name equal to hbbs's own LAN address
+(--mask) is its own, and a RelayResponse acknowledging a RequestRelay
+still names nothing.
+
+tests/untrusted_input.rs: a punch hole, the PC's relay response and
+punch hole report, another controller's relay request and its
+acknowledgement, all naming another relay or the configured one, with
+one, two and no relays configured.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/rendezvous_server.rs |  51 ++++++++++-
+ tests/untrusted_input.rs | 189 ++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 234 insertions(+), 6 deletions(-)
+
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index b49735e..e8a3392 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -595,6 +595,11 @@ impl RendezvousServer {
+                         rf.token.clear();
+                         rf.control_permissions.clear();
+                         rf.controlled_context.clear();
++                        let name = std::mem::take(&mut rf.relay_server);
++                        let Some(relay_server) = self.own_relay("RequestRelay", addr, name) else {
++                            return false;
++                        };
++                        rf.relay_server = relay_server;
+                         msg_out.set_request_relay(rf);
+                         let peer_addr = peer.read().await.socket_addr;
+                         self.send_to_peer(&id, peer_addr, msg_out).await;
+@@ -693,6 +698,13 @@ impl RendezvousServer {
+                             rr.relay_server = self.inner.local_ip.clone();
+                         } else if rr.relay_server == self.inner.local_ip {
+                             rr.relay_server = self.get_relay_server(addr.ip(), addr_b.ip());
++                        } else {
++                            let name = std::mem::take(&mut rr.relay_server);
++                            let Some(relay_server) = self.own_relay("RelayResponse", addr, name)
++                            else {
++                                return false;
++                            };
++                            rr.relay_server = relay_server;
+                         }
+                     }
+                     msg_out.set_relay_response(rr);
+@@ -772,12 +784,16 @@ impl RendezvousServer {
+     #[inline]
+     async fn handle_hole_sent<'a>(
+         &mut self,
+-        phs: PunchHoleSent,
++        mut phs: PunchHoleSent,
+         addr: SocketAddr,
+         socket: Option<&'a mut FramedSocket>,
+     ) -> ResultType<()> {
+         // punch hole sent from B, tell A that B is ready to be connected
+         let addr_a = AddrMangle::decode(&phs.socket_addr);
++        let name = std::mem::take(&mut phs.relay_server);
++        let Some(relay_server) = self.own_relay("PunchHoleSent", addr, name) else {
++            return Ok(());
++        };
+         log::debug!(
+             "{} punch hole response to {:?} from {:?}",
+             if socket.is_none() { "TCP" } else { "UDP" },
+@@ -788,7 +804,7 @@ impl RendezvousServer {
+         let mut p = PunchHoleResponse {
+             socket_addr: AddrMangle::encode(addr).into(),
+             pk: self.get_pk(&phs.version, phs.id).await,
+-            relay_server: phs.relay_server.clone(),
++            relay_server,
+             webrtc_sdp_answer: phs.webrtc_sdp_answer,
+             ..Default::default()
+         };
+@@ -807,12 +823,16 @@ impl RendezvousServer {
+     #[inline]
+     async fn handle_local_addr<'a>(
+         &mut self,
+-        la: LocalAddr,
++        mut la: LocalAddr,
+         addr: SocketAddr,
+         socket: Option<&'a mut FramedSocket>,
+     ) -> ResultType<()> {
+         // relay local addrs of B to A
+         let addr_a = AddrMangle::decode(&la.socket_addr);
++        let name = std::mem::take(&mut la.relay_server);
++        let Some(relay_server) = self.own_relay("LocalAddr", addr, name) else {
++            return Ok(());
++        };
+         log::debug!(
+             "{} local addrs response to {:?} from {:?}",
+             if socket.is_none() { "TCP" } else { "UDP" },
+@@ -823,7 +843,7 @@ impl RendezvousServer {
+         let mut p = PunchHoleResponse {
+             socket_addr: la.local_addr.clone(),
+             pk: self.get_pk(&la.version, la.id).await,
+-            relay_server: la.relay_server,
++            relay_server,
+             ..Default::default()
+         };
+         p.set_is_local(true);
+@@ -1119,6 +1139,29 @@ impl RendezvousServer {
+         self.relay_servers[i].clone()
+     }
+ 
++    /// HJViewer: the relay a message forwarded from one client to another names, `None` if the
++    /// message is to be dropped. The controlled PC dials the relay a RequestRelay names, and the
++    /// controller the one a RelayResponse or PunchHoleResponse names, so the sender could point
++    /// the other side at any address. With one relay configured, that one whatever the sender
++    /// wrote; with several, the sender's if it is one of them; with none, the sender's, as
++    /// upstream. No name (a RelayResponse acknowledging a RequestRelay) stays none, and this
++    /// server's LAN address (--mask, upstream's issue 24) is its own.
++    fn own_relay(&self, what: &str, addr: SocketAddr, name: String) -> Option<String> {
++        let configured = &self.relay_servers0;
++        let local = !self.inner.local_ip.is_empty() && name == self.inner.local_ip;
++        if name.is_empty() || configured.is_empty() || local {
++            Some(name)
++        } else if configured.len() == 1 {
++            Some(configured[0].clone())
++        } else if configured.contains(&name) {
++            Some(name)
++        } else {
++            let shown: String = name.chars().take(64).collect();
++            log::warn!("Drop {what} from {addr}: relay server {shown:?} is not configured");
++            None
++        }
++    }
++
+     async fn check_cmd(&self, cmd: &str) -> String {
+         use std::fmt::Write as _;
+ 
+diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
+index 01dd8db..a7b0a1b 100644
+--- a/tests/untrusted_input.rs
++++ b/tests/untrusted_input.rs
+@@ -1,8 +1,9 @@
+ //! What hbbs keeps of what anyone can send it: a registration whose id, uuid or key is longer
+ //! than any client's is refused, and leaves nothing in the peer map, the database or the log; a
+ //! message over the bound (MAX_MESSAGE_KB, 64 KiB) ends the connection it came on, on the
+-//! WebSocket port and the TCP port alike; and the address in X-Real-IP is the client's, in the
+-//! IPv4 form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d.
++//! WebSocket port and the TCP port alike; the address in X-Real-IP is the client's, in the IPv4
++//! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; and a relay server one
++//! client names to another is one hbbs is configured with.
+ 
+ use hbb_common::{
+     bytes::Bytes,
+@@ -213,6 +214,28 @@ impl Client {
+             Err(_) | Ok(Some(Ok(_))) => false,
+         }
+     }
++
++    /// The next message within half a second, `None` if there is none or hbbs closed the
++    /// connection. Heartbeats are echoed and do not count.
++    async fn recv_soon(&mut self) -> Option<rendezvous_message::Union> {
++        let until = Instant::now() + Duration::from_millis(500);
++        loop {
++            let left = until.saturating_duration_since(Instant::now());
++            let Ok(Some(Ok(WsMessage::Binary(bytes)))) = timeout(left, self.ws.next()).await else {
++                return None;
++            };
++            if bytes.is_empty() {
++                self.ws
++                    .send(WsMessage::Binary(Default::default()))
++                    .await
++                    .expect("echo the heartbeat");
++                continue;
++            }
++            return RendezvousMessage::parse_from_bytes(&bytes)
++                .expect("decode")
++                .union;
++        }
++    }
+ }
+ 
+ fn register_pk(id: &str, uuid: &[u8], pk: &[u8]) -> RendezvousMessage {
+@@ -476,3 +499,165 @@ fn x_real_ip_gives_the_client_address() {
+         assert_ne!(ports[0], ports[1]);
+     });
+ }
++
++/// The relay server named on the other side of each message that carries one from a client to
++/// another, `name` in all of them; `None` where the message did not arrive. A controller's
++/// punch hole reaches `pc`, which answers with a relay response and a punch hole report naming
++/// `name`, and another controller's relay request names it, which `pc` acknowledges.
++struct Named {
++    relay_response: Option<String>,
++    punch_hole_response: Option<String>,
++    request_relay: Option<String>,
++    acknowledgement: Option<String>,
++}
++
++async fn forward_relay_names(server: &Hbbs, pc: &mut Client, name: &str) -> Named {
++    let mut a = Client::connect(server, "198.51.100.20", Some(50001)).await;
++    a.send(punch_hole_request(server)).await;
++    let rendezvous_message::Union::PunchHole(ph) = pc.recv().await else {
++        panic!("expected a punch hole");
++    };
++
++    let mut rr = RelayResponse {
++        socket_addr: ph.socket_addr.clone(),
++        uuid: "e4c181d0-41c7-4ae6-8ef0-36581b6b2b12".to_owned(),
++        relay_server: name.to_owned(),
++        version: "1.5.0".to_owned(),
++        ..Default::default()
++    };
++    rr.set_id(PEER_ID.to_owned());
++    let mut msg = RendezvousMessage::new();
++    msg.set_relay_response(rr);
++    let mut answer = Client::connect(server, "203.0.113.10", Some(40011)).await;
++    answer.send(msg).await;
++    let relay_response = match a.recv_soon().await {
++        Some(rendezvous_message::Union::RelayResponse(rr)) => Some(rr.relay_server),
++        None => None,
++        Some(other) => panic!("expected a relay response: {other:?}"),
++    };
++
++    let mut msg = RendezvousMessage::new();
++    msg.set_punch_hole_sent(PunchHoleSent {
++        socket_addr: ph.socket_addr.clone(),
++        id: PEER_ID.to_owned(),
++        relay_server: name.to_owned(),
++        version: "1.5.0".to_owned(),
++        ..Default::default()
++    });
++    let mut sent = Client::connect(server, "203.0.113.10", Some(40012)).await;
++    sent.send(msg).await;
++    let punch_hole_response = match a.recv_soon().await {
++        Some(rendezvous_message::Union::PunchHoleResponse(res)) => Some(res.relay_server),
++        None => None,
++        Some(other) => panic!("expected a punch hole response: {other:?}"),
++    };
++
++    let mut c = Client::connect(server, "198.51.100.21", Some(50002)).await;
++    let mut msg = RendezvousMessage::new();
++    msg.set_request_relay(RequestRelay {
++        id: PEER_ID.to_owned(),
++        uuid: "01890a5d-ac96-774b-bcce-b302099a8057".to_owned(),
++        relay_server: name.to_owned(),
++        licence_key: server.key.clone(),
++        ..Default::default()
++    });
++    c.send(msg).await;
++    let (request_relay, acknowledgement) = match pc.recv_soon().await {
++        Some(rendezvous_message::Union::RequestRelay(rf)) => {
++            // the controlled side acknowledges on a connection of its own, naming nothing
++            let mut msg = RendezvousMessage::new();
++            msg.set_relay_response(RelayResponse {
++                socket_addr: rf.socket_addr.clone(),
++                version: "1.5.0".to_owned(),
++                ..Default::default()
++            });
++            let mut ack = Client::connect(server, "203.0.113.10", Some(40013)).await;
++            ack.send(msg).await;
++            let acknowledgement = match c.recv_soon().await {
++                Some(rendezvous_message::Union::RelayResponse(rr)) => Some(rr.relay_server),
++                None => None,
++                Some(other) => panic!("expected the acknowledgement: {other:?}"),
++            };
++            (Some(rf.relay_server), acknowledgement)
++        }
++        None => (None, None),
++        Some(other) => panic!("expected a relay request: {other:?}"),
++    };
++    Named {
++        relay_response,
++        punch_hole_response,
++        request_relay,
++        acknowledgement,
++    }
++}
++
++async fn registered_pc(server: &Hbbs) -> Client {
++    let mut pc = Client::connect(server, "203.0.113.10", Some(40001)).await;
++    assert_eq!(
++        register(&mut pc, PEER_ID, b"peer-uuid", &[7u8; 32]).await,
++        register_pk_response::Result::OK
++    );
++    pc
++}
++
++const OTHER_RELAY: &str = "198.51.100.66:21117";
++
++#[test]
++fn one_relay_configured_is_the_one_every_forwarded_message_names() {
++    // what production runs: hbbs -r <domain>
++    let server = Hbbs::start("relay-one", &["-r", "192.0.2.10"]);
++    runtime().block_on(async {
++        let mut pc = registered_pc(&server).await;
++        for name in [OTHER_RELAY, "192.0.2.10"] {
++            let named = forward_relay_names(&server, &mut pc, name).await;
++            let ours = Some("192.0.2.10".to_owned());
++            assert_eq!(named.relay_response, ours, "relay response naming {name}");
++            assert_eq!(
++                named.punch_hole_response, ours,
++                "punch hole report naming {name}"
++            );
++            assert_eq!(named.request_relay, ours, "relay request naming {name}");
++            assert_eq!(named.acknowledgement, Some(String::new()));
++        }
++    });
++}
++
++#[test]
++fn several_relays_configured_pass_and_others_are_dropped() {
++    let server = Hbbs::start("relay-several", &["-r", "192.0.2.10,192.0.2.11"]);
++    runtime().block_on(async {
++        let mut pc = registered_pc(&server).await;
++        let named = forward_relay_names(&server, &mut pc, "192.0.2.11").await;
++        let listed = Some("192.0.2.11".to_owned());
++        assert_eq!(named.relay_response, listed);
++        assert_eq!(named.punch_hole_response, listed);
++        assert_eq!(named.request_relay, listed);
++        assert_eq!(named.acknowledgement, Some(String::new()));
++
++        let named = forward_relay_names(&server, &mut pc, OTHER_RELAY).await;
++        assert_eq!(named.relay_response, None);
++        assert_eq!(named.punch_hole_response, None);
++        assert_eq!(named.request_relay, None);
++        for line in [
++            "Drop RelayResponse from 203.0.113.10:40011: relay server \"198.51.100.66:21117\"",
++            "Drop PunchHoleSent from 203.0.113.10:40012: relay server \"198.51.100.66:21117\"",
++            "Drop RequestRelay from 198.51.100.21:50002: relay server \"198.51.100.66:21117\"",
++        ] {
++            server.wait_wrote(line.as_bytes()).await;
++        }
++    });
++}
++
++#[test]
++fn no_relay_configured_leaves_the_names_as_upstream() {
++    let server = Hbbs::start("relay-none", &[]);
++    runtime().block_on(async {
++        let mut pc = registered_pc(&server).await;
++        let named = forward_relay_names(&server, &mut pc, OTHER_RELAY).await;
++        let theirs = Some(OTHER_RELAY.to_owned());
++        assert_eq!(named.relay_response, theirs);
++        assert_eq!(named.punch_hole_response, theirs);
++        assert_eq!(named.request_relay, theirs);
++        assert_eq!(named.acknowledgement, Some(String::new()));
++    });
++}

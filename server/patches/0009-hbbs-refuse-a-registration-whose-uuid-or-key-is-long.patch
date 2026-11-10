@@ -1,0 +1,557 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 22:33:23 +0900
+Subject: [PATCH 09/11] hbbs: refuse a registration whose uuid or key is longer
+ than any client's
+
+Anyone can send RegisterPk over /ws/id, with no key and no ticket: in
+enforce mode the answer is NOT_DEPLOYED, but its key is stored so that
+hjv-api can bind a new PC. Upstream's message bound (64 KiB) and id bound
+(253 bytes) came with the rebase; uuid and pk only had to be non-empty, so
+each registration could still have hbbs keep up to 64 KiB of them in the
+peer map, write them to db_v2.sqlite3 and log them whole.
+
+What every HJViewer client from 1.9.0 on sends (hbb_common 229b904, the
+pin of all of them): the uuid is get_uuid(), the machine id (on Windows
+the MachineGuid, a 36-byte GUID) or the public key where there is none
+and on Android and iOS; the key is the ed25519 public key of
+Config::get_key_pair(), 32 bytes. handle_register_pk now refuses a uuid
+over 128 bytes or a key over 64 with UUID_MISMATCH, as an id out of
+bounds, before the IP blocker, the peer map, the database or the log hold
+any of it, for TCP, WebSocket and UDP alike.
+
+tests/untrusted_input.rs: registrations with a 254-byte id, a 129-byte
+uuid or a 65-byte key (over WebSocket, and a uuid over UDP) are refused,
+leave nothing in the files hbbs writes (database, journal, log) and no
+key for hjv-pk, while registrations at the bounds and as clients send
+them go through; an online query within upstream's bound is answered and
+one past it ends the connection unanswered, on the WebSocket and the TCP
+port; X-Real-IP in ::ffff: form counts against the IPv4 address and
+reaches the peer as it, and without X-Real-Port the proxy's connection
+port still tells clients behind one address apart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/peer.rs              |   6 +
+ src/rendezvous_server.rs |   5 +
+ tests/untrusted_input.rs | 478 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 489 insertions(+)
+ create mode 100644 tests/untrusted_input.rs
+
+diff --git a/src/peer.rs b/src/peer.rs
+index 0f028d0..f0b17b2 100644
+--- a/src/peer.rs
++++ b/src/peer.rs
+@@ -25,6 +25,12 @@ pub const IP_BLOCK_DUR: u64 = 60;
+ // Same bound as the Pro server: a longer id is not a normal RustDesk id or hostname,
+ // and every peer entry and punch-request record keeps its own copy.
+ pub const MAX_PEER_ID_LEN: usize = 253;
++// HJViewer: a registration's uuid is the machine id (on Windows the MachineGuid, a 36-byte GUID),
++// or the public key where there is none and on Android and iOS; the key is an ed25519 public key
++// of 32 bytes. Both bounds stay well above what any client sends, and hold what every peer entry,
++// database row and log line of a registration keeps to a few hundred bytes.
++pub const MAX_PEER_UUID_LEN: usize = 128;
++pub const MAX_PEER_PK_LEN: usize = 64;
+ 
+ /// Outbound queue of one TCP/WebSocket connection to hbbs. The connection's task owns the sink
+ /// and drains this, so the connection can be addressed while it keeps reading.
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 66e12db..b49735e 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -1538,6 +1538,11 @@ impl RendezvousServer {
+         if rk.uuid.is_empty() || rk.pk.is_empty() {
+             return None;
+         }
++        // HJViewer: a uuid or key longer than any client's is refused like an id out of bounds,
++        // before the IP blocker, the peer map, the database or the log hold any of it
++        if rk.uuid.len() > MAX_PEER_UUID_LEN || rk.pk.len() > MAX_PEER_PK_LEN {
++            return Some(UUID_MISMATCH);
++        }
+         let id = rk.id;
+         let ip = addr.ip().to_string();
+         // HJViewer: registrations without a good access ticket have an address budget of their
+diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
+new file mode 100644
+index 0000000..01dd8db
+--- /dev/null
++++ b/tests/untrusted_input.rs
+@@ -0,0 +1,478 @@
++//! What hbbs keeps of what anyone can send it: a registration whose id, uuid or key is longer
++//! than any client's is refused, and leaves nothing in the peer map, the database or the log; a
++//! message over the bound (MAX_MESSAGE_KB, 64 KiB) ends the connection it came on, on the
++//! WebSocket port and the TCP port alike; and the address in X-Real-IP is the client's, in the
++//! IPv4 form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d.
++
++use hbb_common::{
++    bytes::Bytes,
++    bytes_codec::BytesCodec,
++    futures_util::{SinkExt, StreamExt},
++    protobuf::Message as _,
++    rendezvous_proto::*,
++    tokio::{
++        self,
++        io::{AsyncReadExt, AsyncWriteExt},
++        net::{TcpStream, UdpSocket},
++        time::{sleep, timeout, Duration, Instant},
++    },
++    tokio_util::codec::Framed,
++    AddrMangle,
++};
++use std::{
++    net::SocketAddr,
++    path::PathBuf,
++    process::{Child, Command},
++};
++use tokio_tungstenite::{
++    tungstenite::{client::IntoClientRequest, http::HeaderValue, Message as WsMessage},
++    MaybeTlsStream, WebSocketStream,
++};
++
++// hbbs's default MAX_MESSAGE_KB
++const MAX_MESSAGE: usize = 64 << 10;
++const PEER_ID: &str = "123456789";
++
++struct Hbbs {
++    child: Child,
++    dir: PathBuf,
++    port: u16,
++    key: String,
++}
++
++impl Hbbs {
++    /// hbbs in a directory of its own, with `args` after its port.
++    fn start(name: &str, args: &[&str]) -> Self {
++        let dir = std::env::temp_dir().join(format!("hbbs-{name}-{}", std::process::id()));
++        std::fs::remove_dir_all(&dir).ok();
++        std::fs::create_dir_all(&dir).expect("create the server's working directory");
++        let port = free_base_port();
++        let log = std::fs::File::create(dir.join("hbbs.log")).expect("create the server log");
++        let child = Command::new(env!("CARGO_BIN_EXE_hbbs"))
++            .args(["-p", &port.to_string()])
++            .args(args)
++            .current_dir(&dir)
++            // hbbs reads its options from the environment first
++            .env_clear()
++            .env("TEST_HBBS", "no")
++            .env("RUST_LOG", "debug")
++            .stdout(log.try_clone().expect("share the server log"))
++            .stderr(log)
++            .spawn()
++            .expect("start hbbs");
++        let mut server = Self {
++            child,
++            dir,
++            port,
++            key: String::new(),
++        };
++        for _ in 0..100 {
++            if std::net::TcpStream::connect(("127.0.0.1", server.port + 2)).is_ok() {
++                server.key = std::fs::read_to_string(server.dir.join("id_ed25519.pub"))
++                    .expect("hbbs writes its public key before it listens");
++                return server;
++            }
++            std::thread::sleep(std::time::Duration::from_millis(100));
++        }
++        panic!("hbbs did not start listening");
++    }
++
++    /// One console command over 127.0.0.1:<port - 1>, and the answer up to the close.
++    async fn console(&self, cmd: &str) -> String {
++        let mut stream = TcpStream::connect(("127.0.0.1", self.port - 1))
++            .await
++            .expect("connect to the console");
++        stream
++            .write_all(cmd.as_bytes())
++            .await
++            .expect("send the command");
++        let mut out = Vec::new();
++        timeout(Duration::from_secs(3), stream.read_to_end(&mut out))
++            .await
++            .expect("the console answers within 3s")
++            .expect("read the answer");
++        String::from_utf8(out).expect("a UTF-8 answer")
++    }
++
++    /// Whether a file hbbs wrote in its directory (the database, its journal, the log) holds
++    /// `needle`.
++    fn wrote(&self, needle: &[u8]) -> bool {
++        std::fs::read_dir(&self.dir)
++            .expect("list the server's directory")
++            .filter_map(|entry| std::fs::read(entry.expect("a directory entry").path()).ok())
++            .any(|bytes| bytes.windows(needle.len()).any(|w| w == needle))
++    }
++
++    /// Waits until hbbs wrote `needle`: its log is written asynchronously, so a line in it says
++    /// that the lines before it are there too.
++    async fn wait_wrote(&self, needle: &[u8]) {
++        let until = Instant::now() + Duration::from_secs(5);
++        while !self.wrote(needle) {
++            assert!(
++                Instant::now() < until,
++                "hbbs did not write {:?} within 5s",
++                String::from_utf8_lossy(needle)
++            );
++            sleep(Duration::from_millis(100)).await;
++        }
++    }
++}
++
++impl Drop for Hbbs {
++    fn drop(&mut self) {
++        self.child.kill().ok();
++        self.child.wait().ok();
++        if std::thread::panicking() {
++            let log = std::fs::read_to_string(self.dir.join("hbbs.log")).unwrap_or_default();
++            eprintln!("---- hbbs log ----\n{log}");
++        }
++        std::fs::remove_dir_all(&self.dir).ok();
++    }
++}
++
++/// A port p with p-1, p and p+2 free for TCP and p for UDP: hbbs listens on all of them.
++fn free_base_port() -> u16 {
++    for _ in 0..100 {
++        let port = std::net::TcpListener::bind("127.0.0.1:0")
++            .and_then(|l| l.local_addr())
++            .expect("pick a free port")
++            .port();
++        if !(1025..=65000).contains(&port) {
++            continue;
++        }
++        let tcp_free = [port - 1, port, port + 2]
++            .iter()
++            .all(|p| std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok());
++        if tcp_free && std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok() {
++            return port;
++        }
++    }
++    panic!("no free port range for hbbs");
++}
++
++/// A client connection to hbbs's WebSocket port, made the way the reverse proxy in front of it
++/// makes them: X-Real-IP as given, and X-Real-Port if there is one.
++struct Client {
++    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
++}
++
++impl Client {
++    async fn connect(server: &Hbbs, real_ip: &str, real_port: Option<u16>) -> Self {
++        let mut request = format!("ws://127.0.0.1:{}/", server.port + 2)
++            .into_client_request()
++            .expect("websocket request");
++        let headers = request.headers_mut();
++        headers.insert(
++            "X-Real-IP",
++            HeaderValue::from_str(real_ip).expect("ip header"),
++        );
++        if let Some(port) = real_port {
++            headers.insert("X-Real-Port", HeaderValue::from(port));
++        }
++        let (ws, _) = tokio_tungstenite::connect_async(request)
++            .await
++            .expect("connect to hbbs");
++        Self { ws }
++    }
++
++    async fn send(&mut self, msg: RendezvousMessage) {
++        let bytes = msg.write_to_bytes().expect("encode");
++        self.ws
++            .send(WsMessage::Binary(bytes.into()))
++            .await
++            .expect("send to hbbs");
++    }
++
++    /// The next message, echoing heartbeats on the way like the client does.
++    async fn recv(&mut self) -> rendezvous_message::Union {
++        loop {
++            let frame = timeout(Duration::from_secs(5), self.ws.next())
++                .await
++                .expect("a message from hbbs within 5s");
++            let Some(Ok(WsMessage::Binary(bytes))) = frame else {
++                panic!("hbbs closed the connection: {frame:?}");
++            };
++            if bytes.is_empty() {
++                self.ws
++                    .send(WsMessage::Binary(Default::default()))
++                    .await
++                    .expect("echo the heartbeat");
++                continue;
++            }
++            return RendezvousMessage::parse_from_bytes(&bytes)
++                .expect("decode")
++                .union
++                .expect("a message with a body");
++        }
++    }
++
++    /// Whether hbbs closes the connection within 5s without a message on it first.
++    async fn closed_unanswered(&mut self) -> bool {
++        match timeout(Duration::from_secs(5), self.ws.next()).await {
++            Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(WsMessage::Close(_)))) => true,
++            Err(_) | Ok(Some(Ok(_))) => false,
++        }
++    }
++}
++
++fn register_pk(id: &str, uuid: &[u8], pk: &[u8]) -> RendezvousMessage {
++    let mut msg = RendezvousMessage::new();
++    msg.set_register_pk(RegisterPk {
++        id: id.to_owned(),
++        uuid: uuid.to_vec().into(),
++        pk: pk.to_vec().into(),
++        ..Default::default()
++    });
++    msg
++}
++
++async fn register(
++    client: &mut Client,
++    id: &str,
++    uuid: &[u8],
++    pk: &[u8],
++) -> register_pk_response::Result {
++    client.send(register_pk(id, uuid, pk)).await;
++    let rendezvous_message::Union::RegisterPkResponse(res) = client.recv().await else {
++        panic!("expected a register pk response");
++    };
++    res.result.enum_value().expect("a known result")
++}
++
++fn online_request(peers: Vec<String>) -> RendezvousMessage {
++    let mut msg = RendezvousMessage::new();
++    msg.set_online_request(OnlineRequest {
++        id: "query".to_owned(),
++        peers,
++        ..Default::default()
++    });
++    msg
++}
++
++fn punch_hole_request(server: &Hbbs) -> RendezvousMessage {
++    let mut msg = RendezvousMessage::new();
++    msg.set_punch_hole_request(PunchHoleRequest {
++        id: PEER_ID.to_owned(),
++        licence_key: server.key.clone(),
++        version: "1.5.0".to_owned(),
++        force_relay: true,
++        ..Default::default()
++    });
++    msg
++}
++
++fn runtime() -> tokio::runtime::Runtime {
++    tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .build()
++        .expect("tokio runtime")
++}
++
++/// A string of `len` bytes that starts with `tag`, to look for in what hbbs wrote.
++fn marker(tag: &str, len: usize) -> String {
++    format!("{tag:-<len$}")
++}
++
++#[test]
++fn a_registration_too_long_is_refused_and_leaves_nothing() {
++    let server = Hbbs::start("long-registration", &[]);
++    runtime().block_on(async {
++        let mut pc = Client::connect(&server, "203.0.113.10", Some(40001)).await;
++        let key = [7u8; 32];
++        // upstream's id bound, on our handle_register_pk for both transports
++        let long_id = marker("refused-id", 254);
++        assert_eq!(
++            register(&mut pc, &long_id, b"uuid-of-the-long-id", &key).await,
++            register_pk_response::Result::UUID_MISMATCH
++        );
++        // what no client sends as a uuid or a key
++        let long_uuid = marker("refused-uuid", 129);
++        assert_eq!(
++            register(&mut pc, "100000001", long_uuid.as_bytes(), &key).await,
++            register_pk_response::Result::UUID_MISMATCH
++        );
++        let long_key = marker("refused-key", 65);
++        assert_eq!(
++            register(
++                &mut pc,
++                "100000002",
++                b"uuid-of-the-long-key",
++                long_key.as_bytes()
++            )
++            .await,
++            register_pk_response::Result::UUID_MISMATCH
++        );
++        // the same over UDP
++        let udp = UdpSocket::bind("127.0.0.1:0").await.expect("udp socket");
++        let long_udp_uuid = marker("refused-udp-uuid", 129);
++        let bytes = register_pk("100000003", long_udp_uuid.as_bytes(), &key)
++            .write_to_bytes()
++            .expect("encode");
++        udp.send_to(&bytes, ("127.0.0.1", server.port))
++            .await
++            .expect("register pk over udp");
++        let mut buf = vec![0u8; 4096];
++        let (n, _) = timeout(Duration::from_secs(5), udp.recv_from(&mut buf))
++            .await
++            .expect("a datagram from hbbs within 5s")
++            .expect("udp receive");
++        let Some(rendezvous_message::Union::RegisterPkResponse(res)) =
++            RendezvousMessage::parse_from_bytes(&buf[..n])
++                .expect("decode")
++                .union
++        else {
++            panic!("expected a register pk response over udp");
++        };
++        assert_eq!(
++            res.result.enum_value(),
++            Ok(register_pk_response::Result::UUID_MISMATCH)
++        );
++
++        // At the bounds and as clients send them, registrations go through.
++        let kept_id = marker("kept-id", 253);
++        assert_eq!(
++            register(&mut pc, &kept_id, b"uuid-of-the-kept-id", &key).await,
++            register_pk_response::Result::OK
++        );
++        let kept_uuid = marker("kept-uuid", 128);
++        let kept_key = marker("kept-key", 64);
++        let mut pc2 = Client::connect(&server, "203.0.113.11", Some(40002)).await;
++        assert_eq!(
++            register(
++                &mut pc2,
++                "100000004",
++                kept_uuid.as_bytes(),
++                kept_key.as_bytes()
++            )
++            .await,
++            register_pk_response::Result::OK
++        );
++        let mut pc3 = Client::connect(&server, "203.0.113.12", Some(40003)).await;
++        assert_eq!(
++            register(
++                &mut pc3,
++                PEER_ID,
++                b"6f1c3b8e-2d4a-4f7b-9c1e-5a8d3e2f1b0c",
++                &key
++            )
++            .await,
++            register_pk_response::Result::OK
++        );
++        let kept_key_answer = server.console("hjv-pk 100000004").await;
++        assert!(
++            !kept_key_answer.starts_with("HJVPK1 100000004 - "),
++            "{kept_key_answer}"
++        );
++
++        // The database and the log have what was taken, and nothing of what was refused.
++        server
++            .wait_wrote(format!("update_pk {PEER_ID} ").as_bytes())
++            .await;
++        for kept in [&kept_id, &kept_uuid, &kept_key] {
++            assert!(server.wrote(kept.as_bytes()), "hbbs did not keep {kept:?}");
++        }
++        for refused in [&long_id, &long_uuid, &long_key, &long_udp_uuid] {
++            assert!(!server.wrote(refused.as_bytes()), "hbbs kept {refused:?}");
++        }
++        // nor the peer map, whose keys hjv-pk answers with
++        for id in ["100000001", "100000002", "100000003"] {
++            assert_eq!(
++                server.console(&format!("hjv-pk {id}")).await,
++                format!("HJVPK1 {id} - -\n")
++            );
++        }
++    });
++}
++
++#[test]
++fn a_message_over_the_bound_ends_its_connection() {
++    let server = Hbbs::start("long-message", &[]);
++    runtime().block_on(async {
++        // Online queries, which hbbs answers and then closes the connection: the largest of
++        // upstream's bound, about 5000 ids of 10 digits, and one of 6000 ids, past it.
++        let ids = |n: usize| (0..n).map(|i| format!("{i:010}")).collect::<Vec<_>>();
++        let (within, past) = (online_request(ids(5000)), online_request(ids(6000)));
++        assert!(within.write_to_bytes().expect("encode").len() <= MAX_MESSAGE);
++        assert!(past.write_to_bytes().expect("encode").len() > MAX_MESSAGE);
++
++        let mut ws = Client::connect(&server, "198.51.100.7", Some(40100)).await;
++        ws.send(within.clone()).await;
++        let rendezvous_message::Union::OnlineResponse(_) = ws.recv().await else {
++            panic!("expected an online response over websocket");
++        };
++        let mut ws = Client::connect(&server, "198.51.100.7", Some(40101)).await;
++        ws.send(past.clone()).await;
++        assert!(
++            ws.closed_unanswered().await,
++            "hbbs took a message over the bound on the websocket port"
++        );
++
++        let port = server.port;
++        let tcp = |query: RendezvousMessage| async move {
++            let stream = TcpStream::connect(("127.0.0.1", port))
++                .await
++                .expect("connect to the tcp port");
++            let mut tcp = Framed::new(stream, BytesCodec::new());
++            tcp.send(Bytes::from(query.write_to_bytes().expect("encode")))
++                .await
++                .expect("send the query over tcp");
++            match timeout(Duration::from_secs(5), tcp.next()).await {
++                Ok(None) | Ok(Some(Err(_))) => None,
++                Ok(Some(Ok(reply))) => {
++                    RendezvousMessage::parse_from_bytes(&reply)
++                        .expect("decode")
++                        .union
++                }
++                Err(_) => panic!("hbbs neither answered nor closed the tcp connection"),
++            }
++        };
++        let Some(rendezvous_message::Union::OnlineResponse(_)) = tcp(within).await else {
++            panic!("expected an online response over tcp");
++        };
++        assert!(
++            tcp(past).await.is_none(),
++            "hbbs took a message over the bound on the tcp port"
++        );
++    });
++}
++
++#[test]
++fn x_real_ip_gives_the_client_address() {
++    let server = Hbbs::start("real-ip", &[]);
++    runtime().block_on(async {
++        // A dual-stack proxy writes an IPv4 client in its IPv4-mapped form. The registration
++        // counts against the IPv4 address, as without the proxy, where the IP blocker lists it.
++        let mut pc = Client::connect(&server, "::ffff:203.0.113.10", Some(40001)).await;
++        assert_eq!(
++            register(&mut pc, PEER_ID, b"peer-uuid", &[7u8; 32]).await,
++            register_pk_response::Result::OK
++        );
++        let blocker = server.console("ib 203.0.113.10").await;
++        assert_eq!(blocker.lines().count(), 2, "{blocker}");
++
++        let mut mapped = Client::connect(&server, "::ffff:198.51.100.7", Some(40100)).await;
++        mapped.send(punch_hole_request(&server)).await;
++        let rendezvous_message::Union::PunchHole(ph) = pc.recv().await else {
++            panic!("expected a punch hole");
++        };
++        assert_eq!(
++            AddrMangle::decode(&ph.socket_addr),
++            "198.51.100.7:40100".parse::<SocketAddr>().expect("address")
++        );
++
++        // without X-Real-Port, the port of the proxy's connection tells clients apart
++        let mut ports = Vec::new();
++        for _ in 0..2 {
++            let mut controller = Client::connect(&server, "198.51.100.8", None).await;
++            controller.send(punch_hole_request(&server)).await;
++            let rendezvous_message::Union::PunchHole(ph) = pc.recv().await else {
++                panic!("expected a punch hole");
++            };
++            let addr = AddrMangle::decode(&ph.socket_addr);
++            assert_eq!(addr.ip().to_string(), "198.51.100.8");
++            assert_ne!(addr.port(), 0);
++            ports.push(addr.port());
++        }
++        assert_ne!(ports[0], ports[1]);
++    });
++}
