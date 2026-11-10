@@ -82,7 +82,10 @@
 //! network) share it. The HEAD without any of the caller's headers that the app's HTTP client
 //! sends first counts nowhere. Downloads that begin count 10 a day (HJV_API_LIMIT_UPDATE) per
 //! account for its logins and per PC for its device key; an account makes 20 links a day. Door 2
-//! has the download slots only, which its notice files take too.
+//! has the download slots only, which its notice files take too, and of those at most half
+//! (HJV_API_DOWNLOADS_MAX / 2, at least one): its code is no secret from outsiders (hbbs's text
+//! below the minimum version carries its link), and door 1, the short links and the support links
+//! keep the rest whatever comes through door 2. A full share is the same 503 as full slots.
 //!
 //! **Records**: every package sent and every link made is a record of kind `update` (the account
 //! and the PC as tags, the address as its tag, never itself) and a line in the journal, where a
@@ -406,6 +409,11 @@ impl Policy {
     }
 }
 
+/// How many of `slots` download slots door 2 may hold at once.
+pub fn door2_share(slots: usize) -> usize {
+    (slots / 2).max(1)
+}
+
 /// Door 2's file: its code and the time it closes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Door2 {
@@ -694,6 +702,8 @@ pub struct Updates {
     links: Mutex<HashMap<String, Link>>,
     /// the files (packages and their notice files) that may go out at once (HJV_API_DOWNLOADS_MAX)
     pub slots: Slots,
+    /// how many of the slots door 2 may hold at once: half of them, at least one
+    pub door2_slots: Slots,
     /// door 2's downloads written to the records per minute: whoever has its link downloads as
     /// often as they like
     door2_records: RecordBudget,
@@ -710,6 +720,7 @@ impl Updates {
             door2: Mutex::default(),
             links: Mutex::default(),
             slots: Slots::new(config.downloads_max),
+            door2_slots: Slots::new(door2_share(config.downloads_max)),
             door2_records: RecordBudget::default(),
             nobody: devsig::public_key(&random_bytes::<32>()),
         }
@@ -1606,9 +1617,9 @@ async fn door2(state: &Arc<AppState>, req: &ApiRequest, code: &str, file: Option
     match found {
         None => no_link(),
         Some(Door2File::Notice(file, size)) if head => file_reply(file, size, None, &name, false),
-        // a notice file goes out as a package does: within a slot, so that readers who take
-        // their time cannot hold more of the service than the slots allow
-        Some(Door2File::Notice(file, size)) => match state.updates.slots.take() {
+        // a notice file goes out as a package does: within a slot of door 2's share, so that
+        // readers who take their time cannot hold more of the service than door 2 may
+        Some(Door2File::Notice(file, size)) => match door2_slot(state) {
             Some(slot) => file_reply(file, size, Some(slot), &name, false),
             None => busy(),
         },
@@ -1616,7 +1627,7 @@ async fn door2(state: &Arc<AppState>, req: &ApiRequest, code: &str, file: Option
             file_reply(opened.file, opened.size, None, &name, true)
         }
         Some(Door2File::Package(platform, opened)) => {
-            let Some(slot) = state.updates.slots.take() else {
+            let Some(slot) = door2_slot(state) else {
                 return busy();
             };
             match state.updates.door2_records.admit() {
@@ -1645,6 +1656,11 @@ async fn door2(state: &Arc<AppState>, req: &ApiRequest, code: &str, file: Option
             file_reply(opened.file, opened.size, Some(slot), &name, true)
         }
     }
+}
+
+/// A download slot within door 2's share of them.
+fn door2_slot(state: &AppState) -> Option<Slot> {
+    state.updates.slots.take_within(&state.updates.door2_slots)
 }
 
 /// The file door 2 hands out under `name`, opened: a package under one of its names, or a notice
@@ -2884,6 +2900,15 @@ mod tests {
             expires: at + LINK_SECS,
             left: LINK_DOWNLOADS,
         }
+    }
+
+    #[test]
+    fn door_2_holds_half_of_the_slots_and_at_least_one() {
+        let shares: Vec<usize> = [1, 2, 3, 4, 5, 16, 64].map(door2_share).to_vec();
+        assert_eq!(shares, vec![1, 1, 1, 2, 2, 8, 32]);
+        let dir = temp_dir();
+        let updates = Updates::new(&config(&dir));
+        assert_eq!((updates.slots.free(), updates.door2_slots.free()), (2, 1));
     }
 
     #[test]

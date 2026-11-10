@@ -169,7 +169,7 @@ its logins and per PC for its device key; `HJV_API_LIMIT_UPDATE_FAIL_IP` (30 a d
 that fail for who asks, per client address, after which such a request gets 429, while one with
 the right token, signature or code is never refused for its address. `HJV_API_DOWNLOADS_MAX` (4,
 at most 16) is the files sent at the same time, packages and their notice files alike; one more
-gets 503 with `Retry-After: 60`.
+gets 503 with `Retry-After: 60`. Door 2 holds at most half of them (2 of the 4, at least 1).
 
 `HJV_API_REVIEW_FILE` (unset) is the file of the App Review account (below), an absolute path such
 as `/etc/hjviewer/review.conf`; unset, there is no such account.
@@ -1732,7 +1732,11 @@ policy from nginx and its `latest` from hjv-api.
   hour is over at its next write, however few bytes its reader takes at a time.
   `HJV_API_DOWNLOADS_MAX` files, packages and notice files alike, go out at once; one more gets
   `503 {"error":…,"hjv":"busy","retry_after":60}` with `Retry-After: 60`. HEAD gets the same
-  head, takes no slot and counts nowhere.
+  head, takes no slot and counts nowhere. Door 2's files, its notice files included, take at most
+  half of the slots (`HJV_API_DOWNLOADS_MAX` / 2 rounded down, at least 1; since 1.9.3), and one
+  more through door 2 gets the same 503 `busy` while the other slots are free: its code is no
+  secret from outsiders (hbbs's text below the minimum version carries its link), and door 1, the
+  short links and the support links keep the rest of the slots whatever comes through door 2.
 - **Door 1**, `GET, HEAD /api/hjv/update/{windows,android}/{x.y.z}`: 400 for another platform or
   what is no version; then who asks; then 404 unless `x.y.z` is the platform's `latest` with a
   package. The download is named `HJViewer-<v>.exe` (never a name that makes the packer open the
@@ -1791,7 +1795,7 @@ policy from nginx and its `latest` from hjv-api.
   headers, which the app's HTTP client sends first to learn how to connect, gets its 401 and
   counts nowhere. A download that begins counts under `HJV_API_LIMIT_UPDATE` for the account (all
   its logins) or for the PC (its device key), a link made under 20 a day for its account; the
-  downloads of a link are the link's three, and door 2 has the download slots only.
+  downloads of a link are the link's three, and door 2 has its half of the download slots only.
 - **Records.** Every package sent and every link made is a record of kind `update` (`token-…`,
   `device-…`, `link-made-…`, `link-…`, `door2-…` with the platform, and `support-windows`) with the account and the PC
   as tags and the client address as its tag, and a line in the journal; a code shows there as the

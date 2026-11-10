@@ -57,9 +57,11 @@ pub const WRITE_STALL: Duration = Duration::from_secs(60);
 /// The downloads that may run at once.
 pub struct Slots(Arc<Semaphore>);
 
-/// One of the [`Slots`], free again when it is dropped.
+/// One of the [`Slots`], free again when it is dropped, with the place it holds in a share of
+/// them, if it was taken within one.
 pub struct Slot {
     _permit: OwnedSemaphorePermit,
+    _share: Option<OwnedSemaphorePermit>,
 }
 
 impl Slots {
@@ -70,7 +72,21 @@ impl Slots {
     /// A slot, if one is free.
     pub fn take(&self) -> Option<Slot> {
         let permit = self.0.clone().try_acquire_owned().ok()?;
-        Some(Slot { _permit: permit })
+        Some(Slot {
+            _permit: permit,
+            _share: None,
+        })
+    }
+
+    /// A slot within `share`, a smaller count of these slots that one kind of download may hold
+    /// at most: a slot, if one is free here and `share` is not used up.
+    pub fn take_within(&self, share: &Slots) -> Option<Slot> {
+        let place = share.0.clone().try_acquire_owned().ok()?;
+        let permit = self.0.clone().try_acquire_owned().ok()?;
+        Some(Slot {
+            _permit: permit,
+            _share: Some(place),
+        })
     }
 
     /// How many are free now.
@@ -593,6 +609,26 @@ mod tests {
         let full = Body::from(Bytes::from_static(b"{}"));
         assert_eq!(full.size_hint().exact(), Some(2));
         assert_eq!(slots.free(), 2);
+    }
+
+    #[test]
+    fn a_share_holds_no_more_than_its_count_of_the_slots() {
+        let (slots, share) = (Slots::new(4), Slots::new(2));
+        let first = slots.take_within(&share).unwrap();
+        let second = slots.take_within(&share).unwrap();
+        assert_eq!((slots.free(), share.free()), (2, 0));
+        // the share is used up, the slots are not: the others still get theirs
+        assert!(slots.take_within(&share).is_none());
+        assert_eq!((slots.free(), share.free()), (2, 0));
+        let other = slots.take().unwrap();
+        drop(first);
+        assert_eq!((slots.free(), share.free()), (2, 1));
+        // all slots taken: no slot within the share either, and the place in it is not kept
+        let more = [slots.take().unwrap(), slots.take().unwrap()];
+        assert!(slots.take_within(&share).is_none());
+        assert_eq!((slots.free(), share.free()), (0, 1));
+        drop((second, other, more));
+        assert_eq!((slots.free(), share.free()), (4, 2));
     }
 
     #[tokio::test(start_paused = true)]

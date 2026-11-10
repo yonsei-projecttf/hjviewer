@@ -1489,6 +1489,48 @@ async fn a_download_waits_for_a_slot_and_loses_nothing_meanwhile() {
 }
 
 #[tokio::test]
+async fn door_2_leaves_the_other_half_of_the_slots_to_the_rest() {
+    let area = Area::new();
+    let (exe, _) = area.usual();
+    area.put(
+        "notices-1.6.1/LICENSE.txt",
+        b"GNU AFFERO GENERAL PUBLIC LICENSE",
+    );
+    area.door2(DOOR2, now() + 3600);
+    let h = start(&area, &[("HJV_API_DOWNLOADS_MAX", "2")]).await;
+    let token = h.login_ok(HONG, None).await;
+    let (url, _) = link(&h, &token, "windows", "{\"installed\":true}").await;
+    let package = format!("/api/hjv/get/{DOOR2}/HJViewer-1.6.1.exe");
+    let notice = format!("/api/hjv/get/{DOOR2}/HJViewer-1.6.1-LICENSE.txt");
+    let ip = "203.0.113.61";
+
+    // door 2's one place of two slots is taken, as by a slow download through it: door 2 is busy
+    // for its packages and its notice files alike, the short link is not
+    let taken = h.state.updates.slots.take_within(&h.state.updates.door2_slots);
+    assert!(taken.is_some());
+    assert_eq!(h.state.updates.slots.free(), 1);
+    for path in [package.as_str(), notice.as_str()] {
+        let got = bare(&h, Method::GET, path, ip).await;
+        assert_eq!(
+            (got.status, got.header("retry-after")),
+            (503, "60"),
+            "{path}"
+        );
+        assert_eq!(got.json()["hjv"], "busy");
+        assert_eq!(bare(&h, Method::HEAD, path, ip).await.status, 200, "{path}");
+    }
+    let got = bare(&h, Method::GET, &url, ip).await;
+    assert_eq!((got.status, &got.body), (200, &exe));
+    drop(taken);
+    let got = bare(&h, Method::GET, &package, ip).await;
+    assert_eq!((got.status, &got.body), (200, &exe));
+    assert_eq!(
+        (h.state.updates.slots.free(), h.state.updates.door2_slots.free()),
+        (2, 1)
+    );
+}
+
+#[tokio::test]
 async fn door_2s_records_stop_at_twenty_a_minute() {
     let area = Area::new();
     let (exe, _) = area.usual();

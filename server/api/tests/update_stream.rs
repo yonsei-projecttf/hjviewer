@@ -283,17 +283,35 @@ async fn the_fifth_download_at_once_waits_its_turn() {
     let state = state(&dir, &[]);
     assert_eq!(state.updates.slots.free(), 4);
     let mut running = Vec::new();
-    for i in 0..4 {
+    for i in 0..2 {
         let mut stream = connect(&state, 4096);
         let head = ask(&mut stream, "GET", DOWNLOAD).await;
         assert_eq!((head.status, head.length()), (200, size), "{i}");
         running.push(stream);
     }
+    // door 2 holds half of the slots at most: its third download waits as one over all slots
+    // does, while the rest are kept for door 1, the short links and the support links
+    assert_eq!(state.updates.slots.free(), 2);
+    let busy = |head: &Head| (head.status, head.header("retry-after").to_owned());
+    let mut third = connect(&state, 4096);
+    let head = ask(&mut third, "GET", DOWNLOAD).await;
+    assert_eq!(busy(&head), (503, "60".to_owned()));
+    let mut body = vec![0u8; head.length() as usize];
+    third.read_exact(&mut body).await.unwrap();
+    assert!(String::from_utf8(body)
+        .unwrap()
+        .contains("\"hjv\":\"busy\""));
+    assert_eq!(state.updates.slots.free(), 2);
+    // the other two go out elsewhere, as through door 1
+    let others = [
+        state.updates.slots.take().unwrap(),
+        state.updates.slots.take().unwrap(),
+    ];
     assert_eq!(state.updates.slots.free(), 0);
     let mut fifth = connect(&state, 4096);
     for _ in 0..3 {
         let head = ask(&mut fifth, "GET", DOWNLOAD).await;
-        assert_eq!((head.status, head.header("retry-after")), (503, "60"));
+        assert_eq!(busy(&head), (503, "60".to_owned()));
         let mut body = vec![0u8; head.length() as usize];
         fifth.read_exact(&mut body).await.unwrap();
         assert!(String::from_utf8(body)
@@ -330,6 +348,7 @@ async fn the_fifth_download_at_once_waits_its_turn() {
     }
     assert_eq!(state.updates.slots.free(), 1);
     assert_eq!(ask(&mut sixth, "GET", DOWNLOAD).await.status, 200);
+    drop(others);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
