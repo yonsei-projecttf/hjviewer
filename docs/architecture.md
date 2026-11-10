@@ -46,7 +46,7 @@ TeamViewer처럼 **모바일 앱(iOS/Android)에서 Windows PC 화면을 보고 
 | hbbr | P2P 실패 시 두 연결을 짝지어 암호화된 바이트를 그대로 전달 | rustdesk-server |
 | Caddy | TLS 종료(Let's Encrypt 자동), 경로별 라우팅. 이미 웹 서버가 있는 서버는 nginx·Apache가 같은 일을 함. 1.6.0의 버전 정책 파일은 nginx 배치에서만 내줌(8절) | `deploy/Caddyfile` |
 | hjv-api (1.6.0) | 계정 API: 연세포탈 로그인, 내 PC 목록, 계정 키, PC 동기화와 신뢰 목록, 켜기 명령, 새 앱 버전의 설치 파일(8-5). 웹 서버 뒤 Unix 소켓에서만 받음 | `server/api` ([README](../server/api/README.md)) |
-| hjv-relay (1.6.1) | PC와 같은 네트워크의 NAS에서 서버가 서명한 켜기 명령을 받아 매직 패킷을 보냄 | `relay/` ([PROTOCOL.md](../relay/PROTOCOL.md), [relay-dsm.md](relay-dsm.md)) |
+| hjv-relay (1.6.0) | PC와 같은 네트워크의 NAS에서 서버가 서명한 켜기 명령을 받아 매직 패킷을 보냄 | `relay/` ([PROTOCOL.md](../relay/PROTOCOL.md), [relay-dsm.md](relay-dsm.md)) |
 | hjv-release (1.6.0) | 개발 PC의 운영자 도구: 버전 정책 만들기와 확인, 사용자의 서명, 서버에 넣을 디렉터리와 hbbs 설정 값 | `tools/hjv-release` ([README](../tools/hjv-release/README.md)) |
 
 **종단 간 암호화**: 세션 키는 두 기기가 직접 교환합니다. hbbs가 서명한 기기 공개키로 상대를 검증하고, WebRTC에서는 상대가 서명한 DTLS 지문으로 다시 검증합니다. 따라서 hbbs와 hbbr은 화면 내용을 볼 수 없습니다.
