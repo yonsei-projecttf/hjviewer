@@ -22,7 +22,9 @@
 # point there: the script stops on uncommitted changes or a commit that origin/main does not
 # contain. HJV_SKIP_SOURCE_CHECK=1 skips that for local tests. HJV_SERVER_BIN_DIR=<dir> packages
 # hbbs/hbbr built already and HJV_API_BIN=<file> an hjv-api built already (scripts/ci.sh server
-# leaves them in build/ci/target/release and build/ci/target-api/release).
+# leaves them in build/ci/target/release and build/ci/target-api/release). Only the binaries it
+# builds itself are free of the build machine's paths (remap_flags below): a release builds them
+# here, without those two.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -44,22 +46,53 @@ if [ -z "${HJV_SKIP_SOURCE_CHECK:-}" ]; then
   fi
 fi
 
+# The RUSTFLAGS of this script's own builds, which keep the build machine's paths out of the
+# binaries (panic messages and debug info name source files): the cargo home's crates become
+# /cargo/registry/src/..., the toolchain's sources (where rust-src is installed) /rustc/<the
+# toolchain's commit>/library/..., as rustc names them without rust-src, and this tree, the
+# upstream checkout under build/ among it, /hjviewer/.... The same tree and toolchain give the
+# same bytes in any directory and home. Binaries passed in (HJV_SERVER_BIN_DIR, HJV_API_BIN) are
+# packaged as they are.
+remap_flags() { # <the directory cargo builds in, for its toolchain>
+  local sysroot hash
+  sysroot=$(cd "$1" && rustc --print sysroot)
+  hash=$(cd "$1" && rustc -vV | sed -n 's/^commit-hash: //p')
+  [ -n "$hash" ] || { echo "rustc -vV names no commit-hash" >&2; return 1; }
+  # rustc takes the last of the prefixes that match a path
+  echo "${RUSTFLAGS:-} --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" \
+    "--remap-path-prefix=$sysroot/lib/rustlib/src/rust=/rustc/$hash --remap-path-prefix=$ROOT=/hjviewer"
+}
+# Fails when a binary this script built names the build machine's home directory or this tree
+no_build_paths() { # <binary...>
+  local f
+  for f in "$@"; do
+    if grep -q -a -F -e "$HOME/" -e "$ROOT/" "$f"; then
+      echo "$f names a path of this machine ($HOME/ or $ROOT/): --remap-path-prefix missed it" >&2
+      return 1
+    fi
+  done
+}
+
 rm -rf "$work/upstream"
 UPSTREAM_DIR="$work/upstream" "$ROOT/scripts/fetch-upstream.sh" server
 bin=${HJV_SERVER_BIN_DIR:-}
 if [ -z "$bin" ]; then
+  flags=$(remap_flags "$work/upstream/rustdesk-server")
   (cd "$work/upstream/rustdesk-server" &&
-    CARGO_TARGET_DIR="$work/target" cargo build --release --locked --bin hbbs --bin hbbr)
+    RUSTFLAGS=$flags CARGO_TARGET_DIR="$work/target" cargo build --release --locked --bin hbbs --bin hbbr)
   bin="$work/target/release"
+  no_build_paths "$bin/hbbs" "$bin/hbbr"
 fi
 api="" api_commit=""
 if [ -d "$ROOT/server/api" ]; then
   api=${HJV_API_BIN:-}
   if [ -z "$api" ]; then
     api_commit=$(git -C "$ROOT" rev-parse HEAD)
-    (cd "$ROOT/server/api" && HJV_API_COMMIT=$api_commit \
+    flags=$(remap_flags "$ROOT/server/api")
+    (cd "$ROOT/server/api" && HJV_API_COMMIT=$api_commit RUSTFLAGS=$flags \
       CARGO_TARGET_DIR="$work/target-api" cargo build --release --locked --bin hjv-api)
     api="$work/target-api/release/hjv-api"
+    no_build_paths "$api"
   else
     # the commit it was built with, as it reports it (scripts/ci.sh server builds it with the last
     # commit that changed server/api)
