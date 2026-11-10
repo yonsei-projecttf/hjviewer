@@ -874,9 +874,11 @@ directory must be closed to everyone but the one who runs the command (root's
 directory of the caller's closed to others, and removed again when the backup fails; anywhere
 else make it first (`install -d -m 700 <dir>`). A directory as the argument gets a name of the
 time. `--keep-days N` then deletes the backups in that directory older than N days (SQLite files
-with that application ID named `*.sqlite3`, nothing else) and the command's own temporary files
-(`.<name>.sqlite3.<12 hex>.partial`) of runs that broke off, a day old. The output and the
-operator record hold counts only.
+with that application ID named `*.sqlite3`, nothing else), but never the newest three of them by
+modification time, the one just made among them, whatever their age (1.9.3: age is by the clock,
+and a clock far ahead would otherwise have the next daily run delete every good backup), and the
+command's own temporary files (`.<name>.sqlite3.<12 hex>.partial`) of runs that broke off, a day
+old. The output and the operator record hold counts only.
 
 - **Daily**: `hjviewer-api-backup.timer` (03:30 and up to 20 minutes later, and after a boot that
   missed it) runs `hjv-api admin backup --keep-days 14 /var/lib/hjviewer-api/backup`: 14 days of

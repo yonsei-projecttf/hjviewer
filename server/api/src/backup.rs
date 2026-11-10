@@ -23,7 +23,9 @@
 //! made first. With `--keep-days N` the command then deletes the backups in that directory
 //! older than N days: regular files named *.sqlite3 that carry the application ID, and nothing
 //! else, besides its own temporary files (`.<name>.sqlite3.<12 hex>.partial`) of runs that broke
-//! off, after a day.
+//! off, after a day. The newest [`KEEP_NEWEST`] backups stay whatever their age (1.9.3): age is
+//! by the clock, and a clock far ahead (a typo, a bad time source) would otherwise have the next
+//! daily run delete every good backup and keep only a copy of whatever the database is then.
 //!
 //! The copy holds the database only: the credentials (/etc/credstore.encrypted,
 //! /var/lib/systemd/credential.secret) and the operator record are not in it (design v3 §5-9). A
@@ -58,6 +60,8 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 const CHUNK: usize = 64 * 1024;
 /// The longest `--keep-days`.
 pub const MAX_KEEP_DAYS: i64 = 3650;
+/// The backups `--keep-days` never deletes, the newest by modification time, whatever their age.
+pub const KEEP_NEWEST: usize = 3;
 /// The daily backup's directory: root's, 0700, inside the service's state directory, made by
 /// deploy/systemd/hjviewer-api-backup.service (`StateDirectory=`), and by the command line when
 /// a backup by hand comes first.
@@ -532,9 +536,10 @@ pub struct Pruned {
     pub partial: usize,
 }
 
-/// Deletes the backups in `dir` older than `keep_days` (by modification time at `now`), and this
-/// command's temporary files ([`is_partial`]) of broken-off runs older than a day; never `except`,
-/// never anything else.
+/// Deletes the backups in `dir` older than `keep_days` (by modification time at `now`) but the
+/// newest [`KEEP_NEWEST`] of them, and this command's temporary files ([`is_partial`]) of
+/// broken-off runs older than a day; never `except` (which counts among the newest when it is a
+/// backup there), never anything else.
 pub fn prune(dir: &Path, keep_days: i64, now: SystemTime, except: &Path) -> Result<Pruned, String> {
     let older = |meta: &std::fs::Metadata, secs: i64| {
         meta.modified()
@@ -544,6 +549,9 @@ pub fn prune(dir: &Path, keep_days: i64, now: SystemTime, except: &Path) -> Resu
     };
     let mut pruned = Pruned::default();
     let mut failed = Vec::new();
+    // (modification time, old enough, path) of each backup, and the temporary files to delete
+    let mut backups = Vec::new();
+    let mut partials = Vec::new();
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -554,21 +562,35 @@ pub fn prune(dir: &Path, keep_days: i64, now: SystemTime, except: &Path) -> Resu
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
             continue;
         };
-        if !meta.file_type().is_file() || path == except {
+        if !meta.file_type().is_file() {
             continue;
         }
-        let partial = is_partial(name);
-        let backup = !name.starts_with('.') && name.ends_with(SUFFIX);
-        let gone = if partial && older(&meta, DAY) {
-            &mut pruned.partial
-        } else if backup && older(&meta, keep_days * DAY) && is_backup(&path) {
-            &mut pruned.backups
-        } else {
-            continue;
-        };
-        match std::fs::remove_file(&path) {
-            Ok(()) => *gone += 1,
-            Err(e) => failed.push(format!("{name}: {e}")),
+        if is_partial(name) {
+            if older(&meta, DAY) && path != except {
+                partials.push(path);
+            }
+        } else if !name.starts_with('.') && name.ends_with(SUFFIX) && is_backup(&path) {
+            let old = older(&meta, keep_days * DAY) && path != except;
+            backups.push((meta.modified().ok(), old, path));
+        }
+    }
+    // the newest first, then by name (one whose time cannot be read is never old, and last)
+    backups.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+    let old: Vec<PathBuf> = backups
+        .into_iter()
+        .skip(KEEP_NEWEST)
+        .filter(|(_, old, _)| *old)
+        .map(|(_, _, path)| path)
+        .collect();
+    for (paths, gone) in [(old, &mut pruned.backups), (partials, &mut pruned.partial)] {
+        for path in paths {
+            match std::fs::remove_file(&path) {
+                Ok(()) => *gone += 1,
+                Err(e) => failed.push(format!(
+                    "{}: {e}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )),
+            }
         }
     }
     if failed.is_empty() {
@@ -927,7 +949,11 @@ mod tests {
         let old = d.join("hjv-api-20260901-033000Z.sqlite3");
         let snapshot = d.join("before-1.6.1.sqlite3");
         let new = d.join("hjv-api-20261013-033000Z.sqlite3");
-        for p in [&old, &snapshot, &new] {
+        let (day1, day2) = (
+            d.join("hjv-api-20261012-033000Z.sqlite3"),
+            d.join("hjv-api-20261011-033000Z.sqlite3"),
+        );
+        for p in [&old, &snapshot, &new, &day1, &day2] {
             database(p, APPLICATION_ID);
         }
         // old, but not hjv-api backups: another database, a file of another name, a link
@@ -966,6 +992,8 @@ mod tests {
             age(p, 20);
         }
         age(&new, 3);
+        age(&day1, 4);
+        age(&day2, 5);
         let pruned = prune(&d, 14, SystemTime::now(), &new).unwrap();
         assert_eq!(
             pruned,
@@ -975,17 +1003,58 @@ mod tests {
             }
         );
         assert!(!old.exists() && !snapshot.exists() && !partial.exists());
-        for p in [&new, &foreign, &text, &fresh_partial]
+        for p in [&new, &day1, &day2, &foreign, &text, &fresh_partial]
             .into_iter()
             .chain(&others)
         {
             assert!(p.exists(), "{}", p.display());
         }
         assert!(link.symlink_metadata().is_ok());
-        // the backup just written stays whatever its age
+        // the backup just written stays whatever its age, and so do the newest three
+        database(&old, APPLICATION_ID);
+        age(&old, 20);
         age(&new, 30);
         assert_eq!(prune(&d, 14, SystemTime::now(), &new).unwrap().backups, 0);
-        assert_eq!(prune(&d, 14, SystemTime::now(), &old).unwrap().backups, 1);
+        age(&day2, 25);
+        assert_eq!(
+            prune(&d, 14, SystemTime::now(), &snapshot).unwrap().backups,
+            1
+        );
+        assert!(!new.exists() && old.exists() && day1.exists() && day2.exists());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_clock_far_ahead_leaves_the_newest_three_backups() {
+        let d = dir("prune-ahead");
+        let backups: Vec<PathBuf> = (1..=5)
+            .map(|n| d.join(format!("hjv-api-202611{n:02}-033000Z.sqlite3")))
+            .collect();
+        for (n, p) in backups.iter().enumerate() {
+            database(p, APPLICATION_ID);
+            age(p, 5 - n as u64);
+        }
+        // the server's clock a year ahead: every backup is far past 14 days, the one just made too
+        let ahead = SystemTime::now() + Duration::from_secs(365 * 86_400);
+        let just_made = d.join("hjv-api-20271110-033000Z.sqlite3");
+        database(&just_made, APPLICATION_ID);
+        let pruned = prune(&d, 14, ahead, &just_made).unwrap();
+        assert_eq!(pruned.backups, 3);
+        // the copy just made and the two newest before it stay
+        assert!(just_made.exists() && backups[4].exists() && backups[3].exists());
+        assert!(backups[..3].iter().all(|p| !p.exists()));
+        // and again the next day: still three
+        assert_eq!(prune(&d, 14, ahead, &just_made).unwrap().backups, 0);
+        let fewer = dir("prune-few");
+        let only = fewer.join("before-1.9.3.sqlite3");
+        database(&only, APPLICATION_ID);
+        age(&only, 400);
+        assert_eq!(
+            prune(&fewer, 14, SystemTime::now(), Path::new("/nonexistent")).unwrap(),
+            Pruned::default()
+        );
+        assert!(only.exists());
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(&fewer).unwrap();
     }
 }
