@@ -33,7 +33,9 @@ hole request, a registration and a uuid mismatch appear escaped on one
 line; over-long IDs in a punch hole or relay request are not logged; a
 real ID stays as it is. tests/relay_pairing.rs: a uuid with a line break
 and one of 129 bytes are refused and not logged, a client's uuid still
-pairs.
+pairs. tests/min_version.rs: the refusal's log line is checked with an
+ID of 253 characters, the longest hbbs takes, as one of 300 is now
+answered as no such ID before the version check.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -41,9 +43,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/peer.rs              |  4 +-
  src/relay_server.rs      | 17 +++++++
  src/rendezvous_server.rs | 26 +++++++++--
+ tests/min_version.rs     |  7 +--
  tests/relay_pairing.rs   | 67 +++++++++++++++++++++++++--
  tests/untrusted_input.rs | 99 +++++++++++++++++++++++++++++++++++++++-
- 6 files changed, 215 insertions(+), 12 deletions(-)
+ 7 files changed, 219 insertions(+), 15 deletions(-)
 
 diff --git a/src/common.rs b/src/common.rs
 index 5435911..539ad42 100644
@@ -193,6 +196,25 @@ index 8b65a14..db88e2d 100644
                          rk.uuid,
                          peer.uuid
                      );
+diff --git a/tests/min_version.rs b/tests/min_version.rs
+index cf752f9..bcc45be 100644
+--- a/tests/min_version.rs
++++ b/tests/min_version.rs
+@@ -1000,10 +1000,11 @@ fn what_a_controller_sends_cannot_forge_or_flood_the_log() {
+     let server = Hbbs::start("log", Told::Env, Some(file.as_bytes()));
+     runtime().block_on(async {
+         let mut controller = Client::connect(&server, "198.51.100.40:50001").await;
+-        // a line break and a long tail in the version, an ID of 300 characters: the log has the
+-        // first 32 characters of the one and 64 of the other, in one line
++        // a line break and a long tail in the version, an ID of 253 characters (the longest
++        // hbbs takes): the log has the first 32 characters of the one and 64 of the other, in
++        // one line
+         let version = format!("1.5.1\nFORGED ERROR line{}", "x".repeat(1000));
+-        let id = "9".repeat(300);
++        let id = "9".repeat(253);
+         controller
+             .send(punch_hole_request(&id, &server.key, &version))
+             .await;
 diff --git a/tests/relay_pairing.rs b/tests/relay_pairing.rs
 index 34a3c2c..5ab075b 100644
 --- a/tests/relay_pairing.rs
