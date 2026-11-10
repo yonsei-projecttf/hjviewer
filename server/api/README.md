@@ -808,7 +808,13 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
   stored for them, at each check of the last four minutes, so that a PC that has just woken has
   time for its first sync; a PC set up again under a new key has its syncs refused until a login
   on it, needs-relogin in `report`, and is left out) and whether any of them synced in the last
-  ten minutes; whether hbbs's console answers; SSO calls paused
+  ten minutes; whether hbbs's console answers; PCs that synced in the last five minutes while hbbs
+  has seen none of them register within 90 seconds, under any key, at two checks in a row
+  (`unseen`, 1.9.3: the PCs reach hjv-api but not hbbs, through nginx's `/ws/id` path, or hbbs
+  refuses every registration, as with a broken `access.conf`, or is out of the PCs' reach; a PC's
+  first minutes, a PC gone to sleep, whose last sync is too old by the second check, and an hbbs
+  that does not answer, the `hbbs` finding, are none; a fault that leaves some PCs registered is
+  not seen); SSO calls paused
   now or in the last ten minutes, with `invalid_client` (the credential
   `hjviewer-sso-client-secret` must be renewed, as when the WordPress plugin's credential
   changes) and a refused address told apart; with `HJV_API_LOGIN=open`, the SSO calls of the

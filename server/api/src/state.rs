@@ -4,7 +4,7 @@
 
 use crate::{
     api::Reply,
-    check::OnlineSince,
+    check::{OnlineSince, UnseenSince},
     config::{Config, Secrets},
     db::{self, Db, Record},
     gate::GateMode,
@@ -82,6 +82,8 @@ pub struct AppState {
     /// since when hbbs has seen each PC holding its binding on, for the five-minute check
     /// (check.rs)
     pub online: OnlineSince,
+    /// since when PCs sync while hbbs sees none of them on, for the five-minute check (check.rs)
+    pub unseen: UnseenSince,
     /// the command key that signs wake commands (credential hjviewer-api-command-key, number
     /// HJV_API_COMMAND_KID), when there is one (wake.rs)
     pub command_key: Option<CommandKey>,
@@ -165,6 +167,7 @@ impl AppState {
             lists: ListCache::default(),
             key_checks: KeyChecks::default(),
             online: OnlineSince::default(),
+            unseen: UnseenSince::default(),
             sso: SsoClient::new(&config.sso, sso_basic, sso_api_uuid)?,
             seal: SealKeys::new(&seal_keys),
             tags: Tagger::new(&log_key),

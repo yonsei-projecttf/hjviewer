@@ -674,6 +674,7 @@ async fn the_check_catches_a_stopped_socket_and_no_syncs() {
         sso_new_full: None,
         sso_user_refused: None,
         files: Vec::new(),
+        pcs_unseen: None,
     };
     fake_admin(&admin, no_syncs.clone()).await;
     let check_args = || {
@@ -900,7 +901,41 @@ async fn the_check_with_the_service() {
         "{}",
         text(&out).0
     );
+    // hbbs sees none of the PCs that sync (nginx's /ws/id broken, hbbs refusing registrations):
+    // PC one synced just now, and hbbs last saw it over an hour ago. Not at the first check (a PC
+    // syncs before it registers), at the next one
     h.hbbs.register(&again, Some(4000));
+    let out = check().await;
+    assert!(out.status.success(), "{}{}", text(&out).0, text(&out).1);
+    h.state
+        .unseen
+        .backdate(Duration::from_secs(check::STEADY_SECS));
+    let out = check().await;
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out).0);
+    assert!(
+        text(&out).1.contains("check: unseen: 1 PCs synced in the last 5 minutes, but hbbs has seen none of them on at two checks in a row: "),
+        "{}",
+        text(&out).1
+    );
+    assert!(std::fs::read_to_string(&findings)
+        .unwrap()
+        .starts_with("unseen: "));
+    // seen again: all well; and a last sync older than five minutes is no alarm either
+    h.hbbs.register(&again, Some(5));
+    let out = check().await;
+    assert!(out.status.success(), "{}{}", text(&out).0, text(&out).1);
+    h.hbbs.register(&again, Some(4000));
+    let older = now() - check::UNSEEN_SYNC_SECS - 1;
+    h.state
+        .db
+        .call(move |c| c.execute("UPDATE devices SET last_sync_at = ?1", [older]))
+        .await
+        .unwrap();
+    h.state
+        .unseen
+        .backdate(Duration::from_secs(check::STEADY_SECS));
+    let out = check().await;
+    assert!(out.status.success(), "{}{}", text(&out).0, text(&out).1);
     // the SSO refuses the client credentials: one login pauses the calls
     h.state.sso_breaker.note(Some(Failure::ClientRefused));
     let out = check().await;
