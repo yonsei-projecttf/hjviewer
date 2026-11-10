@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:33:23 +0900
-Subject: [PATCH 09/11] hbbs: refuse a registration whose uuid or key is longer
+Subject: [PATCH 09/13] hbbs: refuse a registration whose uuid or key is longer
  than any client's
 
 Anyone can send RegisterPk over /ws/id, with no key and no ticket: in

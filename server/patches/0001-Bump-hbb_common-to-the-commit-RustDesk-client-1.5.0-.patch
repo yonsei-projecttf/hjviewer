@@ -1,23 +1,24 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 05:12:40 +0900
-Subject: [PATCH 01/11] Bump hbb_common to the commit RustDesk client 1.5.0
+Subject: [PATCH 01/13] Bump hbb_common to the commit RustDesk client 1.5.0
  pins
 
 The client's WebRTC transport needs rendezvous.proto fields (webrtc_sdp_offer,
 webrtc_sdp_answer, IceCandidate) that the server's pinned hbb_common predates.
 IdPk moved from message.proto into rendezvous.proto. ed25519 1.5.0 accepts
-signature 2.x and fails to build, so pin 1.5.3 like the client does.
+signature 2.x and fails to build, so pin 1.5.3 like the client does. tokio is
+1.53.3, past RUSTSEC-2026-0386.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- Cargo.lock               | 602 +++++++--------------------------------
+ Cargo.lock               | 606 +++++++--------------------------------
  libs/hbb_common          |   2 +-
  src/rendezvous_server.rs |   2 +-
- 3 files changed, 98 insertions(+), 508 deletions(-)
+ 3 files changed, 100 insertions(+), 510 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 63aada3..922711b 100644
+index 63aada3..6a93f13 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -2,15 +2,6 @@
@@ -548,7 +549,7 @@ index 63aada3..922711b 100644
   "security-framework-sys",
   "webpki-root-certs",
 - "windows-sys 0.59.0",
-+ "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
  ]
  
  [[package]]
@@ -632,6 +633,18 @@ index 63aada3..922711b 100644
   "ring 0.17.14",
   "subtle",
   "thiserror 1.0.31",
+@@ -4360,9 +4075,9 @@ checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
+ 
+ [[package]]
+ name = "tokio"
+-version = "1.53.1"
++version = "1.53.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
++checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+ dependencies = [
+  "bytes",
+  "libc",
 @@ -4468,9 +4183,8 @@ dependencies = [
  
  [[package]]

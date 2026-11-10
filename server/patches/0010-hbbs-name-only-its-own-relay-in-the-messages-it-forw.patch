@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:35:55 +0900
-Subject: [PATCH 10/11] hbbs: name only its own relay in the messages it
+Subject: [PATCH 10/13] hbbs: name only its own relay in the messages it
  forwards between clients
 
 hbbs forwarded the relay_server a client wrote: from a controller's
@@ -26,22 +26,75 @@ of RelayResponse comes first, a name equal to hbbs's own LAN address
 (--mask) is its own, and a RelayResponse acknowledging a RequestRelay
 still names nothing.
 
+The relays are taken as configured, not as upstream's list of those
+that resolved when hbbs started: a relay domain that did not resolve
+then (DNS not up yet after a reboot) would leave that list empty and the
+names unchanged, with nothing in the log but "relay-servers=[]".
+test_if_valid_server returned before its error line when the name did
+not resolve; it now logs "Invalid relay-servers <name>: ..." (ERROR).
+
 tests/untrusted_input.rs: a punch hole, the PC's relay response and
 punch hole report, another controller's relay request and its
 acknowledgement, all naming another relay or the configured one, with
-one, two and no relays configured.
+one, two and no relays configured, and with one whose name does not
+resolve.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/rendezvous_server.rs |  51 ++++++++++-
- tests/untrusted_input.rs | 189 ++++++++++++++++++++++++++++++++++++++-
- 2 files changed, 234 insertions(+), 6 deletions(-)
+ src/common.rs            |  14 +--
+ src/rendezvous_server.rs |  67 +++++++++++-
+ tests/untrusted_input.rs | 214 ++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 283 insertions(+), 12 deletions(-)
 
+diff --git a/src/common.rs b/src/common.rs
+index 82e32ac..5435911 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -81,13 +81,15 @@ pub(crate) fn get_expired_time() -> Instant {
+ #[allow(dead_code)]
+ pub(crate) fn test_if_valid_server(host: &str, name: &str) -> ResultType<SocketAddr> {
+     use std::net::ToSocketAddrs;
+-    let res = if host.contains(':') {
+-        host.to_socket_addrs()?.next().context("")
++    let addrs = if host.contains(':') {
++        host.to_socket_addrs()
+     } else {
+-        format!("{}:{}", host, 0)
+-            .to_socket_addrs()?
+-            .next()
+-            .context("")
++        format!("{}:{}", host, 0).to_socket_addrs()
++    };
++    // HJViewer: a name that does not resolve is logged too, not returned before the line
++    let res = match addrs {
++        Ok(mut addrs) => addrs.next().context("no address"),
++        Err(err) => Err(err.into()),
+     };
+     if res.is_err() {
+         log::error!("Invalid {} {}: {:?}", name, host, res);
 diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
-index b49735e..e8a3392 100644
+index b49735e..5281c25 100644
 --- a/src/rendezvous_server.rs
 +++ b/src/rendezvous_server.rs
-@@ -595,6 +595,11 @@ impl RendezvousServer {
+@@ -183,6 +183,9 @@ pub struct RendezvousServer {
+     tx: Sender,
+     relay_servers: Arc<RelayServers>,
+     relay_servers0: Arc<RelayServers>,
++    /// HJViewer: the relays as configured (-r, or the console's `rs <list>`), whether or not
++    /// their names resolved when the list was set; what own_relay goes by
++    relay_names: Arc<RelayServers>,
+     rendezvous_servers: Arc<Vec<String>>,
+     inner: Arc<Inner>,
+ }
+@@ -238,6 +241,7 @@ impl RendezvousServer {
+             tx: tx.clone(),
+             relay_servers: Default::default(),
+             relay_servers0: Default::default(),
++            relay_names: Default::default(),
+             rendezvous_servers: Arc::new(rendezvous_servers),
+             inner: Arc::new(Inner {
+                 serial,
+@@ -595,6 +599,11 @@ impl RendezvousServer {
                          rf.token.clear();
                          rf.control_permissions.clear();
                          rf.controlled_context.clear();
@@ -53,7 +106,7 @@ index b49735e..e8a3392 100644
                          msg_out.set_request_relay(rf);
                          let peer_addr = peer.read().await.socket_addr;
                          self.send_to_peer(&id, peer_addr, msg_out).await;
-@@ -693,6 +698,13 @@ impl RendezvousServer {
+@@ -693,6 +702,13 @@ impl RendezvousServer {
                              rr.relay_server = self.inner.local_ip.clone();
                          } else if rr.relay_server == self.inner.local_ip {
                              rr.relay_server = self.get_relay_server(addr.ip(), addr_b.ip());
@@ -67,7 +120,7 @@ index b49735e..e8a3392 100644
                          }
                      }
                      msg_out.set_relay_response(rr);
-@@ -772,12 +784,16 @@ impl RendezvousServer {
+@@ -772,12 +788,16 @@ impl RendezvousServer {
      #[inline]
      async fn handle_hole_sent<'a>(
          &mut self,
@@ -85,7 +138,7 @@ index b49735e..e8a3392 100644
          log::debug!(
              "{} punch hole response to {:?} from {:?}",
              if socket.is_none() { "TCP" } else { "UDP" },
-@@ -788,7 +804,7 @@ impl RendezvousServer {
+@@ -788,7 +808,7 @@ impl RendezvousServer {
          let mut p = PunchHoleResponse {
              socket_addr: AddrMangle::encode(addr).into(),
              pk: self.get_pk(&phs.version, phs.id).await,
@@ -94,7 +147,7 @@ index b49735e..e8a3392 100644
              webrtc_sdp_answer: phs.webrtc_sdp_answer,
              ..Default::default()
          };
-@@ -807,12 +823,16 @@ impl RendezvousServer {
+@@ -807,12 +827,16 @@ impl RendezvousServer {
      #[inline]
      async fn handle_local_addr<'a>(
          &mut self,
@@ -112,7 +165,7 @@ index b49735e..e8a3392 100644
          log::debug!(
              "{} local addrs response to {:?} from {:?}",
              if socket.is_none() { "TCP" } else { "UDP" },
-@@ -823,7 +843,7 @@ impl RendezvousServer {
+@@ -823,7 +847,7 @@ impl RendezvousServer {
          let mut p = PunchHoleResponse {
              socket_addr: la.local_addr.clone(),
              pk: self.get_pk(&la.version, la.id).await,
@@ -121,7 +174,25 @@ index b49735e..e8a3392 100644
              ..Default::default()
          };
          p.set_is_local(true);
-@@ -1119,6 +1139,29 @@ impl RendezvousServer {
+@@ -1107,6 +1131,17 @@ impl RendezvousServer {
+         let rs = get_servers(relay_servers, "relay-servers");
+         self.relay_servers0 = Arc::new(rs);
+         self.relay_servers = self.relay_servers0.clone();
++        // HJViewer: the names as written. get_servers keeps only those that resolve at this
++        // moment, so a relay domain that does not resolve when hbbs starts (DNS not up yet after
++        // a reboot) would leave that list empty and own_relay passing every name unchanged.
++        self.relay_names = Arc::new(
++            relay_servers
++                .split(',')
++                .map(str::trim)
++                .filter(|x| !x.is_empty())
++                .map(str::to_owned)
++                .collect(),
++        );
+     }
+ 
+     fn get_relay_server(&self, _pa: IpAddr, _pb: IpAddr) -> String {
+@@ -1119,6 +1154,30 @@ impl RendezvousServer {
          self.relay_servers[i].clone()
      }
  
@@ -131,9 +202,10 @@ index b49735e..e8a3392 100644
 +    /// the other side at any address. With one relay configured, that one whatever the sender
 +    /// wrote; with several, the sender's if it is one of them; with none, the sender's, as
 +    /// upstream. No name (a RelayResponse acknowledging a RequestRelay) stays none, and this
-+    /// server's LAN address (--mask, upstream's issue 24) is its own.
++    /// server's LAN address (--mask, upstream's issue 24) is its own. Configured means as
++    /// written, resolved or not.
 +    fn own_relay(&self, what: &str, addr: SocketAddr, name: String) -> Option<String> {
-+        let configured = &self.relay_servers0;
++        let configured = &self.relay_names;
 +        let local = !self.inner.local_ip.is_empty() && name == self.inner.local_ip;
 +        if name.is_empty() || configured.is_empty() || local {
 +            Some(name)
@@ -152,10 +224,10 @@ index b49735e..e8a3392 100644
          use std::fmt::Write as _;
  
 diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
-index 01dd8db..a7b0a1b 100644
+index 01dd8db..1bed20e 100644
 --- a/tests/untrusted_input.rs
 +++ b/tests/untrusted_input.rs
-@@ -1,8 +1,9 @@
+@@ -1,8 +1,10 @@
  //! What hbbs keeps of what anyone can send it: a registration whose id, uuid or key is longer
  //! than any client's is refused, and leaves nothing in the peer map, the database or the log; a
  //! message over the bound (MAX_MESSAGE_KB, 64 KiB) ends the connection it came on, on the
@@ -163,11 +235,12 @@ index 01dd8db..a7b0a1b 100644
 -//! IPv4 form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d.
 +//! WebSocket port and the TCP port alike; the address in X-Real-IP is the client's, in the IPv4
 +//! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; and a relay server one
-+//! client names to another is one hbbs is configured with.
++//! client names to another is one hbbs is configured with, whether or not its name resolved
++//! when hbbs started.
  
  use hbb_common::{
      bytes::Bytes,
-@@ -213,6 +214,28 @@ impl Client {
+@@ -213,6 +215,28 @@ impl Client {
              Err(_) | Ok(Some(Ok(_))) => false,
          }
      }
@@ -196,7 +269,7 @@ index 01dd8db..a7b0a1b 100644
  }
  
  fn register_pk(id: &str, uuid: &[u8], pk: &[u8]) -> RendezvousMessage {
-@@ -476,3 +499,165 @@ fn x_real_ip_gives_the_client_address() {
+@@ -476,3 +500,189 @@ fn x_real_ip_gives_the_client_address() {
          assert_ne!(ports[0], ports[1]);
      });
  }
@@ -312,6 +385,30 @@ index 01dd8db..a7b0a1b 100644
 +        for name in [OTHER_RELAY, "192.0.2.10"] {
 +            let named = forward_relay_names(&server, &mut pc, name).await;
 +            let ours = Some("192.0.2.10".to_owned());
++            assert_eq!(named.relay_response, ours, "relay response naming {name}");
++            assert_eq!(
++                named.punch_hole_response, ours,
++                "punch hole report naming {name}"
++            );
++            assert_eq!(named.request_relay, ours, "relay request naming {name}");
++            assert_eq!(named.acknowledgement, Some(String::new()));
++        }
++    });
++}
++
++#[test]
++fn a_relay_name_that_does_not_resolve_is_still_the_one_forwarded() {
++    // the relay's domain not resolving when hbbs starts, as before DNS is up after a reboot
++    const UNRESOLVED: &str = "relay-name-that-does-not-resolve.invalid";
++    let server = Hbbs::start("relay-unresolved", &["-r", UNRESOLVED]);
++    runtime().block_on(async {
++        server
++            .wait_wrote(format!("Invalid relay-servers {UNRESOLVED}: ").as_bytes())
++            .await;
++        let mut pc = registered_pc(&server).await;
++        for name in ["ws://198.51.100.66:8080/x", UNRESOLVED] {
++            let named = forward_relay_names(&server, &mut pc, name).await;
++            let ours = Some(UNRESOLVED.to_owned());
 +            assert_eq!(named.relay_response, ours, "relay response naming {name}");
 +            assert_eq!(
 +                named.punch_hole_response, ours,

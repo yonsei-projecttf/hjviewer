@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:38:33 +0900
-Subject: [PATCH 11/11] hbbs: forward a controller's ICE candidates only after
+Subject: [PATCH 11/13] hbbs: forward a controller's ICE candidates only after
  its punch hole
 
 An IceCandidate with an id went to that peer from any connection, without
@@ -37,7 +37,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  3 files changed, 130 insertions(+), 7 deletions(-)
 
 diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
-index e8a3392..43ff36e 100644
+index 5281c25..a7f869e 100644
 --- a/src/rendezvous_server.rs
 +++ b/src/rendezvous_server.rs
 @@ -80,6 +80,9 @@ struct TcpConn {
@@ -50,7 +50,7 @@ index e8a3392..43ff36e 100644
  }
  // A peer registered over TCP/WebSocket gets an empty frame this often and echoes it, which
  // refreshes its online state and keeps NATs and proxies from idling the connection out.
-@@ -563,7 +566,10 @@ impl RendezvousServer {
+@@ -567,7 +570,10 @@ impl RendezvousServer {
                          .lock()
                          .await
                          .insert(try_into_v4(addr), conn.tx.clone());
@@ -62,7 +62,7 @@ index e8a3392..43ff36e 100644
                      return true;
                  }
                  Some(rendezvous_message::Union::RequestRelay(mut rf)) => {
-@@ -611,6 +617,12 @@ impl RendezvousServer {
+@@ -615,6 +621,12 @@ impl RendezvousServer {
                      // the connection of its punch hole request; the controlled peer answers on a
                      // connection of its own, addressed by that request's socket_addr.
                      if !ice.id.is_empty() {
@@ -75,7 +75,7 @@ index e8a3392..43ff36e 100644
                          if let Some(peer) = self.pm.get_in_memory(&ice.id).await {
                              let id = ice.id.clone();
                              let peer_addr = peer.read().await.socket_addr;
-@@ -1058,21 +1070,22 @@ impl RendezvousServer {
+@@ -1062,21 +1074,22 @@ impl RendezvousServer {
      }
  
      #[inline]
@@ -102,7 +102,7 @@ index e8a3392..43ff36e 100644
      }
  
      #[inline]
-@@ -1491,6 +1504,7 @@ impl RendezvousServer {
+@@ -1507,6 +1520,7 @@ impl RendezvousServer {
              tx,
              peer_id: None,
              hjv_ticket: None,
@@ -167,22 +167,23 @@ index 6e20e10..7440bdf 100644
 +    });
 +}
 diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
-index a7b0a1b..ae2fc05 100644
+index 1bed20e..8e08bb6 100644
 --- a/tests/untrusted_input.rs
 +++ b/tests/untrusted_input.rs
-@@ -2,8 +2,9 @@
+@@ -2,9 +2,10 @@
  //! than any client's is refused, and leaves nothing in the peer map, the database or the log; a
  //! message over the bound (MAX_MESSAGE_KB, 64 KiB) ends the connection it came on, on the
  //! WebSocket port and the TCP port alike; the address in X-Real-IP is the client's, in the IPv4
 -//! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; and a relay server one
--//! client names to another is one hbbs is configured with.
 +//! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; a relay server one
-+//! client names to another is one hbbs is configured with; and ICE candidates for a peer go
-+//! only from the connection whose punch hole request reached it.
+ //! client names to another is one hbbs is configured with, whether or not its name resolved
+-//! when hbbs started.
++//! when hbbs started; and ICE candidates for a peer go only from the connection whose punch
++//! hole request reached it.
  
  use hbb_common::{
      bytes::Bytes,
-@@ -661,3 +662,63 @@ fn no_relay_configured_leaves_the_names_as_upstream() {
+@@ -686,3 +687,63 @@ fn no_relay_configured_leaves_the_names_as_upstream() {
          assert_eq!(named.acknowledgement, Some(String::new()));
      });
  }

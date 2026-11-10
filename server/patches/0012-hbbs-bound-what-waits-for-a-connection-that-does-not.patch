@@ -1,0 +1,356 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 10 Nov 2026 23:58:01 +0900
+Subject: [PATCH 12/13] hbbs: bound what waits for a connection that does not
+ read, and each write
+
+Each TCP/WebSocket connection's outbound queue was unbounded, and anyone
+could fill one: a punch hole request, even for an ID nobody registered
+and before the key or ticket check, puts a connection where messages
+addressed to it by its address find it, and from another connection an
+IceCandidate, PunchHoleSent, LocalAddr or RelayResponse naming that
+address is forwarded to it with no key or ticket. With the first
+connection no longer reading, hbbs queued every message for it, and the
+connection's task, stuck in its write, ran neither the heartbeat nor the
+idle timeout. 2000 candidates of 60 KiB grew hbbs by 117 MiB in three
+seconds; some 17,000 would reach MemoryMax=1G and take every PC offline,
+again and again.
+
+The queue now holds up to 256 KiB (or four messages of MAX_MESSAGE_KB
+if that is more): a client's own traffic queues a few KiB at most. A
+message past the bound is dropped and the connection closed at once,
+with "Close the connection from <addr>: over 256 KiB queued for it
+unread" (WARN). A write that takes more than 10 s ends the connection
+too, as does the reply still queued when it ends.
+
+tests/untrusted_input.rs: 120 MiB of candidates addressed to a
+connection that stopped reading grow hbbs by less than 32 MiB, and that
+connection is closed (without the bound: 117 MiB).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/peer.rs              | 87 ++++++++++++++++++++++++++++++++++++++--
+ src/rendezvous_server.rs | 57 ++++++++++++++++++++------
+ tests/untrusted_input.rs | 81 ++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 207 insertions(+), 18 deletions(-)
+
+diff --git a/src/peer.rs b/src/peer.rs
+index f0b17b2..6be4324 100644
+--- a/src/peer.rs
++++ b/src/peer.rs
+@@ -4,11 +4,18 @@ use hbb_common::{
+     bytes::Bytes,
+     log,
+     rendezvous_proto::*,
+-    tokio::sync::{mpsc, Mutex, RwLock},
++    tokio::sync::{mpsc, Mutex, Notify, RwLock},
+     ResultType,
+ };
+ use serde_derive::{Deserialize, Serialize};
+-use std::{collections::HashMap, collections::HashSet, net::SocketAddr, sync::Arc, time::Instant};
++use std::{
++    collections::HashMap,
++    collections::HashSet,
++    net::SocketAddr,
++    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
++    sync::Arc,
++    time::Instant,
++};
+ 
+ type IpBlockMap = HashMap<String, ((u32, Instant), (HashSet<String>, Instant))>;
+ type UserStatusMap = HashMap<Vec<u8>, Arc<(Option<Vec<u8>>, bool)>>;
+@@ -34,7 +41,81 @@ pub const MAX_PEER_PK_LEN: usize = 64;
+ 
+ /// Outbound queue of one TCP/WebSocket connection to hbbs. The connection's task owns the sink
+ /// and drains this, so the connection can be addressed while it keeps reading.
+-pub(crate) type ConnTx = mpsc::UnboundedSender<Bytes>;
++///
++/// HJViewer: bounded in bytes. Anyone can have messages forwarded to a connection that stopped
++/// reading (an ICE candidate, a punch hole report or a relay response names it by its address,
++/// with no key or ticket), and hbbs kept every one of them until it ran out of memory. Past the
++/// bound a message is dropped and the connection is told to close.
++#[derive(Clone)]
++pub(crate) struct ConnTx {
++    tx: mpsc::UnboundedSender<Bytes>,
++    queue: Arc<ConnQueue>,
++}
++
++struct ConnQueue {
++    bound: usize,
++    queued: AtomicUsize,
++    over: AtomicBool,
++    closing: Notify,
++}
++
++impl ConnTx {
++    /// A queue that holds up to `bound` bytes, and the receiver the connection's task drains.
++    pub(crate) fn new(bound: usize) -> (Self, mpsc::UnboundedReceiver<Bytes>) {
++        let (tx, rx) = mpsc::unbounded_channel();
++        let queue = Arc::new(ConnQueue {
++            bound,
++            queued: AtomicUsize::new(0),
++            over: AtomicBool::new(false),
++            closing: Notify::new(),
++        });
++        (Self { tx, queue }, rx)
++    }
++
++    /// Queues `bytes`; false if the connection is gone, or would be over its bound with them,
++    /// which closes it.
++    pub(crate) fn send(&self, bytes: Bytes) -> bool {
++        let q = &self.queue;
++        if q.over.load(Ordering::Relaxed) {
++            return false;
++        }
++        let len = bytes.len();
++        if q.queued.fetch_add(len, Ordering::Relaxed) + len > q.bound {
++            q.queued.fetch_sub(len, Ordering::Relaxed);
++            if !q.over.swap(true, Ordering::Relaxed) {
++                q.closing.notify_one();
++            }
++            return false;
++        }
++        if self.tx.send(bytes).is_err() {
++            q.queued.fetch_sub(len, Ordering::Relaxed);
++            return false;
++        }
++        true
++    }
++
++    /// What the connection's task calls for each message it takes off the queue.
++    pub(crate) fn taken(&self, len: usize) {
++        self.queue.queued.fetch_sub(len, Ordering::Relaxed);
++    }
++
++    /// Whether the queue went over its bound.
++    pub(crate) fn over(&self) -> bool {
++        self.queue.over.load(Ordering::Relaxed)
++    }
++
++    /// Returns once the queue went over its bound. For the connection's task only: the one
++    /// wakeup goes to one waiter.
++    pub(crate) async fn closing(&self) {
++        if !self.over() {
++            self.queue.closing.notified().await;
++        }
++    }
++
++    pub(crate) fn same_channel(&self, other: &Self) -> bool {
++        Arc::ptr_eq(&self.queue, &other.queue)
++    }
++}
+ 
+ #[derive(Debug, Default, Serialize, Deserialize, Clone)]
+ pub(crate) struct PeerInfo {
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index a7f869e..8b65a14 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -91,6 +91,12 @@ const TCP_HEARTBEAT_MS: u64 = 10_000;
+ // of it without a frame from us, so it must stay well above TCP_HEARTBEAT_MS.
+ const TCP_KEEP_ALIVE_SECS: i32 = 30;
+ const TCP_IDLE_TIMEOUT_MS: u64 = 30_000;
++// HJViewer: what may wait unsent for one TCP/WebSocket connection (peer.rs ConnTx), at least
++// four of the largest messages: a few KiB is all a client's own traffic ever queues.
++const CONN_QUEUE_BYTES: usize = 256 << 10;
++// HJViewer: how long one write to a TCP/WebSocket connection may take. The connection's task
++// waits on it, heartbeat and idle timeout included, so a client that stops reading is let go.
++const SEND_TIMEOUT_MS: u64 = 10_000;
+ type Sender = mpsc::UnboundedSender<Data>;
+ type Receiver = mpsc::UnboundedReceiver<Data>;
+ static ROTATION_RELAY_SERVER: AtomicUsize = AtomicUsize::new(0);
+@@ -1033,16 +1039,24 @@ impl RendezvousServer {
+     #[inline]
+     fn send_to_conn(tx: &ConnTx, msg: RendezvousMessage) -> bool {
+         match msg.write_to_bytes() {
+-            Ok(bytes) => tx.send(Bytes::from(bytes)).is_ok(),
++            Ok(bytes) => tx.send(Bytes::from(bytes)),
+             Err(_) => false,
+         }
+     }
+ 
++    /// Writes one frame to the connection whose queue `tx` is. HJViewer: false after
++    /// SEND_TIMEOUT_MS, or once that queue went over its bound.
+     #[inline]
+-    async fn send_bytes(sink: &mut Sink, bytes: Bytes) -> bool {
+-        match sink {
+-            Sink::TcpStream(s) => s.send(bytes).await.is_ok(),
+-            Sink::Ws(ws) => ws.send(tungstenite::Message::Binary(bytes)).await.is_ok(),
++    async fn send_bytes(sink: &mut Sink, bytes: Bytes, tx: &ConnTx) -> bool {
++        let send = async {
++            match sink {
++                Sink::TcpStream(s) => s.send(bytes).await.is_ok(),
++                Sink::Ws(ws) => ws.send(tungstenite::Message::Binary(bytes)).await.is_ok(),
++            }
++        };
++        tokio::select! {
++            sent = timeout(SEND_TIMEOUT_MS, send) => matches!(sent, Ok(true)),
++            _ = tx.closing() => false,
+         }
+     }
+ 
+@@ -1515,7 +1529,7 @@ impl RendezvousServer {
+             let (a, b) = framed.split();
+             (Sink::TcpStream(a), Incoming::TcpStream(b))
+         };
+-        let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
++        let (tx, mut rx) = ConnTx::new(CONN_QUEUE_BYTES.max(4 * *MAX_MESSAGE));
+         let mut conn = TcpConn {
+             tx,
+             peer_id: None,
+@@ -1536,10 +1550,14 @@ impl RendezvousServer {
+                     }
+                 }
+                 Some(bytes) = rx.recv() => {
+-                    if !Self::send_bytes(&mut sink, bytes).await {
++                    conn.tx.taken(bytes.len());
++                    if !Self::send_bytes(&mut sink, bytes, &conn.tx).await {
+                         break;
+                     }
+                 }
++                _ = conn.tx.closing() => {
++                    break;
++                }
+                 _ = heartbeat.tick() => {
+                     if last_recv.elapsed() > Duration::from_millis(TCP_IDLE_TIMEOUT_MS) {
+                         break;
+@@ -1550,17 +1568,30 @@ impl RendezvousServer {
+                             break;
+                         }
+                     }
+-                    if conn.peer_id.is_some() && !Self::send_bytes(&mut sink, Bytes::new()).await {
++                    if conn.peer_id.is_some()
++                        && !Self::send_bytes(&mut sink, Bytes::new(), &conn.tx).await
++                    {
+                         break;
+                     }
+                 }
+             }
+         }
+-        // a reply queued by the message that ended the connection
+-        while let Ok(bytes) = rx.try_recv() {
+-            if !Self::send_bytes(&mut sink, bytes).await {
+-                break;
+-            }
++        if conn.tx.over() {
++            log::warn!(
++                "Close the connection from {addr}: over {} KiB queued for it unread",
++                CONN_QUEUE_BYTES.max(4 * *MAX_MESSAGE) >> 10
++            );
++        } else {
++            // a reply queued by the message that ended the connection
++            let tx = conn.tx.clone();
++            let drain = async {
++                while let Ok(bytes) = rx.try_recv() {
++                    if !Self::send_bytes(&mut sink, bytes, &tx).await {
++                        break;
++                    }
++                }
++            };
++            timeout(SEND_TIMEOUT_MS, drain).await.ok();
+         }
+         self.close_tcp_conn(&conn, addr).await;
+         log::debug!("Tcp connection from {:?} closed", addr);
+diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
+index 8e08bb6..4f5a179 100644
+--- a/tests/untrusted_input.rs
++++ b/tests/untrusted_input.rs
+@@ -4,8 +4,9 @@
+ //! WebSocket port and the TCP port alike; the address in X-Real-IP is the client's, in the IPv4
+ //! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; a relay server one
+ //! client names to another is one hbbs is configured with, whether or not its name resolved
+-//! when hbbs started; and ICE candidates for a peer go only from the connection whose punch
+-//! hole request reached it.
++//! when hbbs started; ICE candidates for a peer go only from the connection whose punch hole
++//! request reached it; and what is forwarded to a connection that does not read stays within a
++//! bound, past which the connection is closed.
+ 
+ use hbb_common::{
+     bytes::Bytes,
+@@ -121,6 +122,19 @@ impl Hbbs {
+     }
+ }
+ 
++impl Hbbs {
++    /// hbbs's resident memory in KiB (Linux).
++    fn rss_kib(&self) -> u64 {
++        let status = std::fs::read_to_string(format!("/proc/{}/status", self.child.id()))
++            .expect("read hbbs's status");
++        status
++            .lines()
++            .find_map(|line| line.strip_prefix("VmRSS:"))
++            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
++            .expect("a VmRSS line")
++    }
++}
++
+ impl Drop for Hbbs {
+     fn drop(&mut self) {
+         self.child.kill().ok();
+@@ -747,3 +761,66 @@ fn ice_candidates_for_a_peer_go_only_from_the_connection_whose_punch_hole_reache
+         }
+     });
+ }
++
++#[test]
++fn a_connection_that_does_not_read_holds_no_more_than_its_bound_and_is_closed() {
++    let server = Hbbs::start("unread", &[]);
++    runtime().block_on(async {
++        // A punch hole request, even for an ID nobody registered, puts a connection where
++        // messages addressed to it by its address find it. Then it stops reading.
++        let mut unread = Client::connect(&server, "198.51.100.40", Some(50040)).await;
++        let mut msg = punch_hole_request(&server);
++        msg.mut_punch_hole_request().id = "100000999".to_owned();
++        unread.send(msg).await;
++        let rendezvous_message::Union::PunchHoleResponse(res) = unread.recv().await else {
++            panic!("expected a punch hole response");
++        };
++        assert_eq!(
++            res.failure.enum_value(),
++            Ok(punch_hole_response::Failure::ID_NOT_EXIST)
++        );
++
++        // From another connection, with no key or ticket: 2000 ICE candidates of 60 KiB
++        // addressed to it, 120 MiB in all, which hbbs used to queue for it whole.
++        let before = server.rss_kib();
++        let mut sender = Client::connect(&server, "198.51.100.41", Some(50041)).await;
++        let to: SocketAddr = "198.51.100.40:50040".parse().expect("address");
++        let candidate = "c".repeat(60 << 10);
++        for _ in 0..2000 {
++            let mut msg = RendezvousMessage::new();
++            msg.set_ice_candidate(IceCandidate {
++                socket_addr: AddrMangle::encode(to).into(),
++                session_key: "session".to_owned(),
++                candidate: candidate.clone(),
++                ..Default::default()
++            });
++            sender.send(msg).await;
++        }
++        // hbbs takes a connection's messages in order: once it answers this, it took them all
++        sender.send(online_request(vec![PEER_ID.to_owned()])).await;
++        let rendezvous_message::Union::OnlineResponse(_) = sender.recv().await else {
++            panic!("expected an online response");
++        };
++        let grown = server.rss_kib().saturating_sub(before);
++        assert!(grown < 32 << 10, "hbbs grew by {grown} KiB");
++
++        // The connection is closed: what reaches it is the bound and what the sockets buffer.
++        let mut got = 0usize;
++        let closed = timeout(Duration::from_secs(15), async {
++            while let Some(Ok(frame)) = unread.ws.next().await {
++                got += frame.len();
++            }
++        })
++        .await;
++        assert!(
++            closed.is_ok(),
++            "hbbs kept the connection that does not read"
++        );
++        assert!(got < 32 << 20, "{got} bytes reached the connection");
++        server
++            .wait_wrote(
++                b"Close the connection from 198.51.100.40:50040: over 256 KiB queued for it unread",
++            )
++            .await;
++    });
++}

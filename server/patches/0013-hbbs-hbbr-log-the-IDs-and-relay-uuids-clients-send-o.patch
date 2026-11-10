@@ -1,0 +1,417 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 00:00:32 +0900
+Subject: [PATCH 13/13] hbbs, hbbr: log the IDs and relay uuids clients send on
+ one line of a bounded length
+
+hbbs logged the ID a client sent as it was: a punch hole request with
+the wrong key, which needs neither key nor ticket, logged its ID whole
+("Authentication failed ... for peer <id>", up to the 64 KiB message
+bound), and a registration, whose ID only has to be 6 to 253 bytes long,
+logged it in update_pk, store_pk, IP change and uuid mismatch lines.
+hbbr took any relay uuid, up to 128 KiB, kept it as the key of its
+waiting list and logged it ("New relay request <uuid>", "... got
+paired"). A line break in either starts a log line of the client's own,
+which journald keeps as an entry of its own, and which the operator's
+checks (grep ERROR, the count of "got paired", the update_pk address
+check) read as hbbs's or hbbr's.
+
+- common.rs logged(): a value as it is when it is printable ASCII without
+  spaces and at most 64 characters, as every real ID is (the update_pk
+  lines the runbook and the E2E grep stay the same), else quoted with
+  Rust's escapes and cut at 64 characters. Used in those five lines.
+- A punch hole request for an ID over 253 bytes, which no peer can have
+  registered, is answered with ID_NOT_EXIST before anything logs it; a
+  relay request for one ends its connection, as a bad relay uuid does.
+- hbbr refuses a relay uuid outside hbbs's rule (letters, digits, - and
+  _, at most 128) with "Drop RequestRelay from <addr>: Invalid relay UUID
+  (length N)" (WARN) and closes the connection, before the waiting list
+  or the log hold it.
+
+tests/untrusted_input.rs: IDs with a line break in a wrong-key punch
+hole request, a registration and a uuid mismatch appear escaped on one
+line; over-long IDs in a punch hole or relay request are not logged; a
+real ID stays as it is. tests/relay_pairing.rs: a uuid with a line break
+and one of 129 bytes are refused and not logged, a client's uuid still
+pairs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/common.rs            | 14 ++++++
+ src/peer.rs              |  4 +-
+ src/relay_server.rs      | 17 +++++++
+ src/rendezvous_server.rs | 26 +++++++++--
+ tests/relay_pairing.rs   | 67 +++++++++++++++++++++++++--
+ tests/untrusted_input.rs | 99 +++++++++++++++++++++++++++++++++++++++-
+ 6 files changed, 215 insertions(+), 12 deletions(-)
+
+diff --git a/src/common.rs b/src/common.rs
+index 5435911..539ad42 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -97,6 +97,20 @@ pub(crate) fn test_if_valid_server(host: &str, name: &str) -> ResultType<SocketA
+     res
+ }
+ 
++/// HJViewer: a value a client sent, as a log line shows it: as it is when it is printable ASCII
++/// without spaces and at most 64 characters, as every real ID is, else quoted with Rust's escapes
++/// and cut at 64 characters. So no client can start a line of its own (journald makes each line
++/// an entry, which the operator's checks read) or make one of any length.
++#[allow(dead_code)]
++pub(crate) fn logged(value: &str) -> String {
++    const CHARS: usize = 64;
++    if !value.is_empty() && value.len() <= CHARS && value.bytes().all(|b| b.is_ascii_graphic()) {
++        value.to_owned()
++    } else {
++        format!("{:?}", value.chars().take(CHARS).collect::<String>())
++    }
++}
++
+ #[allow(dead_code)]
+ pub(crate) fn get_servers(s: &str, tag: &str) -> Vec<String> {
+     let servers: Vec<String> = s
+diff --git a/src/peer.rs b/src/peer.rs
+index 6be4324..511a595 100644
+--- a/src/peer.rs
++++ b/src/peer.rs
+@@ -197,7 +197,7 @@ impl PeerMap {
+         pk: Bytes,
+         ip: String,
+     ) -> register_pk_response::Result {
+-        log::info!("update_pk {} {:?} {:?} {:?}", id, addr, uuid, pk);
++        log::info!("update_pk {} {:?} {:?} {:?}", logged(&id), addr, uuid, pk);
+         let (info_str, guid) = {
+             let mut w = peer.write().await;
+             w.socket_addr = addr;
+@@ -241,7 +241,7 @@ impl PeerMap {
+         pk: Bytes,
+         ip: String,
+     ) -> register_pk_response::Result {
+-        log::info!("store_pk {} {:?} {:?}", id, uuid, pk);
++        log::info!("store_pk {} {:?} {:?}", logged(&id), uuid, pk);
+         let (info_str, guid) = {
+             let mut w = peer.write().await;
+             w.uuid = uuid.clone();
+diff --git a/src/relay_server.rs b/src/relay_server.rs
+index 3f5a275..d19097c 100644
+--- a/src/relay_server.rs
++++ b/src/relay_server.rs
+@@ -495,6 +495,14 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
+                     return;
+                 }
+                 if !rf.uuid.is_empty() {
++                    if !valid_relay_uuid(&rf.uuid) {
++                        log::warn!(
++                            "Drop RequestRelay from {}: Invalid relay UUID (length {})",
++                            addr,
++                            rf.uuid.len()
++                        );
++                        return;
++                    }
+                     let mut peers = PEERS.lock().await;
+                     if let Some((_, mut peer)) = peers.remove(&rf.uuid) {
+                         drop(peers);
+@@ -531,6 +539,15 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
+     }
+ }
+ 
++// HJViewer: the rule of hbbs's validate_relay_uuid. The uuid is a key of the waiting list and
++// goes into the log, and every client sends a v4 UUID.
++fn valid_relay_uuid(uuid: &str) -> bool {
++    uuid.len() <= 128
++        && uuid
++            .bytes()
++            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
++}
++
+ /// Removes a waiting connection only if it still owns the requested pair ID.
+ fn expire_waiter(peers: &mut HashMap<String, WaitingPeer>, id: &str, generation: &Arc<()>) {
+     if peers.get(id).map(|(current, _)| Arc::ptr_eq(current, generation)).unwrap_or(false) {
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 8b65a14..db88e2d 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -590,6 +590,11 @@ impl RendezvousServer {
+                         );
+                         return false;
+                     }
++                    // HJViewer: an ID no peer can have registered with, before anything logs it
++                    if rf.id.len() > MAX_PEER_ID_LEN {
++                        log::debug!("Drop RequestRelay from {addr}: ID over {MAX_PEER_ID_LEN} bytes");
++                        return false;
++                    }
+                     self.tcp_punch
+                         .lock()
+                         .await
+@@ -793,7 +798,7 @@ impl RendezvousServer {
+             (true, None)
+         };
+         if let Some(old) = ip_change {
+-            log::info!("IP change of {} from {} to {}", id, old, socket_addr);
++            log::info!("IP change of {} from {} to {}", logged(&id), old, socket_addr);
+         }
+         let mut msg_out = RendezvousMessage::new();
+         msg_out.set_register_peer_response(RegisterPeerResponse {
+@@ -887,8 +892,21 @@ impl RendezvousServer {
+         ws: bool,
+     ) -> ResultType<(RendezvousMessage, Option<SocketAddr>)> {
+         let mut ph = ph;
++        // HJViewer: an ID no peer can have registered with, answered before anything logs it
++        if ph.id.len() > MAX_PEER_ID_LEN {
++            let mut msg_out = RendezvousMessage::new();
++            msg_out.set_punch_hole_response(PunchHoleResponse {
++                failure: punch_hole_response::Failure::ID_NOT_EXIST.into(),
++                ..Default::default()
++            });
++            return Ok((msg_out, None));
++        }
+         if !key.is_empty() && ph.licence_key != key {
+-            log::warn!("Authentication failed from {} for peer {} - invalid key", addr, ph.id);
++            log::warn!(
++                "Authentication failed from {} for peer {} - invalid key",
++                addr,
++                logged(&ph.id)
++            );
+             let mut msg_out = RendezvousMessage::new();
+             msg_out.set_punch_hole_response(PunchHoleResponse {
+                 failure: punch_hole_response::Failure::LICENSE_MISMATCH.into(),
+@@ -1671,7 +1689,7 @@ impl RendezvousServer {
+                     if peer.info.ip != ip && peer.pk != rk.pk {
+                         log::warn!(
+                             "Peer {} ip/pk mismatch: {}/{:?} vs {}/{:?}",
+-                            id,
++                            logged(&id),
+                             ip,
+                             rk.pk,
+                             peer.info.ip,
+@@ -1683,7 +1701,7 @@ impl RendezvousServer {
+                 } else {
+                     log::warn!(
+                         "Peer {} uuid mismatch: {:?} vs {:?}",
+-                        id,
++                        logged(&id),
+                         rk.uuid,
+                         peer.uuid
+                     );
+diff --git a/tests/relay_pairing.rs b/tests/relay_pairing.rs
+index 34a3c2c..5ab075b 100644
+--- a/tests/relay_pairing.rs
++++ b/tests/relay_pairing.rs
+@@ -1,5 +1,6 @@
+ //! hbbr pairs the two halves of a relay by uuid, also when they arrive at the same moment, as
+-//! they do when both sides of a session connect to the relay right after the rendezvous.
++//! they do when both sides of a session connect to the relay right after the rendezvous; a uuid
++//! no client sends is refused before it is kept or logged.
+ 
+ use hbb_common::{
+     futures_util::{SinkExt, StreamExt},
+@@ -26,8 +27,8 @@ struct Hbbr {
+ }
+ 
+ impl Hbbr {
+-    fn start() -> Self {
+-        let dir = std::env::temp_dir().join(format!("hbbr-pairing-{}", std::process::id()));
++    fn start(name: &str) -> Self {
++        let dir = std::env::temp_dir().join(format!("hbbr-{name}-{}", std::process::id()));
+         std::fs::remove_dir_all(&dir).ok();
+         std::fs::create_dir_all(&dir).expect("create the relay's working directory");
+         let port = free_port_pair();
+@@ -51,6 +52,20 @@ impl Hbbr {
+     }
+ }
+ 
++impl Hbbr {
++    /// Waits until hbbr's log, written asynchronously, holds `needle`; the log then.
++    async fn wait_logged(&self, needle: &str) -> String {
++        for _ in 0..50 {
++            let log = std::fs::read_to_string(self.dir.join("hbbr.log")).unwrap_or_default();
++            if log.contains(needle) {
++                return log;
++            }
++            tokio::time::sleep(Duration::from_millis(100)).await;
++        }
++        panic!("hbbr did not log {needle:?} within 5s");
++    }
++}
++
+ impl Drop for Hbbr {
+     fn drop(&mut self) {
+         self.child.kill().ok();
+@@ -101,7 +116,7 @@ async fn half(port: u16, uuid: String) -> Ws {
+ 
+ #[test]
+ fn halves_arriving_together_are_paired() {
+-    let relay = Hbbr::start();
++    let relay = Hbbr::start("pairing");
+     tokio::runtime::Builder::new_multi_thread()
+         .enable_all()
+         .build()
+@@ -125,3 +140,47 @@ fn halves_arriving_together_are_paired() {
+             }
+         });
+ }
++
++#[test]
++fn a_uuid_no_client_sends_is_refused_before_it_is_logged() {
++    let relay = Hbbr::start("uuid");
++    tokio::runtime::Builder::new_multi_thread()
++        .enable_all()
++        .build()
++        .expect("tokio runtime")
++        .block_on(async {
++            // a line break, which would start a log line of the client's own, and a uuid
++            // longer than any
++            for uuid in [
++                "pair\nFORGED ERROR line of its own".to_owned(),
++                "u".repeat(129),
++            ] {
++                let mut ws = half(relay.port, uuid.clone()).await;
++                let got = timeout(Duration::from_secs(5), ws.next()).await;
++                assert!(
++                    matches!(
++                        got,
++                        Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(WsMessage::Close(_))))
++                    ),
++                    "hbbr kept the connection of uuid {uuid:?}: {got:?}"
++                );
++                let log = relay
++                    .wait_logged(&format!("Invalid relay UUID (length {})", uuid.len()))
++                    .await;
++                assert!(!log.contains("FORGED"), "{log}");
++                assert!(!log.contains(&"u".repeat(129)), "{log}");
++            }
++            // what clients send still pairs
++            let uuid = "e4c181d0-41c7-4ae6-8ef0-36581b6b2b12".to_owned();
++            let (mut a, mut b) =
++                tokio::join!(half(relay.port, uuid.clone()), half(relay.port, uuid));
++            a.send(WsMessage::Binary(b"ping".to_vec().into()))
++                .await
++                .expect("send through the relay");
++            let got = timeout(Duration::from_secs(3), b.next()).await;
++            assert!(
++                matches!(&got, Ok(Some(Ok(WsMessage::Binary(p)))) if p.as_ref() == b"ping"),
++                "not relayed: {got:?}"
++            );
++        });
++}
+diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
+index 4f5a179..afac57e 100644
+--- a/tests/untrusted_input.rs
++++ b/tests/untrusted_input.rs
+@@ -5,8 +5,9 @@
+ //! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; a relay server one
+ //! client names to another is one hbbs is configured with, whether or not its name resolved
+ //! when hbbs started; ICE candidates for a peer go only from the connection whose punch hole
+-//! request reached it; and what is forwarded to a connection that does not read stays within a
+-//! bound, past which the connection is closed.
++//! request reached it; what is forwarded to a connection that does not read stays within a
++//! bound, past which the connection is closed; and an ID a client sends goes into the log on one
++//! line of a bounded length.
+ 
+ use hbb_common::{
+     bytes::Bytes,
+@@ -123,6 +124,12 @@ impl Hbbs {
+ }
+ 
+ impl Hbbs {
++    /// hbbs's log so far.
++    fn log(&self) -> String {
++        String::from_utf8_lossy(&std::fs::read(self.dir.join("hbbs.log")).unwrap_or_default())
++            .into_owned()
++    }
++
+     /// hbbs's resident memory in KiB (Linux).
+     fn rss_kib(&self) -> u64 {
+         let status = std::fs::read_to_string(format!("/proc/{}/status", self.child.id()))
+@@ -824,3 +831,91 @@ fn a_connection_that_does_not_read_holds_no_more_than_its_bound_and_is_closed()
+             .await;
+     });
+ }
++
++#[test]
++fn an_id_a_client_sends_goes_into_the_log_escaped_on_one_line() {
++    let server = Hbbs::start("logged-ids", &[]);
++    runtime().block_on(async {
++        const FORGED: &str = "\nFORGED ERROR line of its own";
++        // a punch hole request with the wrong key, which needs neither key nor ticket
++        let mut controller = Client::connect(&server, "198.51.100.50", Some(50050)).await;
++        let mut msg = punch_hole_request(&server);
++        msg.mut_punch_hole_request().licence_key = "not-the-key".to_owned();
++        msg.mut_punch_hole_request().id = format!("100000{FORGED}");
++        controller.send(msg).await;
++        let rendezvous_message::Union::PunchHoleResponse(res) = controller.recv().await else {
++            panic!("expected a punch hole response");
++        };
++        assert_eq!(
++            res.failure.enum_value(),
++            Ok(punch_hole_response::Failure::LICENSE_MISMATCH)
++        );
++        server
++            .wait_wrote(b"for peer \"100000\\nFORGED ERROR line of its own\" - invalid key")
++            .await;
++        // one longer than any ID is answered as no such ID, before anything logs it
++        let long_id = marker("long-punch-id", 254);
++        let mut msg = punch_hole_request(&server);
++        msg.mut_punch_hole_request().licence_key = "not-the-key".to_owned();
++        msg.mut_punch_hole_request().id = long_id.clone();
++        controller.send(msg).await;
++        let rendezvous_message::Union::PunchHoleResponse(res) = controller.recv().await else {
++            panic!("expected a punch hole response");
++        };
++        assert_eq!(
++            res.failure.enum_value(),
++            Ok(punch_hole_response::Failure::ID_NOT_EXIST)
++        );
++        // and so is a relay request for one, whose connection ends
++        let mut relay = Client::connect(&server, "198.51.100.51", Some(50051)).await;
++        let mut msg = RendezvousMessage::new();
++        msg.set_request_relay(RequestRelay {
++            id: marker("long-relay-id", 254),
++            uuid: "01890a5d-ac96-774b-bcce-b302099a8057".to_owned(),
++            licence_key: server.key.clone(),
++            ..Default::default()
++        });
++        relay.send(msg).await;
++        assert!(
++            relay.closed_unanswered().await,
++            "hbbs took the relay request"
++        );
++
++        // a registration, which only bounds the ID's length, and one with another uuid
++        let id = format!("100001{FORGED}");
++        let mut pc = Client::connect(&server, "203.0.113.50", Some(40050)).await;
++        assert_eq!(
++            register(&mut pc, &id, b"peer-uuid", &[7u8; 32]).await,
++            register_pk_response::Result::OK
++        );
++        let mut other = Client::connect(&server, "203.0.113.51", Some(40051)).await;
++        assert_eq!(
++            register(&mut other, &id, b"other-uuid", &[8u8; 32]).await,
++            register_pk_response::Result::UUID_MISMATCH
++        );
++        server
++            .wait_wrote(b"update_pk \"100001\\nFORGED ERROR line of its own\" ")
++            .await;
++        server
++            .wait_wrote(b"Peer \"100001\\nFORGED ERROR line of its own\" uuid mismatch")
++            .await;
++
++        // A real ID stays as it is, which the operator's checks grep for.
++        let mut real = Client::connect(&server, "203.0.113.52", Some(40052)).await;
++        assert_eq!(
++            register(&mut real, PEER_ID, b"real-uuid", &[9u8; 32]).await,
++            register_pk_response::Result::OK
++        );
++        server
++            .wait_wrote(format!("update_pk {PEER_ID} ").as_bytes())
++            .await;
++        let log = server.log();
++        assert!(
++            !log.contains("\nFORGED"),
++            "a line of the client's own:\n{log}"
++        );
++        for refused in ["long-punch-id", "long-relay-id"] {
++            assert!(!log.contains(refused), "hbbs logged {refused}");
++        }
++    });
++}
