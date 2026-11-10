@@ -60,27 +60,32 @@ ring and the system's CA certificates; SQLite is built in (rusqlite `bundled`).
 - `deploy/nginx-hjviewer-api.conf` replaces the `/api/` block of
   `deploy/nginx-hjviewer-locations.conf`: the account paths go to the socket, `/api/login-options`
   and `/api/device-group/accessible` get static answers, all other `/api/` paths stay 404, and
-  `/api/login` is limited per client address (10 a minute after a burst of 5, 4 at a time). That
-  limit is nginx's and comes before hjv-api's: whoever shares the owner's address (a campus NAT,
-  public Wi-Fi) can fill it, and then the login of a PC already in the account, which hjv-api
-  lets through its own address limit, is refused by nginx as well; the runbook's daily report
-  counts those refusals (nginx's error log). Its two zones go to `/etc/nginx/conf.d/hjviewer-api-zones.conf` (the header of the file has the
-  lines). Before installing, check that the server and http blocks have no `real_ip_header` or
-  `set_real_ip_from` that would let a client choose `$remote_addr`: hjv-api's address limits trust
-  the `X-Real-IP` nginx sets from it.
-- The packages of new app versions (Updates below) need three things of the operator's, none of
-  them in the unit: the signed policy `/etc/hjviewer/version-policy.json` (root:root 0644, the
-  file nginx hands to the apps), the package directory `/srv/hjviewer-updates/pkg`
-  (root:hjviewer-api 0750, its files 0640: hjv-api reads them through its group, nginx's and the
-  web site's user cannot), and, while door 2 is open, `/etc/hjviewer/door2.conf`
-  (root:hjviewer-api 0640). hjv-api only reads them (`ProtectSystem=strict`) and reads each again
-  when it changes: installing a package, a policy or door 2's file restarts nothing. Until they
-  are there, the update paths answer 404 and everything else works. In
-  `deploy/nginx-hjviewer-api.conf` three things are for them: `proxy_max_temp_file_size 0` (no
-  answer of hjv-api goes to a temporary file of nginx), the locations of `/api/hjv/u/` and
-  `/api/hjv/get/` with `error_log /dev/null crit` (nginx's error log names the request of every
-  error, and these two have their code in the path), and `access_log off` in the error locations
-  (where a request of `/api/` ends while hjv-api is down).
+  `/api/login` is limited per IPv4 address or IPv6 /64 (10 a minute after a burst of 5, 4 at a time;
+  from 1.9.3, as hjv-api counts its failures, with the zones `hjv_login_net` and
+  `hjv_login_net_conn`, which took new names with the new key, as nginx refuses a reload that gives
+  a zone another key). That limit is nginx's and comes before hjv-api's: whoever shares the owner's
+  address (a campus NAT, public Wi-Fi) or the owner's IPv6 /64 (one LAN or Wi-Fi) can fill it, and
+  then the login of a PC already in the account, which hjv-api lets through its own address limit,
+  is refused by nginx as well; the runbook's daily report counts those refusals (nginx's error log).
+  The requests that name a PC's ID in their path (a PC's wake, its Wake-on-LAN state, `DELETE
+  /api/hjv/devices/<ID>`) go to `location ^~ /api/hjv/devices/` with `error_log /dev/null crit`
+  (1.9.3), as the update links below do. The zones go to `/etc/nginx/conf.d/hjviewer-api-zones.conf`
+  (the header of the file has the lines), and the two files are changed together. Before installing,
+  check that the server and http blocks have no `real_ip_header` or `set_real_ip_from` that would
+  let a client choose `$remote_addr`: hjv-api's address limits trust the `X-Real-IP` nginx sets from
+  it.
+- The packages of new app versions (Updates below) need three things of the operator's, none of them
+  in the unit: the signed policy `/etc/hjviewer/version-policy.json` (root:root 0644, the file nginx
+  hands to the apps), the package directory `/srv/hjviewer-updates/pkg` (root:hjviewer-api 0750, its
+  files 0640: hjv-api reads them through its group, nginx's and the web site's user cannot), and,
+  while door 2 is open, `/etc/hjviewer/door2.conf` (root:hjviewer-api 0640). hjv-api only reads them
+  (`ProtectSystem=strict`) and reads each again when it changes: installing a package, a policy or
+  door 2's file restarts nothing. Until they are there, the update paths answer 404 and everything
+  else works. In `deploy/nginx-hjviewer-api.conf` three things are for them:
+  `proxy_max_temp_file_size 0` (no answer of hjv-api goes to a temporary file of nginx), the
+  locations of `/api/hjv/u/`, `/api/hjv/get/` and `/api/hjv/s/` with `error_log /dev/null crit`
+  (nginx's error log names the request of every error, and these have their code in the path), and
+  `access_log off` in the error locations (where a request of `/api/` ends while hjv-api is down).
 - For tests and the E2E only: `hjv-api serve --listen 127.0.0.1:<port> --env-file <file>
   --credentials <dir> --db <file> --admin-socket <path> --operator-log <file>`.
 
@@ -678,20 +683,23 @@ before end within their hours, or at once with `NOT_BEFORE` in hbbs's access.con
 (docs/access-tickets.md 6-4). Its value goes into the development PC's `build/leak-patterns.txt`,
 never into the repository, a chat, a document or an App Store or Play note.
 
-The limits come before the hash, which runs on a blocking thread, two at a time (hjv-api has one
-CPU and shares its blocking threads with every database call): the failed tries per client address
+The limits come before the hash, which runs on a blocking thread, two at a time (hjv-api has one CPU
+and shares its blocking threads with every database call): the failed tries per client address
 (`HJV_API_LIMIT_GUEST_IP`, an IPv6 address by its /64), the address's tickets
 (`HJV_API_LIMIT_GUEST_TICKETS`) and the tries of all addresses together (`HJV_API_LIMIT_GUEST_ALL`,
-in memory, one address holding a quarter); nginx limits the path per address before hjv-api, as it
-does logins (`hjv_guest` in deploy/nginx-hjviewer-api-zones.conf). `admin unlock tag:<the
-address's tag>` clears an address's counters and its tries of all. Every refusal leaves after the
-login's failure delay. Each try leaves a record `guest` with its result (`ok-ctl`, `ok-pc`, `wrong`,
-`closed`, `seal-…`, `pc-signature`, `limited-ip`, `limited-tickets`, `limited-all`, `busy`,
-`wrong-pc`, `hbbs`, `error`) and the address's tag, never the address, an ID, the password or the
-ticket, kept `HJV_API_EVENT_DAYS`; failures at most 20 a minute. `admin ticket status` shows the
-file (on until, closed since, off) with its tag, and the last day's tries by result. Since 1.9.0 a
-PC may bring a support code in the place of the password, through the same path, limits and
-failure delay; such a try leaves a record `code`, not `guest` (Support codes, below).
+in memory, one address holding a quarter); nginx limits the path per IPv4 address or IPv6 /64 before
+hjv-api, as it does logins (`hjv_guest_net` and `hjv_guest_net_conn` in
+deploy/nginx-hjviewer-api-zones.conf, from 1.9.3; before, `hjv_guest` per address). `admin unlock
+tag:<the address's tag>` clears an address's counters and its tries of all. Every refusal leaves
+after the login's failure delay. Each try leaves a record `guest` with its result (`ok-ctl`,
+`ok-pc`, `wrong`, `closed`, `seal-…`, `pc-signature`, `limited-ip`, `limited-tickets`,
+`limited-all`, `busy`, `wrong-pc`, `hbbs`, `error`) and the address's tag, never the address, an ID,
+the password or the ticket, kept `HJV_API_EVENT_DAYS`; failures at most 20 a minute. `admin ticket
+status` shows the file (on until, closed since, off) with its tag, and the last day's tries by
+result. Since 1.9.0 a PC may bring a support code in the place of the password, through the same
+path, limits and failure delay; such a try leaves a record `code`, not `guest` (Support codes,
+below).
+
 
 ## Support codes
 
@@ -847,16 +855,22 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
   hours: a file that ends in a week is four messages a day until it is renewed or has ended
   (`file_ended` is a new alert, at once), and error lines every five minutes in the journal.
 - `hjviewer-api-alert@.service` is the `OnFailure=` of `hjviewer-api.service` (each crash, also
-  while systemd restarts it), of the check and of the backup: `hjv-api alert <unit>`
-  (`src/alert.rs`) writes an error line to the journal. That line is the alert while no Telegram
-  bot is set up; the operations agent's daily report counts them:
-  `sudo journalctl --namespace=hjviewer -p warning --since yesterday -o cat | wc -l`.
-- With a Telegram bot (design v3 question 12), the alert also goes to its chat: the same unit,
-  ended the same way (systemd's `MONITOR_SERVICE_RESULT`, `MONITOR_EXIT_CODE`,
-  `MONITOR_EXIT_STATUS`), with the same findings once in six hours, anything else at once: a crash
-  and a start that fails are two alerts. The message holds the unit, how it ended, the host name,
-  the time and the findings (counts and states, no person, device, address or secret, in Korean
-  with the check's English line). The user puts the bot in, on the server, without an agent:
+  while systemd restarts it), of the check and of the backup, and from 1.9.3 of
+  `hjviewer-hbbs.service` and `hjviewer-hbbr.service` (deploy/systemd; on systemd 254 and later, as
+  Ubuntu 24.04's 255, each failure, also one that `Restart=on-failure` follows with a restart, and a
+  stop by systemctl that ends in time is none): `hjv-api alert <unit>` (`src/alert.rs`) writes an
+  error line to the journal of the namespace `hjviewer`. That line is the alert while no Telegram
+  bot is set up; the operations agent's daily report counts them: `sudo journalctl
+  --namespace=hjviewer -p warning --since yesterday -o cat | wc -l`.
+- With a Telegram bot (design v3 question 12), the alert also goes to its chat: the same unit, ended
+  the same way (systemd's `MONITOR_SERVICE_RESULT`, `MONITOR_EXIT_CODE`, `MONITOR_EXIT_STATUS`),
+  with the same findings once in six hours, anything else at once: a crash and a start that fails
+  are two alerts. The message holds the unit, how it ended, the host name, the time and the findings
+  (counts and states, no person, device, address or secret, in Korean with the check's English
+  line), and the journal to look at: for hjv-api's own units `sudo journalctl --namespace=hjviewer
+  -u <unit> -n 50`; for hbbs and hbbr, which log to the main journal (they have no `LogNamespace=`),
+  what stopped and `sudo journalctl -u hjviewer-hbbs -n 50` (or `-u hjviewer-hbbr`), with no
+  `--namespace`. The user puts the bot in, on the server, without an agent:
 
   ```sh
   { printf 'TELEGRAM_BOT_TOKEN='; systemd-ask-password -n "bot token:"; printf '\nTELEGRAM_CHAT_ID=%s\n' '<chat number>'; } |
