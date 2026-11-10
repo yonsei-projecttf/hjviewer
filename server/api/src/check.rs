@@ -25,9 +25,10 @@
 //!   refusing every registration (a broken access.conf, a KEY= line that no longer matches the
 //!   ticket key), hbbs out of the PCs' reach. A PC syncs every two minutes, so a night without
 //!   syncs is no alarm, nor a PC's first minutes (it syncs before it registers, and is seen at the
-//!   next check), nor a PC that goes to sleep (its last sync is older than [`UNSEEN_SYNC_SECS`]
-//!   by the second check), nor an hbbs that does not answer (that is **hbbs**). It cannot see a
-//!   fault that leaves some PCs registered, nor one of the apps' own way to hbbs;
+//!   next check), nor a PC that goes to sleep or is shut down, however soon another check looks
+//!   (only a PC that synced again after a check saw it unseen counts), nor an hbbs that does not
+//!   answer (that is **hbbs**). It cannot see a fault that leaves some PCs registered, nor one of
+//!   the apps' own way to hbbs;
 //! - **sso_client**, **sso_address**, **sso**: SSO calls paused now or within the last
 //!   [`SSO_RECENT`] seconds, because the SSO refused this server's client credentials
 //!   (`invalid_client`: hjviewer-sso-client-secret must be renewed), refused its address, or kept
@@ -88,11 +89,11 @@ pub const SYNC_WINDOW: i64 = 600;
 pub const SSO_RECENT: i64 = 600;
 /// An active relay long-polls all the time; one silent for an hour is down (or its NAS is off).
 pub const RELAY_SILENT: i64 = 3600;
-/// The syncs the **unseen** finding looks at: the last five minutes (a PC syncs every two). A PC
-/// that goes to sleep stays on by hbbs for ONLINE_SECS, and the finding needs STEADY_SECS more,
-/// so its last sync is older than this by then.
+/// The syncs the **unseen** finding looks at: the last five minutes (a PC syncs every two). Of
+/// them it counts the PCs that synced again after a check saw them unseen (UnseenSince): a PC
+/// that goes to sleep or is shut down right after a sync (hbbs takes a closed connection offline
+/// at once, server patch 0002) never does, whenever the next check comes.
 pub const UNSEEN_SYNC_SECS: i64 = 300;
-const _: () = assert!(UNSEEN_SYNC_SECS < ONLINE_SECS as i64 + STEADY_SECS as i64);
 
 pub const DEFAULT_API_SOCKET: &str = "/run/hjviewer-api.sock";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -131,8 +132,9 @@ pub struct Health {
     /// service's answer has none)
     #[serde(default)]
     pub files: Vec<OpFile>,
-    /// PCs synced in the last UNSEEN_SYNC_SECS seconds, when hbbs has seen none of them on at
-    /// each check for STEADY_SECS (1.9.3; None otherwise, and from an older service)
+    /// PCs synced in the last UNSEEN_SYNC_SECS seconds, and again since a check saw them unseen,
+    /// when hbbs has seen none of the PCs synced then on at each check for STEADY_SECS (1.9.3;
+    /// None otherwise, and from an older service)
     #[serde(default)]
     pub pcs_unseen: Option<i64>,
 }
@@ -195,27 +197,68 @@ impl OnlineSince {
     }
 }
 
-/// Since when PCs sync while hbbs sees none of them on, check after check (in memory: a restart
-/// starts over).
+/// Since when PCs sync while hbbs sees none of them on, check after check, and since which check
+/// each of them was seen so (in memory: a restart starts over).
 #[derive(Default)]
-pub struct UnseenSince(Mutex<Option<Instant>>);
+pub struct UnseenSince(Mutex<Option<Unseen>>);
+
+struct Unseen {
+    since: Instant,
+    /// each PC of the fresh syncs, and the time (Unix seconds) of the first check that saw it
+    looked: HashMap<String, i64>,
+}
 
 impl UnseenSince {
-    /// Notes whether PCs sync unseen now; true when they have at every check for STEADY_SECS.
-    pub fn observe(&self, unseen: bool, at: Instant) -> bool {
-        let mut since = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if !unseen {
-            *since = None;
-            return false;
+    /// Notes the PCs that synced in the last UNSEEN_SYNC_SECS, each with its last sync, at a check
+    /// at `at` (`wall` in Unix seconds) that saw none of them on; empty when PCs do not sync
+    /// unseen now. Gives how many of them synced again after a check saw them unseen, when PCs
+    /// have synced unseen at every check for STEADY_SECS and some did: the symptom is PCs that
+    /// keep syncing, not one whose last sync was just before it went to sleep or was shut down.
+    pub fn observe(&self, fresh: &[(&str, i64)], at: Instant, wall: i64) -> Option<i64> {
+        let mut kept = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if fresh.is_empty() {
+            *kept = None;
+            return None;
         }
-        let first = *since.get_or_insert(at);
-        at.saturating_duration_since(first) >= Duration::from_secs(STEADY_SECS)
+        let run = kept.get_or_insert_with(|| Unseen {
+            since: at,
+            looked: HashMap::new(),
+        });
+        // a PC that left the fresh syncs (asleep) starts over when it is back
+        run.looked
+            .retain(|id, _| fresh.iter().any(|(fresh, _)| fresh == id));
+        let mut again = 0;
+        for (id, last) in fresh {
+            match run.looked.get(*id) {
+                Some(first) if last > first => again += 1,
+                Some(_) => {}
+                None => {
+                    run.looked.insert((*id).to_owned(), wall);
+                }
+            }
+        }
+        let steady = at.saturating_duration_since(run.since) >= Duration::from_secs(STEADY_SECS);
+        (steady && again > 0).then_some(again)
     }
 
-    /// Takes the PCs as unseen since `ago` before now (tests).
+    /// Takes the checks that saw the PCs unseen as `ago` earlier (tests).
     pub fn backdate(&self, ago: Duration) {
+        let mut kept = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let at = Instant::now().checked_sub(ago).unwrap_or_else(Instant::now);
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(at);
+        match kept.as_mut() {
+            Some(run) => {
+                run.since = run.since.checked_sub(ago).unwrap_or(at);
+                for first in run.looked.values_mut() {
+                    *first -= ago.as_secs() as i64;
+                }
+            }
+            None => {
+                *kept = Some(Unseen {
+                    since: at,
+                    looked: HashMap::new(),
+                })
+            }
+        }
     }
 }
 
@@ -257,7 +300,7 @@ pub async fn health(state: &Arc<AppState>) -> Result<Health, String> {
     h.pcs_synced = pcs.iter().filter(|(_, last, _)| recent(*last)).count() as i64;
     if pcs.is_empty() {
         state.online.clear();
-        state.unseen.observe(false, Instant::now());
+        state.unseen.observe(&[], Instant::now(), at);
         h.pcs_on = Some(0);
         h.pcs_on_synced = Some(0);
     } else {
@@ -307,7 +350,7 @@ pub async fn health(state: &Arc<AppState>) -> Result<Health, String> {
         match failed {
             Some(e) => {
                 state.online.clear();
-                state.unseen.observe(false, Instant::now());
+                state.unseen.observe(&[], Instant::now(), at);
                 h.hbbs = hbbs_error(&e).to_owned();
             }
             None => {
@@ -319,15 +362,16 @@ pub async fn health(state: &Arc<AppState>) -> Result<Health, String> {
                         .filter(|(id, last, _)| steady.contains(id) && recent(*last))
                         .count() as i64,
                 );
-                let fresh: Vec<&str> = pcs
+                let mut fresh: Vec<(&str, i64)> = pcs
                     .iter()
                     .filter(|(_, last, _)| *last > at - UNSEEN_SYNC_SECS)
-                    .map(|(id, _, _)| id.as_str())
+                    .map(|(id, last, _)| (id.as_str(), *last))
                     .collect();
-                let unseen = !fresh.is_empty() && fresh.iter().all(|id| !seen.contains(id));
-                if state.unseen.observe(unseen, Instant::now()) {
-                    h.pcs_unseen = Some(fresh.len() as i64);
+                // one of them seen is no fault of the way to hbbs
+                if fresh.iter().any(|(id, _)| seen.contains(id)) {
+                    fresh.clear();
                 }
+                h.pcs_unseen = state.unseen.observe(&fresh, Instant::now(), at);
             }
         }
     }
@@ -862,17 +906,40 @@ mod tests {
             "{found:?}"
         );
         assert!(found[0].text.contains("/ws/id"));
-        // two checks in a row: the first one is not enough, the next one five minutes on is
+        // two checks in a row: the first one is not enough, the next one five minutes on is,
+        // for the PCs that synced again in between
         let u = UnseenSince::default();
-        let t0 = Instant::now();
-        assert!(!u.observe(true, t0));
-        assert!(!u.observe(true, t0 + Duration::from_secs(STEADY_SECS - 1)));
-        assert!(u.observe(true, t0 + Duration::from_secs(300)));
-        assert!(u.observe(true, t0 + Duration::from_secs(600)));
+        let (t0, w0) = (Instant::now(), 1_794_268_800);
+        let after = |secs: u64| (t0 + Duration::from_secs(secs), w0 + secs as i64);
+        let look = |secs: u64, fresh: &[(&str, i64)]| {
+            let (at, wall) = after(secs);
+            u.observe(fresh, at, wall)
+        };
+        assert_eq!(look(0, &[("a", w0 - 30), ("b", w0 - 100)]), None);
+        assert_eq!(
+            look(STEADY_SECS - 1, &[("a", w0 + 90), ("b", w0 + 20)]),
+            None
+        );
+        assert_eq!(look(300, &[("a", w0 + 210), ("b", w0 + 260)]), Some(2));
+        // b went to sleep after its last sync: counted while that sync is fresh, then no more
+        assert_eq!(look(400, &[("a", w0 + 330), ("b", w0 + 260)]), Some(2));
+        assert_eq!(look(600, &[("a", w0 + 570)]), Some(1));
+        // a PC that has just woken counts from the check after the one that first saw it
+        assert_eq!(look(700, &[("a", w0 + 690), ("c", w0 + 695)]), Some(1));
+        assert_eq!(look(900, &[("a", w0 + 810), ("c", w0 + 815)]), Some(2));
         // a check that sees one of them, or none syncing, starts it over
-        assert!(!u.observe(false, t0 + Duration::from_secs(900)));
-        assert!(!u.observe(true, t0 + Duration::from_secs(1200)));
-        assert!(u.observe(true, t0 + Duration::from_secs(1500)));
+        assert_eq!(look(1200, &[]), None);
+        assert_eq!(look(1500, &[("a", w0 + 1450)]), None);
+        assert_eq!(look(1800, &[("a", w0 + 1690)]), Some(1));
+        // the last PC on shut down right after its sync: no check counts it, however soon
+        let u = UnseenSince::default();
+        let look = |secs: u64, fresh: &[(&str, i64)]| {
+            let (at, wall) = after(secs);
+            u.observe(fresh, at, wall)
+        };
+        assert_eq!(look(0, &[("a", w0 - 5)]), None);
+        assert_eq!(look(STEADY_SECS + 10, &[("a", w0 - 5)]), None);
+        assert_eq!(look(299, &[("a", w0 - 5)]), None);
     }
 
     #[test]

@@ -903,13 +903,14 @@ async fn the_check_with_the_service() {
     );
     // hbbs sees none of the PCs that sync (nginx's /ws/id broken, hbbs refusing registrations):
     // PC one synced just now, and hbbs last saw it over an hour ago. Not at the first check (a PC
-    // syncs before it registers), at the next one
+    // syncs before it registers), at the next one, as it synced again in between
     h.hbbs.register(&again, Some(4000));
     let out = check().await;
     assert!(out.status.success(), "{}{}", text(&out).0, text(&out).1);
     h.state
         .unseen
         .backdate(Duration::from_secs(check::STEADY_SECS));
+    h.sync(&again, &payload(&b1)).await.list();
     let out = check().await;
     assert_eq!(out.status.code(), Some(1), "{}", text(&out).0);
     assert!(
@@ -985,6 +986,86 @@ async fn the_check_with_the_service() {
     let out = check().await;
     assert_eq!(out.status.code(), Some(1));
     assert!(text(&out).1.contains("check: socket: "), "{}", text(&out).1);
+}
+
+/// The **unseen** finding counts PCs that keep syncing while hbbs sees none of them: one fresh PC
+/// that hbbs sees is no finding (the fault is not on the way to hbbs), and nor is the last PC on
+/// shut down right after a sync (hbbs takes it offline at once), at whatever check looks next.
+#[tokio::test]
+async fn unseen_is_pcs_that_keep_syncing_and_none_seen() {
+    let h = Harness::start().await;
+    let one = TestDevice::windows("622000011");
+    let two = TestDevice::windows("622000012");
+    let (b1, _) = bind_pc(&h, HONG, &one).await;
+    let (b2, _) = bind_pc(&h, KIM, &two).await;
+    h.sync(&one, &payload(&b1)).await.list();
+    h.sync(&two, &payload(&b2)).await.list();
+    // one is on, two has just synced and not registered yet: two checks, and both sync again
+    h.hbbs.register(&one, Some(5));
+    h.hbbs.register(&two, Some(4000));
+    let first = check::health(&h.state).await.unwrap();
+    assert_eq!(first.pcs_unseen, None);
+    h.state
+        .unseen
+        .backdate(Duration::from_secs(check::STEADY_SECS));
+    h.sync(&one, &payload(&b1)).await.list();
+    h.sync(&two, &payload(&b2)).await.list();
+    let second = check::health(&h.state).await.unwrap();
+    assert_eq!(second.pcs_unseen, None, "one of the fresh PCs is seen");
+    // with neither seen it is the finding: both synced again since the check that saw them
+    h.hbbs.register(&one, Some(4000));
+    let third = check::health(&h.state).await.unwrap();
+    assert_eq!(
+        third.pcs_unseen, None,
+        "a check that saw one starts it over"
+    );
+    h.state
+        .unseen
+        .backdate(Duration::from_secs(check::STEADY_SECS));
+    h.sync(&one, &payload(&b1)).await.list();
+    h.sync(&two, &payload(&b2)).await.list();
+    let fourth = check::health(&h.state).await.unwrap();
+    assert_eq!(fourth.pcs_unseen, Some(2));
+
+    // two is off for the night; one, the last PC on, is shut down 30 s after its sync. The
+    // timer's check sees it fresh and unseen; a check by hand (or `admin health`) 240 s later
+    // sees the same sync, now 270 s old, and the PC never synced after the first look
+    let stale = now() - 3600;
+    let two_id = two.id.clone();
+    h.state
+        .db
+        .call(move |c| {
+            c.execute(
+                "UPDATE devices SET last_sync_at = ?1 WHERE device_id = ?2",
+                rusqlite::params![stale, two_id],
+            )
+        })
+        .await
+        .unwrap();
+    h.hbbs.register(&one, Some(5));
+    assert_eq!(check::health(&h.state).await.unwrap().pcs_unseen, None);
+    h.hbbs.register(&one, None);
+    let set_one = |synced: i64| {
+        let id = one.id.clone();
+        h.state.db.call(move |c| {
+            c.execute(
+                "UPDATE devices SET last_sync_at = ?1 WHERE device_id = ?2",
+                rusqlite::params![synced, id],
+            )
+        })
+    };
+    set_one(now() - 30).await.unwrap();
+    let timer = check::health(&h.state).await.unwrap();
+    assert_eq!(timer.pcs_unseen, None);
+    h.state
+        .unseen
+        .backdate(Duration::from_secs(check::STEADY_SECS));
+    set_one(now() - 270).await.unwrap();
+    let by_hand = check::health(&h.state).await.unwrap();
+    assert_eq!(
+        by_hand.pcs_unseen, None,
+        "it never synced after the first look"
+    );
 }
 
 /// The App Review account's file, the access password's and door 2's, made up: their end in
