@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `hjv-api alert <unit>` (design v3 §5-9): what deploy/systemd/hjviewer-api-alert@.service runs
-//! when hjviewer-api.service, its check or its backup fails (their `OnFailure=`).
+//! when hjviewer-api.service, its check or its backup fails, or hbbs or hbbr
+//! (hjviewer-hbbs.service, hjviewer-hbbr.service) does (their `OnFailure=`).
 //!
 //! It always writes the alert to the journal: an error line in the namespace `hjviewer`, which the
 //! operations agent's daily report counts (design v3 §5-9, question 12). When the user has put a
@@ -55,6 +56,9 @@ const FRESH: Duration = Duration::from_secs(900);
 const TELEGRAM: &str = "https://api.telegram.org";
 const SEND_TIMEOUT: Duration = Duration::from_secs(20);
 const TEST: &str = "test";
+/// The units whose `OnFailure=` starts the alert that log to the main journal, not to the
+/// namespace `hjviewer` (they have no `LogNamespace=`)
+const MAIN_JOURNAL: [&str; 2] = ["hjviewer-hbbs.service", "hjviewer-hbbr.service"];
 
 pub const USAGE: &str = "hjv-api alert <unit>|test [--findings <file>] [--state-dir <dir>]";
 
@@ -229,6 +233,8 @@ impl Alert {
                 "hjviewer-api.service" => "hjv-api 서비스가 멈췄습니다. systemd가 다시 시작하지만, 계속 실패하면 앱 로그인과 PC 동기화가 안 됩니다.\n",
                 "hjviewer-api-backup.service" => "오늘의 DB 백업이 실패했습니다.\n",
                 CHECK_UNIT => "점검 자체가 실패했습니다(결과 없음).\n",
+                "hjviewer-hbbs.service" => "hbbs(연결 서버)가 멈췄습니다. systemd가 곧 다시 시작하지만, 그동안 PC 등록과 새 연결이 안 되고, 계속 실패하면 아무도 PC에 연결하지 못합니다.\n",
+                "hjviewer-hbbr.service" => "hbbr(중계 서버)가 멈춰 중계를 거치던 원격 세션이 끊겼습니다. systemd가 곧 다시 시작하지만, 계속 실패하면 새 원격 세션이 열리지 않습니다.\n",
                 _ => "유닛이 실패했습니다.\n",
             });
         }
@@ -236,8 +242,13 @@ impl Alert {
             text.push_str(&format!("- {}\n  ({code}: {detail})\n", meaning(code)));
         }
         let unit = self.unit.trim_end_matches(".service");
+        let namespace = if MAIN_JOURNAL.contains(&self.unit.as_str()) {
+            ""
+        } else {
+            "--namespace=hjviewer "
+        };
         text.push_str(&format!(
-            "확인: sudo journalctl --namespace=hjviewer -u {unit} -n 50\n같은 경보는 {}시간 동안 다시 보내지 않습니다.",
+            "확인: sudo journalctl {namespace}-u {unit} -n 50\n같은 경보는 {}시간 동안 다시 보내지 않습니다.",
             REALERT / HOUR
         ));
         text
@@ -545,6 +556,51 @@ mod tests {
         assert!(valid_unit("hjviewer-api-check.service"));
         assert!(valid_unit("test"));
         assert!(!valid_unit("a b") && !valid_unit("") && !valid_unit("x;y"));
+    }
+
+    #[test]
+    fn hbbs_and_hbbr_have_their_words_and_the_main_journal() {
+        // their OnFailure= starts the alert too (deploy/systemd), and they log to the main journal
+        for (unit, words, check) in [
+            (
+                "hjviewer-hbbs.service",
+                "hbbs(연결 서버)가 멈췄습니다",
+                "확인: sudo journalctl -u hjviewer-hbbs -n 50\n",
+            ),
+            (
+                "hjviewer-hbbr.service",
+                "hbbr(중계 서버)가 멈춰",
+                "확인: sudo journalctl -u hjviewer-hbbr -n 50\n",
+            ),
+        ] {
+            let alert = Alert {
+                unit: unit.into(),
+                ended: Some("signal, killed KILL".into()),
+                findings: vec![],
+                host: "project".into(),
+                at: 1_791_856_812,
+            };
+            let text = alert.message();
+            assert!(text.contains(words), "{text}");
+            assert!(text.contains(check), "{text}");
+            assert!(!text.contains("--namespace"), "{text}");
+            assert!(!text.contains("유닛이 실패했습니다"), "{text}");
+            assert_eq!(
+                alert.line(),
+                format!("alert: {unit} failed [signal, killed KILL]")
+            );
+        }
+        // hjv-api's own units keep the namespace
+        let backup = Alert {
+            unit: "hjviewer-api-backup.service".into(),
+            ended: None,
+            findings: vec![],
+            host: "project".into(),
+            at: 1_791_856_812,
+        };
+        assert!(backup
+            .message()
+            .contains("확인: sudo journalctl --namespace=hjviewer -u hjviewer-api-backup -n 50\n"));
     }
 
     #[test]

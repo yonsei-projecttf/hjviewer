@@ -1,6 +1,7 @@
-# The alert of hjv-api's units (design v3 §5-9; server/api/README.md, Monitoring): the
-# OnFailure= of hjviewer-api.service, hjviewer-api-check.service and hjviewer-api-backup.service
-# starts hjviewer-api-alert@<the failed unit>.service, which runs `hjv-api alert <the failed unit>`.
+# The alert of hjv-api's units and of hbbs and hbbr (design v3 §5-9; server/api/README.md,
+# Monitoring): the OnFailure= of hjviewer-api.service, hjviewer-api-check.service,
+# hjviewer-api-backup.service, hjviewer-hbbs.service and hjviewer-hbbr.service starts
+# hjviewer-api-alert@<the failed unit>.service, which runs `hjv-api alert <the failed unit>`.
 #
 # It always writes the alert to the journal (journalctl --namespace=hjviewer -p err), which the
 # operations agent's daily report counts. With a Telegram bot in the credential
