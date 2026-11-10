@@ -230,7 +230,14 @@ class StoreTextTest(unittest.TestCase):
         no_video = (("The screenshot of the My PCs list and the attached video show what the demo account cannot: "
                      "a staff account's PC list and a support code.",
                      "The screenshot of the My PCs list shows what the demo account cannot: a staff account's PC list."),)
-        for old, new in two_pcs + no_webcam + no_video:
+        # the demo PC's HJViewer signed in to the demo account, as 1.9.2 went in by hand on 2026-10-29
+        signed_in = (("On the demo PC, please leave HJViewer signed out: signing in and out there takes the PC offline.",
+                      "On the demo PC, HJViewer is signed in to the demo account; do not sign out there, as that takes "
+                      "the PC offline. If it says its login ended (as deleting the account does), click Close and "
+                      "leave it signed out; the PC stays online."),
+                     ('If the app says "A new device logged in"',
+                      'If the app or HJViewer on the demo PC says "A new device logged in"'))
+        for old, new in two_pcs + no_webcam + no_video + signed_in:
             self.assertEqual(notes.count(old), 1, old)
             self.assertIn(f"`{new}`", guide, new)
         self.assertIn(f"`{tested}`", guide)
@@ -254,6 +261,19 @@ class StoreTextTest(unittest.TestCase):
         # sentence: the owner decided on 2026-10-29 to attach neither a written permission nor a video
         self.assertLessEqual(self.worst_size(copy, hand(notes, no_video, tested_on=True)), cst.REVIEW_NOTES_BYTES)
         self.assertLessEqual(self.worst_size(copy, with_approval(hand(notes, no_video, tested_on=True))),
+                             cst.REVIEW_NOTES_BYTES)
+        # 1.9.2 as it went in: the demo PC signed in, without the video, with Tested on (3964 bytes),
+        # without it (3884); once Apple has approved, Tested on goes (4044 with it, 3964 without)
+        def filled(text):
+            return cst.notes_bytes(cst.fill(text, {"DEMO_PC_ID": "x" * cst.PC_ID_MAX,
+                                                    "DEMO_PC_PASSWORD": "x" * cst.PC_PASSWORD_MAX}))
+
+        self.assertLessEqual(self.worst_size(copy, hand(notes, no_video, signed_in, tested_on=True)),
+                             cst.REVIEW_NOTES_BYTES)
+        self.assertLessEqual(self.worst_size(copy, hand(notes, no_video, signed_in)), cst.REVIEW_NOTES_BYTES)
+        self.assertGreater(filled(with_approval(hand(notes, no_video, signed_in, tested_on=True))),
+                           cst.REVIEW_NOTES_BYTES, "store/README.md: with Apple's approval, Tested on goes")
+        self.assertLessEqual(self.worst_size(copy, with_approval(hand(notes, no_video, signed_in))),
                              cst.REVIEW_NOTES_BYTES)
         # the longest two-PC form store/README.md says fits: two PCs, the university's permission
         # and Apple's approval, without Tested on (3989 bytes on 2026-10-29)
