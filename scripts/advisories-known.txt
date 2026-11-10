@@ -3,7 +3,7 @@
 # package, version, advisory ID. The script reports an advisory of these lock files only
 # when it is not here.
 # Written 2026-11-10 (UTC) from the upstream trees of scripts/upstream.env with server/patches
-# and client/patches: RUSTDESK_SERVER_COMMIT a7736be5e40f, RUSTDESK_COMMIT 001b0e96173c
+# and client/patches: RUSTDESK_SERVER_COMMIT 680b60395ecf, RUSTDESK_COMMIT 001b0e96173c
 upstream/rustdesk-server/Cargo.lock  ansi_term           0.12.1             RUSTSEC-2021-0139
 upstream/rustdesk-server/Cargo.lock  anyhow              1.0.57             RUSTSEC-2026-0190
 upstream/rustdesk-server/Cargo.lock  atty                0.2.14             RUSTSEC-2021-0145
@@ -57,8 +57,6 @@ upstream/rustdesk-server/Cargo.lock  rustls-webpki       0.103.13           RUST
 upstream/rustdesk-server/Cargo.lock  sodiumoxide         0.2.7              RUSTSEC-2021-0137
 upstream/rustdesk-server/Cargo.lock  spin                0.9.3              RUSTSEC-2023-0031
 upstream/rustdesk-server/Cargo.lock  sqlx                0.6.0              RUSTSEC-2024-0363
-upstream/rustdesk-server/Cargo.lock  tokio               1.53.1             RUSTSEC-2026-0386
-upstream/rustdesk-server/Cargo.lock  tungstenite         0.17.2             RUSTSEC-2023-0065
 upstream/rustdesk-server/Cargo.lock  users               0.11.0             RUSTSEC-2023-0040
 upstream/rustdesk-server/Cargo.lock  users               0.11.0             RUSTSEC-2023-0059
 upstream/rustdesk-server/Cargo.lock  users               0.11.0             RUSTSEC-2025-0040
@@ -85,7 +83,6 @@ upstream/rustdesk/Cargo.lock         anyhow              1.0.98             RUST
 upstream/rustdesk/Cargo.lock         atty                0.2.14             RUSTSEC-2021-0145
 upstream/rustdesk/Cargo.lock         atty                0.2.14             RUSTSEC-2024-0375
 upstream/rustdesk/Cargo.lock         bincode             1.3.3              RUSTSEC-2025-0141
-upstream/rustdesk/Cargo.lock         crossbeam-channel   0.5.13             RUSTSEC-2025-0024
 upstream/rustdesk/Cargo.lock         crypto-bigint       0.5.5              RUSTSEC-2026-0387
 upstream/rustdesk/Cargo.lock         derivative          2.2.0              RUSTSEC-2024-0388
 upstream/rustdesk/Cargo.lock         dlopen_derive       0.1.4              RUSTSEC-2023-0051
@@ -132,11 +129,6 @@ upstream/rustdesk/Cargo.lock         rustls              0.23.28            RUST
 upstream/rustdesk/Cargo.lock         rustls              0.23.28            RUSTSEC-2026-0346
 upstream/rustdesk/Cargo.lock         rustls              0.23.28            RUSTSEC-2026-0348
 upstream/rustdesk/Cargo.lock         rustls              0.23.28            RUSTSEC-2026-0349
-upstream/rustdesk/Cargo.lock         rustls-webpki       0.103.3            RUSTSEC-2026-0049
-upstream/rustdesk/Cargo.lock         rustls-webpki       0.103.3            RUSTSEC-2026-0098
-upstream/rustdesk/Cargo.lock         rustls-webpki       0.103.3            RUSTSEC-2026-0099
-upstream/rustdesk/Cargo.lock         rustls-webpki       0.103.3            RUSTSEC-2026-0104
-upstream/rustdesk/Cargo.lock         rustls-webpki       0.103.3            RUSTSEC-2026-0382
 upstream/rustdesk/Cargo.lock         serial              0.4.0              RUSTSEC-2017-0008
 upstream/rustdesk/Cargo.lock         sodiumoxide         0.2.7              RUSTSEC-2021-0137
 upstream/rustdesk/Cargo.lock         time                0.1.45             RUSTSEC-2020-0071
@@ -153,7 +145,6 @@ upstream/rustdesk/Cargo.lock         users               0.11.0             RUST
 upstream/rustdesk/Cargo.lock         users               0.11.0             RUSTSEC-2023-0059
 upstream/rustdesk/Cargo.lock         users               0.11.0             RUSTSEC-2025-0040
 upstream/rustdesk/Cargo.lock         webpki-root-certs   1.0.3              RUSTSEC-2026-0383
-upstream/rustdesk/Cargo.lock         webpki-roots        1.0.9              RUSTSEC-2026-0381
 upstream/rustdesk/Cargo.lock         zbus_names          2.6.1              RUSTSEC-2026-0371
 upstream/rustdesk/Cargo.lock         zstd-safe           7.1.0              RUSTSEC-2026-0395
 upstream/rustdesk/Cargo.lock         zstd-safe           7.1.0              RUSTSEC-2026-0397
