@@ -963,6 +963,10 @@ CLIENT_DART_TESTS+=" test/hjv_caption_test.dart test/hjviewer_text_scale_test.da
 # 1.9.1: the desktop settings split into the everyday tabs and Advanced settings (client patches
 # 0149-0152)
 CLIENT_DART_TESTS+=" test/hjviewer_settings_split_test.dart"
+# 1.9.3: the download's checks on the downloading device, Windows device names and a cut-off
+# download (client patches 0175, 0181-0182). test/download_path_test.dart, which implements the
+# bridge and needs the generated one, runs in client-build.yml's Dart tests job (the whole folder)
+CLIENT_DART_TESTS+=" test/download_paths_test.dart"
 # Pure Dart tests that a work package not in client/patches yet adds: run when the patched tree
 # has them, else skipped with a note. Once the patch is in, move them to CLIENT_DART_TESTS, so that
 # a dropped patch fails (the account screens' tests, design v3 7-5, moved with client patch 0033).
