@@ -19,7 +19,8 @@
 //! hbbs checks ([`ticket`], docs/access-tickets.md) and the access password's ([`guest`]); 1.8.2
 //! the support codes that staff members make for a PC ([`support`]); 1.9.0 their support links,
 //! waiting room and the signed support grant a PC gets with its ticket ([`grant`]); 1.9.1 the
-//! account's own deletion ([`account`]).
+//! account's own deletion ([`account`]); 1.9.3 the check's look at the operator files that end
+//! ([`opfiles`]).
 
 #[macro_use]
 pub mod log;
@@ -46,6 +47,7 @@ pub mod keygen;
 pub mod keys;
 pub mod limits;
 pub mod login;
+pub mod opfiles;
 pub mod oplog;
 pub mod overview;
 pub mod pcsync;

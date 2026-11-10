@@ -820,6 +820,23 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
   NAS relays silent for an hour. PCs that are off say nothing, so a night with every PC asleep is
   no alarm. All well: one line in the journal. A finding: an error line each, the findings in
   `/run/hjviewer-api-check/findings`, and the unit fails.
+- The operator's files that end (1.9.3, `src/opfiles.rs`): `review.conf`, `guest.conf` and
+  `door2.conf` carry an `UNTIL=`, at most 90 days ahead by the tools that write them, and past it
+  each one is a filter per request that tells nobody (the review login fails, the access password
+  is "closed" and counted like a wrong one, door 2's link is 404); one that does not parse is
+  taken as absent. So `health` carries each configured file's state (`files`: `name` `review`,
+  `guest` or `door2`, `state` `absent`, `active`, `ended` or `refused`, and `until`; a check and a
+  service of different versions read each other's answers, the field missing as none), and the
+  check finds a file that ends within seven days (`file_ending`), one whose `UNTIL` has passed
+  while it is still installed (`file_ended`) and one that is there but not used (`file_refused`).
+  A file that is not there is no finding. `admin report` prints the three, one line each:
+  `operator file review (HJV_API_REVIEW_FILE): active until <UTC time>, <n> days left` (or
+  `ended at <time>, <n> days ago, still installed`, `there but not used (the journal says why)`,
+  `not there`, `not set`), and the start logs door 2's state as it does the other two's
+  (`update: door 2 is closed (…)` when it is). No such line holds an ID, a code, a hash or an
+  address. A finding that stays is the same alert, so with a Telegram bot it comes once in six
+  hours: a file that ends in a week is four messages a day until it is renewed or has ended
+  (`file_ended` is a new alert, at once), and error lines every five minutes in the journal.
 - `hjviewer-api-alert@.service` is the `OnFailure=` of `hjviewer-api.service` (each crash, also
   while systemd restarts it), of the check and of the backup: `hjv-api alert <unit>`
   (`src/alert.rs`) writes an error line to the journal. That line is the alert while no Telegram

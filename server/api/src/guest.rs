@@ -79,12 +79,13 @@ use crate::{
     hbbs::{self, Lookup},
     limits::{self, Admit, Take, SCOPE_GUEST_IP, SCOPE_GUEST_TICKETS},
     login::{fresh, wait_for, Retry, TEXT_SEAL_CLOCK},
+    opfiles::OpFile,
     review::hash_parts,
     seal::{Opened, SealError},
     state::AppState,
     support::{self, CodeState, Looked, Taken},
     ticket::{self, Claims, NoTicket, Use},
-    update::{utc_time, watched, Watched},
+    update::{utc_time, watched_seen, Seen, Watched},
     util::{b64, b64_decode, datetime, hex, now, random_below, sha256, valid_device_id, DAY},
 };
 use hyper::{header::ORIGIN, Method, StatusCode};
@@ -212,8 +213,22 @@ impl GuestFile {
     /// The file as it is now, whatever its UNTIL; `None` without HJV_API_GUEST_FILE, the file or
     /// one that is taken. It reads a file: not for an async thread.
     pub fn read(&self, config: &Config) -> Option<Arc<Guest>> {
-        let path = config.guest_file.as_deref()?;
-        watched(
+        match self.seen(config) {
+            Seen::Taken(guest) => Some(guest),
+            Seen::Absent | Seen::Refused => None,
+        }
+    }
+
+    /// The file's state at `at`, for `health` (opfiles.rs); it reads a file.
+    pub fn state(&self, config: &Config, at: i64) -> OpFile {
+        OpFile::of("guest", self.seen(config), Guest::until, at)
+    }
+
+    fn seen(&self, config: &Config) -> Seen<Guest> {
+        let Some(path) = config.guest_file.as_deref() else {
+            return Seen::Absent;
+        };
+        watched_seen(
             &self.0,
             path,
             MAX_FILE,

@@ -59,8 +59,9 @@ use crate::{
     config::Config,
     db::Account,
     log::Tagger,
+    opfiles::OpFile,
     state::AppState,
-    update::{same, utc_time, watched, Watched},
+    update::{same, utc_time, watched_seen, Seen, Watched},
     util::{b64_decode, datetime, login_key, now, staff_id, valid_device_id, valid_portal_id},
 };
 use ring::pbkdf2;
@@ -229,8 +230,23 @@ impl ReviewFile {
     /// The file while it is active at `at`: there, taken, and before its UNTIL; `None` without
     /// HJV_API_REVIEW_FILE. It reads a file: not for an async thread.
     pub fn active(&self, config: &Config, tags: &Tagger, at: i64) -> Option<Arc<Review>> {
-        let path = config.review_file.as_deref()?;
-        watched(
+        config.review_file.as_ref()?;
+        match self.seen(config, tags) {
+            Seen::Taken(review) => Some(review).filter(|review| at < review.until),
+            Seen::Absent | Seen::Refused => None,
+        }
+    }
+
+    /// The file's state at `at`, for `health` (opfiles.rs); it reads a file.
+    pub fn state(&self, config: &Config, tags: &Tagger, at: i64) -> OpFile {
+        OpFile::of("review", self.seen(config, tags), Review::until, at)
+    }
+
+    fn seen(&self, config: &Config, tags: &Tagger) -> Seen<Review> {
+        let Some(path) = config.review_file.as_deref() else {
+            return Seen::Absent;
+        };
+        watched_seen(
             &self.0,
             path,
             MAX_FILE,
@@ -238,7 +254,6 @@ impl ReviewFile {
             Review::parse,
             |review| review.summary(tags),
         )
-        .filter(|review| at < review.until)
     }
 }
 

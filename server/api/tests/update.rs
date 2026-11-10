@@ -1506,7 +1506,11 @@ async fn door_2_leaves_the_other_half_of_the_slots_to_the_rest() {
 
     // door 2's one place of two slots is taken, as by a slow download through it: door 2 is busy
     // for its packages and its notice files alike, the short link is not
-    let taken = h.state.updates.slots.take_within(&h.state.updates.door2_slots);
+    let taken = h
+        .state
+        .updates
+        .slots
+        .take_within(&h.state.updates.door2_slots);
     assert!(taken.is_some());
     assert_eq!(h.state.updates.slots.free(), 1);
     for path in [package.as_str(), notice.as_str()] {
@@ -1525,9 +1529,52 @@ async fn door_2_leaves_the_other_half_of_the_slots_to_the_rest() {
     let got = bare(&h, Method::GET, &package, ip).await;
     assert_eq!((got.status, &got.body), (200, &exe));
     assert_eq!(
-        (h.state.updates.slots.free(), h.state.updates.door2_slots.free()),
+        (
+            h.state.updates.slots.free(),
+            h.state.updates.door2_slots.free()
+        ),
         (2, 1)
     );
+}
+
+/// At the start (main.rs) the journal says whether door 2 is open, as it does of the App Review
+/// account and the access password: the file's own line when it is read, and `door 2 is closed`
+/// without a file, with one whose UNTIL has come, or one that is not used.
+#[tokio::test]
+async fn the_start_says_whether_door_2_is_open() {
+    let closed =
+        "update: door 2 is closed (HJV_API_DOOR2_FILE is not there, not used, or past its UNTIL)";
+    // only this test starts, so only it writes that line
+    let lines = |of: &str| {
+        hjv_api::log::captured()
+            .iter()
+            .filter(|l| l.as_str() == of)
+            .count()
+    };
+    let area = Area::new();
+    area.usual();
+    let h = start(&area, &[]).await;
+    update::note_at_start(&h.state);
+    assert_eq!(lines(closed), 1);
+    let until = now() + 3600 + 7;
+    area.door2(DOOR2, until);
+    update::note_at_start(&h.state);
+    let read = hjv_api::log::captured()
+        .iter()
+        .filter(|l| {
+            l.starts_with(&format!(
+                "update: door 2's file (HJV_API_DOOR2_FILE) read: open until {} (code=",
+                datetime(until)
+            ))
+        })
+        .count();
+    assert_eq!((read, lines(closed)), (1, 1));
+    area.door2(DOOR2, now() - 1);
+    update::note_at_start(&h.state);
+    assert_eq!(lines(closed), 2);
+    std::fs::write(area.dir.join("door2.conf"), "CODE=\n").unwrap();
+    update::note_at_start(&h.state);
+    assert_eq!(lines(closed), 3);
 }
 
 #[tokio::test]

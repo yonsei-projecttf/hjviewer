@@ -33,7 +33,10 @@
 //! - **relay**: an active NAS relay (Wake-on-LAN, relay.rs) that has not polled for
 //!   [`RELAY_SILENT`] seconds: an active relay keeps a long-poll open, so one silent for an hour
 //!   is down, or its NAS is off (design v3 question 15: a NAS that is switched off at night would
-//!   need this an hour longer than its night).
+//!   need this an hour longer than its night);
+//! - **file_ending**, **file_ended**, **file_refused** (1.9.3, opfiles.rs): an operator file with
+//!   an `UNTIL=` (review.conf, guest.conf, door2.conf) that ends within a week, that has ended
+//!   and is still installed, or that is there and not used because it does not parse.
 //!
 //! It prints one line when all is well, and a line per finding otherwise (errors in the journal),
 //! writes the findings to a file the alert reads (`$RUNTIME_DIRECTORY/findings` under systemd:
@@ -48,6 +51,7 @@ use crate::{
     db,
     hbbs::{self, HbbsError, Lookup},
     limits::{USER_REFUSED_ACCOUNTS, USER_REFUSED_WINDOW},
+    opfiles::{self, OpFile},
     state::AppState,
     util::now,
 };
@@ -59,7 +63,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::net::UnixStream;
@@ -108,6 +112,10 @@ pub struct Health {
     /// refused in a row (limits::UserRefusals), when one did since the service started
     #[serde(default)]
     pub sso_user_refused: Option<i64>,
+    /// the operator files with an UNTIL= that are configured, and their states (1.9.3; an older
+    /// service's answer has none)
+    #[serde(default)]
+    pub files: Vec<OpFile>,
 }
 
 /// The SSO calls' last pause (limits::Breaker).
@@ -181,7 +189,7 @@ fn hbbs_error(e: &HbbsError) -> &'static str {
 
 /// The service's side of `health`; a database that cannot be read is an error, which the check
 /// reports.
-pub async fn health(state: &AppState) -> Result<Health, String> {
+pub async fn health(state: &Arc<AppState>) -> Result<Health, String> {
     let at = now();
     let ttl = state.config.trust_ttl_secs;
     let mut h = Health {
@@ -274,6 +282,10 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
         .sso_user_refusals
         .last_alert()
         .map(|when| (at - when).max(0));
+    let app = state.clone();
+    h.files = tokio::task::spawn_blocking(move || opfiles::states(&app, at))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(h)
 }
 
@@ -385,6 +397,7 @@ pub fn evaluate(probe: &Probe, health: &Result<Health, String>) -> Vec<Finding> 
             ));
         }
     }
+    found.extend(opfiles::findings(&h.files, h.time));
     found
 }
 
@@ -576,6 +589,7 @@ mod tests {
             relays: None,
             sso_new_full: None,
             sso_user_refused: None,
+            files: Vec::new(),
         }
     }
 
@@ -711,7 +725,48 @@ mod tests {
         let mut json = serde_json::to_value(healthy()).unwrap();
         json.as_object_mut().unwrap().remove("sso_new_full");
         json.as_object_mut().unwrap().remove("sso_user_refused");
+        json.as_object_mut().unwrap().remove("files");
         assert_eq!(serde_json::from_value::<Health>(json).unwrap(), healthy());
+    }
+
+    #[test]
+    fn operator_files() {
+        let ok = Probe::Answered(8);
+        let day = crate::util::DAY;
+        let files = |state: &str, until: Option<i64>| Health {
+            files: vec![OpFile {
+                name: "review".into(),
+                state: state.into(),
+                until,
+            }],
+            ..healthy()
+        };
+        let at = healthy().time;
+        assert!(evaluate(&ok, &Ok(files(opfiles::ACTIVE, Some(at + 8 * day)))).is_empty());
+        assert!(evaluate(&ok, &Ok(files(opfiles::ABSENT, None))).is_empty());
+        // the time is the service's, from its answer
+        let found = evaluate(&ok, &Ok(files(opfiles::ACTIVE, Some(at + 6 * day))));
+        assert_eq!(codes(&found), ["file_ending"]);
+        assert!(found[0].text.contains(", 6 days left: "), "{found:?}");
+        assert_eq!(
+            codes(&evaluate(&ok, &Ok(files(opfiles::ENDED, Some(at - 1))))),
+            ["file_ended"]
+        );
+        assert_eq!(
+            codes(&evaluate(&ok, &Ok(files(opfiles::REFUSED, None)))),
+            ["file_refused"]
+        );
+        // what a newer check reads of an older service's answer, and the other way round
+        let new = serde_json::to_value(files(opfiles::REFUSED, None)).unwrap();
+        assert_eq!(new["files"][0]["state"], "refused");
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldHealth {
+            v: u32,
+            pcs_holding: i64,
+            hbbs: String,
+        }
+        assert!(serde_json::from_value::<OldHealth>(new).is_ok());
     }
 
     #[test]

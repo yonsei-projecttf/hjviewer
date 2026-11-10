@@ -105,6 +105,7 @@ use crate::{
         SCOPE_UPDATE_OK_ACCOUNT, SCOPE_UPDATE_OK_DEVICE,
     },
     log::Tagger,
+    opfiles::OpFile,
     oplog::OpEntry,
     review,
     state::AppState,
@@ -409,6 +410,21 @@ impl Policy {
     }
 }
 
+/// At the start: the file's own line says what was read or why it is not used; this one, that
+/// door 2 is closed (as review.rs and guest.rs say of their files).
+pub fn note_at_start(state: &AppState) {
+    let at = now();
+    let open = state
+        .updates
+        .door2(&state.config, &state.tags)
+        .is_some_and(|door| at < door.until);
+    if !open {
+        log_notice!(
+            "update: door 2 is closed (HJV_API_DOOR2_FILE is not there, not used, or past its UNTIL)"
+        );
+    }
+}
+
 /// How many of `slots` download slots door 2 may hold at once.
 pub fn door2_share(slots: usize) -> usize {
     (slots / 2).max(1)
@@ -488,6 +504,15 @@ impl<T> Default for Watched<T> {
     }
 }
 
+/// What [`watched_seen`] found at a file's path.
+pub(crate) enum Seen<T> {
+    /// no file
+    Absent,
+    /// a file that cannot be read, is too large or is not what `parse` takes
+    Refused,
+    Taken(Arc<T>),
+}
+
 /// What the file at `path` holds now, by `parse`; `None` without the file, and for a file that is
 /// too large or not what `parse` takes, which the journal hears of once for each such file. The
 /// journal's lines begin with `what`: the caller's prefix and the file's name.
@@ -499,13 +524,33 @@ pub(crate) fn watched<T>(
     parse: impl FnOnce(&[u8]) -> Result<T, &'static str>,
     summary: impl FnOnce(&T) -> String,
 ) -> Option<Arc<T>> {
+    match watched_seen(kept, path, max, what, parse, summary) {
+        Seen::Taken(value) => Some(value),
+        Seen::Absent | Seen::Refused => None,
+    }
+}
+
+/// [`watched`], telling a file that is not there from one that is not used.
+pub(crate) fn watched_seen<T>(
+    kept: &Mutex<Watched<T>>,
+    path: &Path,
+    max: u64,
+    what: &str,
+    parse: impl FnOnce(&[u8]) -> Result<T, &'static str>,
+    summary: impl FnOnce(&T) -> String,
+) -> Seen<T> {
     let meta = std::fs::metadata(path).ok().filter(|m| m.is_file());
     let seen = meta
         .as_ref()
         .map(|m| (m.dev(), m.ino(), m.len(), m.ctime(), m.ctime_nsec()));
     let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+    let as_seen = |kept: &Watched<T>| match (&kept.seen, &kept.read) {
+        (_, Some(value)) => Seen::Taken(value.clone()),
+        (Some(_), None) => Seen::Refused,
+        (None, None) => Seen::Absent,
+    };
     if seen == kept.seen {
-        return kept.read.clone();
+        return as_seen(&kept);
     }
     let read = match meta {
         None => {
@@ -534,8 +579,8 @@ pub(crate) fn watched<T>(
         }
     };
     kept.seen = seen;
-    kept.read = read.clone();
-    read
+    kept.read = read;
+    as_seen(&kept)
 }
 
 /// Why a file of the package directory is not sent.
@@ -759,7 +804,19 @@ impl Updates {
 
     /// Door 2's file as it is now (it reads a file: not for an async thread).
     fn door2(&self, config: &Config, tags: &Tagger) -> Option<Arc<Door2>> {
-        watched(
+        match self.door2_seen(config, tags) {
+            Seen::Taken(door) => Some(door),
+            Seen::Absent | Seen::Refused => None,
+        }
+    }
+
+    /// Door 2's file's state at `at`, for `health` (opfiles.rs); it reads a file.
+    pub fn door2_state(&self, config: &Config, tags: &Tagger, at: i64) -> OpFile {
+        OpFile::of("door2", self.door2_seen(config, tags), |d| d.until, at)
+    }
+
+    fn door2_seen(&self, config: &Config, tags: &Tagger) -> Seen<Door2> {
+        watched_seen(
             &self.door2,
             &config.door2_file,
             MAX_DOOR2_FILE,

@@ -25,7 +25,7 @@ use hjv_api::{
     server::{self, Listener},
     state::AppState,
     ticket::{self, TicketKey},
-    trust,
+    trust, update,
 };
 use std::{
     collections::HashMap,
@@ -275,6 +275,7 @@ async fn serve(
     check_ticket_key(&state);
     review::note_at_start(&state);
     guest::note_at_start(&state);
+    update::note_at_start(&state);
     tokio::spawn(jobs::run(state.clone(), stopped()));
     log_notice!(
         "hjv-api {} ready: seal keys {}, list key {}, command key {}, ticket key {}, second factor {second_factor}, login {}",

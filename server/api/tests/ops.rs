@@ -13,7 +13,7 @@ use hjv_api::{
     backup, check, db,
     server::{self, Listener},
     sso::Failure,
-    util::{b64, date, now},
+    util::{b64, date, datetime, now, DAY},
 };
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, server::conn::http1, service::service_fn, Response};
@@ -673,6 +673,7 @@ async fn the_check_catches_a_stopped_socket_and_no_syncs() {
         relays: None,
         sso_new_full: None,
         sso_user_refused: None,
+        files: Vec::new(),
     };
     fake_admin(&admin, no_syncs.clone()).await;
     let check_args = || {
@@ -949,6 +950,172 @@ async fn the_check_with_the_service() {
     let out = check().await;
     assert_eq!(out.status.code(), Some(1));
     assert!(text(&out).1.contains("check: socket: "), "{}", text(&out).1);
+}
+
+/// The App Review account's file, the access password's and door 2's, made up: their end in
+/// `health`, the five-minute check and `admin report`, never what they hold.
+#[tokio::test]
+async fn the_operator_files_that_end() {
+    const HASH: &str = "pbkdf2-sha256$100000$AAECAwQFBgcICQoLDA0ODw==$SdScJfWXhGIJ8Nkud3CrZOHHXpS0zmxQkmXuZxddKh4=";
+    const CODE: &str = "5ca1ab1e0ddba11c0ffee15dec0dedaa";
+    let dir = temp_dir("opfiles");
+    let path = |name: &str| dir.join(name);
+    let h = Harness::with(Options {
+        vars: vec![
+            (
+                "HJV_API_REVIEW_FILE",
+                path("review.conf").display().to_string(),
+            ),
+            (
+                "HJV_API_GUEST_FILE",
+                path("guest.conf").display().to_string(),
+            ),
+            (
+                "HJV_API_DOOR2_FILE",
+                path("door2.conf").display().to_string(),
+            ),
+        ],
+        ..Default::default()
+    })
+    .await;
+    let put = |name: &str, text: String| {
+        std::fs::write(path(&format!("{name}.new")), text).unwrap();
+        std::fs::rename(path(&format!("{name}.new")), path(name)).unwrap();
+    };
+    let states = |health: &check::Health| -> Vec<(String, String, Option<i64>)> {
+        health
+            .files
+            .iter()
+            .map(|f| (f.name.clone(), f.state.clone(), f.until))
+            .collect()
+    };
+    let state =
+        |name: &str, state: &str, until: Option<i64>| (name.to_owned(), state.to_owned(), until);
+    let found = |health: check::Health| {
+        check::evaluate(&check::Probe::Answered(1), &Ok(health))
+            .into_iter()
+            .map(|f| (f.code, f.text))
+            .collect::<Vec<_>>()
+    };
+    let report = || async {
+        h.admin(&["report"], false, None)
+            .await
+            .unwrap()
+            .lines()
+            .filter(|l| l.starts_with("operator file "))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+
+    // none of the three is there: no finding (having none is the operator's choice)
+    let health = check::health(&h.state).await.unwrap();
+    assert_eq!(
+        states(&health),
+        [
+            state("review", "absent", None),
+            state("guest", "absent", None),
+            state("door2", "absent", None)
+        ]
+    );
+    assert!(found(health).is_empty());
+    assert_eq!(
+        report().await,
+        [
+            "operator file review (HJV_API_REVIEW_FILE): not there",
+            "operator file guest (HJV_API_GUEST_FILE): not there",
+            "operator file door2 (HJV_API_DOOR2_FILE): not there"
+        ]
+    );
+
+    // the review file for 75 days, the access password's for 3, door 2's ended yesterday
+    let at = now();
+    let (review, guest, door) = (at + 75 * DAY + 60, at + 3 * DAY + 60, at - DAY - 60);
+    put(
+        "review.conf",
+        format!(
+            "ID=APPREVIEW-TEST\nHASH={HASH}\nUNTIL={}\n",
+            datetime(review)
+        ),
+    );
+    put(
+        "guest.conf",
+        format!("HASH={HASH}\nUNTIL={}\n", datetime(guest)),
+    );
+    put(
+        "door2.conf",
+        format!("CODE={CODE}\nUNTIL={}\n", datetime(door)),
+    );
+    let health = check::health(&h.state).await.unwrap();
+    assert_eq!(
+        states(&health),
+        [
+            state("review", "active", Some(review)),
+            state("guest", "active", Some(guest)),
+            state("door2", "ended", Some(door))
+        ]
+    );
+    let got = found(health);
+    assert_eq!(
+        got.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+        ["file_ending", "file_ended"]
+    );
+    assert!(
+        got[0].1.starts_with(&format!(
+            "the access password's file (HJV_API_GUEST_FILE) ends at {}, 3 days left: ",
+            datetime(guest)
+        )),
+        "{got:?}"
+    );
+    assert!(
+        got[1].1.starts_with(&format!(
+            "door 2's file (HJV_API_DOOR2_FILE) ended at {} (1 day ago) and is still installed: ",
+            datetime(door)
+        )),
+        "{got:?}"
+    );
+    assert_eq!(
+        report().await,
+        [
+            format!(
+                "operator file review (HJV_API_REVIEW_FILE): active until {}, 75 days left",
+                datetime(review)
+            ),
+            format!(
+                "operator file guest (HJV_API_GUEST_FILE): active until {}, 3 days left",
+                datetime(guest)
+            ),
+            format!(
+                "operator file door2 (HJV_API_DOOR2_FILE): ended at {}, 1 day ago, still installed",
+                datetime(door)
+            ),
+        ]
+    );
+
+    // a stray line in the access password's file: refused, and said so
+    put(
+        "guest.conf",
+        format!("HASH={HASH}\nUNTIL={}\nPASSWORD=x\n", datetime(guest)),
+    );
+    std::fs::remove_file(path("door2.conf")).unwrap();
+    let health = check::health(&h.state).await.unwrap();
+    assert_eq!(states(&health)[1], state("guest", "refused", None));
+    assert_eq!(states(&health)[2], state("door2", "absent", None));
+    let got = found(health.clone());
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].0, "file_refused");
+    assert!(got[0]
+        .1
+        .starts_with("the access password's file (HJV_API_GUEST_FILE) is there but not used: "));
+    assert_eq!(
+        report().await[1],
+        "operator file guest (HJV_API_GUEST_FILE): there but not used (the journal says why)"
+    );
+    // no line of them shows what the files hold, nor their tags
+    let text = serde_json::to_string(&health).unwrap() + &report().await.join("\n");
+    for held in [HASH, CODE, "APPREVIEW", "appreview", &CODE[..8]] {
+        assert!(!text.contains(held), "{held}: {text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A stand-in for Telegram's Bot API: what it was sent, and the status it answers with.

@@ -1450,6 +1450,12 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                     "SSO calls: paused ({reason}: the SSO refused this server or kept failing); logins get 503"
                 );
             }
+            // the operator files that end (opfiles.rs): their end and the days left
+            let app = state.clone();
+            let files = tokio::task::spawn_blocking(move || crate::opfiles::report(&app, at))
+                .await
+                .map_err(|e| e.to_string())?;
+            out.push_str(&files);
             let _ = writeln!(out, "seal key IDs: {}", state.seal.key_ids().join(", "));
             Ok(out)
         }
