@@ -6,6 +6,12 @@ Description=HJViewer relay server (hbbr)
 Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/server-runbook.md
 After=network.target hjviewer-hbbs.service
 Wants=hjviewer-hbbs.service
+# A failure, also one that Restart= below follows with a restart (systemd 254 and later, as
+# Ubuntu 24.04's 255), starts hjv-api's alert for this unit (hjviewer-api-alert@.service: the
+# journal of the namespace hjviewer, and Telegram once the user has set it up), as for
+# hjviewer-api.service. A stop by systemctl that ends in time is no failure. A server without
+# hjv-api has no alert unit: systemd then logs "Failed to enqueue OnFailure= job" and goes on.
+OnFailure=hjviewer-api-alert@%n.service
 
 [Service]
 Type=simple
@@ -23,6 +29,9 @@ ExecStartPre=/usr/bin/timeout 10 /bin/sh -c 'until [ -s id_ed25519.pub ]; do sle
 ExecStart=/opt/hjviewer/bin/hbbr -b 127.0.0.1 -k _
 Restart=on-failure
 RestartSec=5
+# hbbr reads the server's private key at its start (to take the public key from it): no core
+# dumps
+LimitCORE=0
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=

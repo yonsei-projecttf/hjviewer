@@ -13,6 +13,12 @@ Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/server
 # (server patch 0010), and logs "Invalid relay-servers <domain>" (ERROR) when it did not
 Wants=network-online.target
 After=network.target network-online.target
+# A failure, also one that Restart= below follows with a restart (systemd 254 and later, as
+# Ubuntu 24.04's 255), starts hjv-api's alert for this unit (hjviewer-api-alert@.service: the
+# journal of the namespace hjviewer, and Telegram once the user has set it up), as for
+# hjviewer-api.service. A stop by systemctl that ends in time is no failure. A server without
+# hjv-api has no alert unit: systemd then logs "Failed to enqueue OnFailure= job" and goes on.
+OnFailure=hjviewer-api-alert@%n.service
 
 [Service]
 Type=simple
@@ -32,6 +38,8 @@ UMask=0077
 ExecStart=/opt/hjviewer/bin/hbbs -b 127.0.0.1 -r ${HJV_DOMAIN}
 Restart=on-failure
 RestartSec=5
+# hbbs holds the server's private key in memory: no core dumps
+LimitCORE=0
 
 # hbbs needs no privilege: its own directory and unprivileged local ports
 NoNewPrivileges=yes

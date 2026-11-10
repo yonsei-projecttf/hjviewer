@@ -1246,6 +1246,10 @@ check_systemd() { # keys, file permissions, sandbox, settings of the systemd uni
     [ "$k" = "$key" ] || fail "systemd: $s runs with a key other than id_ed25519.pub"
     [ "$(systemctl show -p NoNewPrivileges --value "hjv-ci-$s")" = yes ] || fail "systemd: $s may gain privileges"
     [ -z "$(systemctl show -p CapabilityBoundingSet --value "hjv-ci-$s")" ] || fail "systemd: $s keeps capabilities"
+    [ "$(systemctl show -p LimitCORE --value "hjv-ci-$s")" = 0 ] || fail "systemd: $s may dump core (its memory holds the server key)"
+    # this machine has no alert unit: systemd keeps the name and logs that it cannot queue the job
+    [ "$(systemctl show -p OnFailure --value "hjv-ci-$s")" = "hjviewer-api-alert@hjv-ci-$s.service.service" ] ||
+      fail "systemd: a failure of $s starts no hjviewer-api-alert@ unit"
   done
   [ "$(sudo stat -c '%a' /var/lib/private/hjv-ci)" = 700 ] || fail "systemd: the state directory is not 700"
   [ "$(sudo stat -c '%a' /var/lib/hjv-ci/id_ed25519)" = 600 ] || fail "systemd: id_ed25519 is not created 600"
