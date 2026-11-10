@@ -1470,6 +1470,10 @@ grep -q 'request: "GET /api/hjv/devices-ci/987654321 ' "$dir/error.log" ||
   { echo "FAIL: no error-log line for a failed request of /api/hjv/"; exit 1; }
 if grep 123456789 "$dir/error.log"; then echo "FAIL: nginx's error log names a PC's ID (above)"; exit 1; fi
 echo "error log: a line for /api/hjv/devices-ci/, none for /api/hjv/devices/<ID> (wake, wol, DELETE)"
+# the location of /api/hjv/devices/ redirects the path without its slash, unless nginx answers it
+got=$(curl -s -w ' %{http_code}' --interface 127.0.0.1 http://127.0.0.1:18450/api/hjv/devices)
+echo "/api/hjv/devices -> $got"
+[ "$got" = '{"error":"not found"} 404' ] || { echo "FAIL: /api/hjv/devices gets no JSON 404"; exit 1; }
 EOF
 }
 
