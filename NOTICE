@@ -8,8 +8,8 @@ HJViewer is a modified version of these programs:
   (https://github.com/rustdesk/hbb_common, commit 229b904508364c8997aad0fb5af57effac859f60).
   Copyright (C) Purslane Tech Pte. Ltd. and the RustDesk contributors.
   GNU Affero General Public License, version 3 only.
-- rustdesk-server, master branch at commit a7736be5e40f85bfc141120dce587e836e5d4b80 (release 1.1.16
-  plus 12 commits, versioned 1.1.17; https://github.com/rustdesk/rustdesk-server).
+- rustdesk-server, master branch at commit 680b60395ecf99a76f74a1d934e453bb6e5e0aa2 (release 1.1.16
+  plus 25 commits, versioned 1.1.17; https://github.com/rustdesk/rustdesk-server).
   Copyright (C) 2022 open-trade and the RustDesk contributors.
   GNU Affero General Public License, version 3 or any later version.
 

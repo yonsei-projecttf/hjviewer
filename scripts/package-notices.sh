@@ -28,6 +28,15 @@ shift 2
 mkdir -p "$out"
 cp "$ROOT/LICENSE" "$out/LICENSE.txt"
 cp "$ROOT/NOTICE" "$out/NOTICE.txt"
+# NOTICE says which upstream commits HJViewer modifies; it must name the ones scripts/upstream.env
+# pins, or the notice of every package misstates its base (1.9.3's server moved to a new one)
+source "$ROOT/scripts/upstream.env"
+for pin in "$RUSTDESK_COMMIT" "$RUSTDESK_SERVER_COMMIT"; do
+  if ! grep -qF "$pin" "$ROOT/NOTICE"; then
+    echo "error: NOTICE does not name $pin, which scripts/upstream.env pins" >&2
+    exit 1
+  fi
+done
 
 repo=${HJV_SOURCE_REPO:-yonsei-projecttf/hjviewer}
 commit=$(git -C "$ROOT" rev-parse HEAD)
