@@ -1022,7 +1022,8 @@ fn the_real_relay_under_the_boot_script() {
         "{log}"
     );
     assert!(position(&log, "kept line") < position(&log, "recent line"));
-    assert!(position(&log, "recent line") < position(&log, "hjv-relay 1.6.0 시작"));
+    let started = format!("hjv-relay {} 시작", env!("CARGO_PKG_VERSION"));
+    assert!(position(&log, "recent line") < position(&log, &started));
     assert!(server.refused().is_empty(), "{:?}", server.refused());
     // it runs from the checked copy in the state folder (its command line: the relay makes itself
     // non-dumpable, so /proc/<pid>/exe is closed to this test)

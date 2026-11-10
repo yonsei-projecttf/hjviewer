@@ -46,7 +46,7 @@ TeamViewer처럼 **모바일 앱(iOS/Android)에서 Windows PC 화면을 보고 
 | hbbr | P2P 실패 시 두 연결을 짝지어 암호화된 바이트를 그대로 전달 | rustdesk-server |
 | Caddy | TLS 종료(Let's Encrypt 자동), 경로별 라우팅. 이미 웹 서버가 있는 서버는 nginx·Apache가 같은 일을 함. 1.6.0의 버전 정책 파일은 nginx 배치에서만 내줌(8절) | `deploy/Caddyfile` |
 | hjv-api (1.6.0) | 계정 API: 연세포탈 로그인, 내 PC 목록, 계정 키, PC 동기화와 신뢰 목록, 켜기 명령, 새 앱 버전의 설치 파일(8-5). 웹 서버 뒤 Unix 소켓에서만 받음 | `server/api` ([README](../server/api/README.md)) |
-| hjv-relay (1.6.0) | PC와 같은 네트워크의 NAS에서 서버가 서명한 켜기 명령을 받아 매직 패킷을 보냄 | `relay/` ([PROTOCOL.md](../relay/PROTOCOL.md), [relay-dsm.md](relay-dsm.md)) |
+| hjv-relay (1.6.1) | PC와 같은 네트워크의 NAS에서 서버가 서명한 켜기 명령을 받아 매직 패킷을 보냄 | `relay/` ([PROTOCOL.md](../relay/PROTOCOL.md), [relay-dsm.md](relay-dsm.md)) |
 | hjv-release (1.6.0) | 개발 PC의 운영자 도구: 버전 정책 만들기와 확인, 사용자의 서명, 서버에 넣을 디렉터리와 hbbs 설정 값 | `tools/hjv-release` ([README](../tools/hjv-release/README.md)) |
 
 **종단 간 암호화**: 세션 키는 두 기기가 직접 교환합니다. hbbs가 서명한 기기 공개키로 상대를 검증하고, WebRTC에서는 상대가 서명한 DTLS 지문으로 다시 검증합니다. 따라서 hbbs와 hbbr은 화면 내용을 볼 수 없습니다.
@@ -523,4 +523,4 @@ hbbs (서버 패치 0006~0008, /etc/hjviewer/access.conf: MODE, KEY, NOT_BEFORE,
 - **이미 저장된 큰 행**: 1.9.2까지의 hbbs가 저장한 행의 uuid와 키는 새 상한 밖이고, 그 ID의 키 등록 한 번에 통째로 메모리에 오르며 mismatch 경고 줄에 찍힙니다. 런북 9-12가 넣기 전에 그런 행의 수를 봅니다.
 - **PC → 컨트롤러의 ICE 후보**는 출처를 확인하지 않습니다(9-5).
 - **hjv-api**: `POST /api/hjv/pc/sync`에 몰림 한도가 없고, 묶인 ID(401 `bad_signature`)와 모르는 ID(404 `unbound`)를 구분해 답합니다(한도는 한 학내 주소 뒤의 많은 PC와 재시작의 몰림을 견뎌야 함). 소켓(`root:www-data` 0660)에 닿는 같은 서버의 PHP는 `X-Real-IP`를 스스로 정할 수 있습니다(nginx만 아는 비밀 헤더로 막을 수 있음, 런북 7-2). `events`는 기기 키 내려받기마다 색인 없이 읽고, "새 주소" 알림은 183일 뒤 다시 옵니다(스키마 7의 이전이 필요). 보관 기한의 정리(토큰 90일, PC 180일, 계정 365일)는 서버 시계를 믿습니다(백업 정리만 1.9.3에서 가장 새 셋을 남김). 디스크 여유를 재지 않고, 점검 자신의 생존 신호와 정기 selfcheck가 없고, 차단기가 열리기 전의 SSO 실패는 틀린 비밀번호처럼 답하며, 운영자 목록의 UTC 시각에 시간대 표시가 없고, `operator.log`는 회전하지 않습니다.
-- **NAS 중계기**: `relay/Cargo.lock`의 TLS 크레이트 갱신은 새 hjv-relay 묶음(1.6.1)을 만들어야 NAS에 닿습니다. 그때까지 NAS의 hjv-relay는 rustls 0.23.45 그대로입니다.
+- **NAS 중계기**: `relay/Cargo.lock`의 TLS 크레이트 갱신(rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.10)은 hjv-relay 1.6.1의 묶음(`hjviewer-relay-1.6.1-linux-x86_64.tar.gz`, 태그 `relay-1.6.1`)으로 NAS에 닿습니다. 묶음을 게시하고 NAS에 넣는 것은 소유자의 일이고([relay-dsm.md](relay-dsm.md) 9장), 그때까지 NAS의 hjv-relay는 1.6.0(rustls 0.23.45)입니다.
