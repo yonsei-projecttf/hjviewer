@@ -39,7 +39,7 @@ pub struct OpFile {
     /// "review", "guest" or "door2"
     pub name: String,
     /// [`ABSENT`], [`ACTIVE`] (until `until`), [`ENDED`] (at `until`, and still there) or
-    /// [`REFUSED`] (there, but it cannot be read or does not parse)
+    /// [`REFUSED`] (there, but it cannot be reached or read, is no file or does not parse)
     pub state: String,
     /// its UNTIL, when it is active or ended
     #[serde(default)]
@@ -122,10 +122,10 @@ fn left(until: i64, at: i64) -> String {
     }
 }
 
-/// "today", "3 days ago".
+/// "less than a day ago", "3 days ago".
 fn ago(until: i64, at: i64) -> String {
     match (at - until) / DAY {
-        0 => "today".to_owned(),
+        0 => "less than a day ago".to_owned(),
         1 => "1 day ago".to_owned(),
         n => format!("{n} days ago"),
     }
@@ -233,6 +233,12 @@ mod tests {
         assert_eq!(
             found[0].text,
             "door 2's file (HJV_API_DOOR2_FILE) ended at 2026-11-06T23:59:53Z (3 days ago) and is still installed: door 2's link answers 404, also where hbbs's text below the minimum version still carries it; put in a new file or delete it"
+        );
+        // ended 23 hours ago: the day before by the calendar, so not "today"
+        assert!(
+            findings(&[file("door2", ENDED, Some(AT - DAY + 3600))], AT)[0]
+                .text
+                .contains(" (less than a day ago) ")
         );
         let found = findings(&[file("review", REFUSED, None)], AT);
         assert_eq!(codes(&found), ["file_refused"]);

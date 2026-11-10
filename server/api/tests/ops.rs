@@ -1145,6 +1145,48 @@ async fn the_operator_files_that_end() {
         report().await[1],
         "operator file guest (HJV_API_GUEST_FILE): there but not used (the journal says why)"
     );
+    // their directory the service may not search (its mode or the unit's sandbox changed): each
+    // file fails its requests as a refused one does, so each is refused, door 2's too, as
+    // nothing can tell that it is not there; never "not there"
+    put(
+        "guest.conf",
+        format!("HASH={HASH}\nUNTIL={}\n", datetime(guest)),
+    );
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let reached = std::fs::metadata(path("guest.conf")).is_ok();
+    let locked = check::health(&h.state).await.unwrap();
+    let locked_report = report().await;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if reached {
+        eprintln!("skipped: a directory that cannot be searched (root searches every one)");
+    } else {
+        assert_eq!(
+            states(&locked),
+            [
+                state("review", "refused", None),
+                state("guest", "refused", None),
+                state("door2", "refused", None)
+            ]
+        );
+        let got = found(locked);
+        assert_eq!(
+            got.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+            ["file_refused", "file_refused", "file_refused"]
+        );
+        assert!(locked_report
+            .iter()
+            .all(|l| l.ends_with(": there but not used (the journal says why)")));
+    }
+    // searchable again: read again as they are
+    let health = check::health(&h.state).await.unwrap();
+    assert_eq!(
+        states(&health),
+        [
+            state("review", "active", Some(review)),
+            state("guest", "active", Some(guest)),
+            state("door2", "absent", None)
+        ]
+    );
     // no line of them shows what the files hold, nor their tags
     let text = serde_json::to_string(&health).unwrap() + &report().await.join("\n");
     for held in [HASH, CODE, "APPREVIEW", "appreview", &CODE[..8]] {

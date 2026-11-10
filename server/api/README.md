@@ -835,8 +835,10 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
   service of different versions read each other's answers, the field missing as none), and the
   check finds a file that ends within seven days (`file_ending`), one whose `UNTIL` has passed
   while it is still installed (`file_ended`) and one that is there but not used (`file_refused`).
-  A file that is not there is no finding. `admin report` prints the three, one line each:
-  `operator file review (HJV_API_REVIEW_FILE): active until <UTC time>, <n> days left` (or
+  A file that is not there is no finding; one the service cannot reach (a directory it may not
+  search, a changed mode or unit sandbox) or something that is no file at its path fails each
+  request the same way, so it is `refused` too, never `absent`. `admin report` prints the three,
+  one line each: `operator file review (HJV_API_REVIEW_FILE): active until <UTC time>, <n> days left` (or
   `ended at <time>, <n> days ago, still installed`, `there but not used (the journal says why)`,
   `not there`, `not set`), and the start logs door 2's state as it does the other two's
   (`update: door 2 is closed (…)` when it is). No such line holds an ID, a code, a hash or an

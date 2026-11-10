@@ -506,16 +506,18 @@ impl<T> Default for Watched<T> {
 
 /// What [`watched_seen`] found at a file's path.
 pub(crate) enum Seen<T> {
-    /// no file
+    /// nothing at the path (no such file)
     Absent,
-    /// a file that cannot be read, is too large or is not what `parse` takes
+    /// something the service cannot reach (a directory it may not search), something that is no
+    /// file, or a file that cannot be read, is too large or is not what `parse` takes
     Refused,
     Taken(Arc<T>),
 }
 
-/// What the file at `path` holds now, by `parse`; `None` without the file, and for a file that is
-/// too large or not what `parse` takes, which the journal hears of once for each such file. The
-/// journal's lines begin with `what`: the caller's prefix and the file's name.
+/// What the file at `path` holds now, by `parse`; `None` without the file, and for one that
+/// cannot be reached or read, is no file, is too large or is not what `parse` takes, which the
+/// journal hears of once for each such file. The journal's lines begin with `what`: the caller's
+/// prefix and the file's name.
 pub(crate) fn watched<T>(
     kept: &Mutex<Watched<T>>,
     path: &Path,
@@ -539,10 +541,26 @@ pub(crate) fn watched_seen<T>(
     parse: impl FnOnce(&[u8]) -> Result<T, &'static str>,
     summary: impl FnOnce(&T) -> String,
 ) -> Seen<T> {
-    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file());
-    let seen = meta
-        .as_ref()
-        .map(|m| (m.dev(), m.ino(), m.len(), m.ctime(), m.ctime_nsec()));
+    // Only "no such file" is a file that is not there. One the service cannot reach (a directory
+    // it may not search, a mode or a sandbox changed) fails each request as a refused one does,
+    // so it is refused too: in `health`, and once in the journal, never as "is gone".
+    let of = |m: &std::fs::Metadata| (m.dev(), m.ino(), m.len(), m.ctime(), m.ctime_nsec());
+    let (seen, unusable) = match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => (Some(of(&m)), None),
+        Ok(m) => (Some(of(&m)), Some("it is not a file")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (None, None),
+        // no device or inode is u64::MAX: the error's code stands for what was seen
+        Err(e) => (
+            Some((
+                u64::MAX,
+                u64::MAX,
+                e.raw_os_error().unwrap_or(0) as u64,
+                0,
+                0,
+            )),
+            Some("it cannot be read"),
+        ),
+    };
     let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
     let as_seen = |kept: &Watched<T>| match (&kept.seen, &kept.read) {
         (_, Some(value)) => Seen::Taken(value.clone()),
@@ -552,12 +570,16 @@ pub(crate) fn watched_seen<T>(
     if seen == kept.seen {
         return as_seen(&kept);
     }
-    let read = match meta {
-        None => {
+    let read = match (seen, unusable) {
+        (None, _) => {
             log_notice!("{what} is gone");
             None
         }
-        Some(_) => {
+        (Some(_), Some(why)) => {
+            log_err!("{what} is not used: {why}");
+            None
+        }
+        (Some(_), None) => {
             let mut bytes = Vec::new();
             let read = File::open(path)
                 .and_then(|file| file.take(max + 1).read_to_end(&mut bytes))
@@ -3125,6 +3147,59 @@ mod tests {
             .iter()
             .any(|l| l.contains("door 2's file (HJV_API_DOOR2_FILE) is gone")));
         assert!(!lines.iter().any(|l| l.contains(code)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_the_service_cannot_reach_is_refused_never_gone() {
+        use std::os::unix::fs::PermissionsExt;
+        crate::log::capture();
+        let dir = temp_dir();
+        let locked = dir.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let path = locked.join("op.conf");
+        std::fs::write(&path, b"held").unwrap();
+        let kept = Mutex::new(Watched::<usize>::default());
+        let what = "update: a reach test's file";
+        let look = || match watched_seen(&kept, &path, 64, what, |b| Ok(b.len()), |n| n.to_string())
+        {
+            Seen::Absent => "absent",
+            Seen::Refused => "refused",
+            Seen::Taken(_) => "taken",
+        };
+        assert_eq!(look(), "taken");
+        let mode = |mode: u32| {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        // its directory may not be searched (a mode or a sandbox changed): it fails each request
+        // as a file that does not parse does, so it is refused, not "not there"
+        mode(0o000);
+        let reached = std::fs::metadata(&path).is_ok();
+        let (first, second) = (look(), look());
+        mode(0o700);
+        if reached {
+            eprintln!("skipped: a directory that cannot be searched (root searches every one)");
+        } else {
+            assert_eq!((first, second), ("refused", "refused"));
+        }
+        assert_eq!(look(), "taken");
+        // something that is no file in its place is refused too; only no such file is absent
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(look(), "refused");
+        std::fs::remove_dir(&path).unwrap();
+        assert_eq!(look(), "absent");
+        let lines = crate::log::captured();
+        let mine: Vec<&String> = lines.iter().filter(|l| l.contains(what)).collect();
+        let count = |text: &str| mine.iter().filter(|l| l.ends_with(text)).count();
+        // one err line for each thing seen, and "is gone" only once nothing is there
+        assert_eq!(
+            count(" is not used: it cannot be read"),
+            usize::from(!reached)
+        );
+        assert_eq!(count(" is not used: it is not a file"), 1);
+        assert_eq!(count(" is gone"), 1, "{mine:?}");
+        assert!(mine.last().unwrap().ends_with(" is gone"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
