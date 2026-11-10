@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 05:12:40 +0900
-Subject: [PATCH 1/8] Bump hbb_common to the commit RustDesk client 1.5.0 pins
+Subject: [PATCH 01/11] Bump hbb_common to the commit RustDesk client 1.5.0
+ pins
 
 The client's WebRTC transport needs rendezvous.proto fields (webrtc_sdp_offer,
 webrtc_sdp_answer, IceCandidate) that the server's pinned hbb_common predates.
@@ -10,13 +11,13 @@ signature 2.x and fails to build, so pin 1.5.3 like the client does.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- Cargo.lock               | 565 +++++++--------------------------------
+ Cargo.lock               | 602 +++++++--------------------------------
  libs/hbb_common          |   2 +-
  src/rendezvous_server.rs |   2 +-
- 3 files changed, 96 insertions(+), 473 deletions(-)
+ 3 files changed, 98 insertions(+), 508 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 7c76b2b..5cccc25 100644
+index 63aada3..922711b 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -2,15 +2,6 @@
@@ -308,11 +309,11 @@ index 7c76b2b..5cccc25 100644
   "tokio-rustls 0.26.1",
   "tokio-socks 0.5.2-1",
 - "tokio-tungstenite 0.26.2",
-+ "tokio-tungstenite 0.29.0",
++ "tokio-tungstenite",
   "tokio-util",
   "toml 0.7.8",
 - "tungstenite 0.26.2",
-+ "tungstenite 0.29.0",
++ "tungstenite",
   "url",
   "users",
   "uuid",
@@ -323,7 +324,19 @@ index 7c76b2b..5cccc25 100644
   "x11",
   "zstd",
  ]
-@@ -1768,12 +1605,6 @@ version = "0.4.0"
+@@ -1713,9 +1550,9 @@ dependencies = [
+  "sodiumoxide",
+  "sqlx",
+  "tempfile",
+- "tokio-tungstenite 0.29.0",
++ "tokio-tungstenite",
+  "tower-http",
+- "tungstenite 0.29.0",
++ "tungstenite",
+  "uuid",
+  "whoami",
+ ]
+@@ -1769,12 +1606,6 @@ version = "0.4.0"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "fbf6a919d6cf397374f7dfeeea91d974c7c0a7221d0d0f4f20d859d329e53fcc"
  
@@ -336,7 +349,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "hex"
  version = "0.4.3"
-@@ -2072,16 +1903,15 @@ dependencies = [
+@@ -2073,16 +1904,15 @@ dependencies = [
  
  [[package]]
  name = "interceptor"
@@ -356,7 +369,7 @@ index 7c76b2b..5cccc25 100644
   "rtcp",
   "rtp",
   "thiserror 1.0.31",
-@@ -2305,12 +2135,6 @@ dependencies = [
+@@ -2306,12 +2136,6 @@ dependencies = [
   "vcpkg",
  ]
  
@@ -369,7 +382,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "litemap"
  version = "0.8.2"
-@@ -2396,15 +2220,6 @@ version = "2.7.4"
+@@ -2397,15 +2221,6 @@ version = "2.7.4"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
  
@@ -385,7 +398,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "memoffset"
  version = "0.6.5"
-@@ -2635,15 +2450,6 @@ dependencies = [
+@@ -2636,15 +2451,6 @@ dependencies = [
   "libc",
  ]
  
@@ -401,7 +414,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "oid-registry"
  version = "0.7.1"
-@@ -2731,17 +2537,6 @@ dependencies = [
+@@ -2732,17 +2538,6 @@ dependencies = [
   "hashbrown 0.12.1",
  ]
  
@@ -419,7 +432,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "p256"
  version = "0.13.2"
-@@ -2925,31 +2720,6 @@ version = "0.2.3"
+@@ -2926,31 +2721,6 @@ version = "0.2.3"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
  
@@ -451,7 +464,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "polyval"
  version = "0.6.2"
-@@ -3083,15 +2853,6 @@ version = "0.4.1"
+@@ -3084,15 +2854,6 @@ version = "0.4.1"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "e9e1dcb320d6839f6edb64f7a4a59d39b30480d4d1765b56873f7c858538a5fe"
  
@@ -467,7 +480,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "quickcheck"
  version = "1.0.3"
-@@ -3379,9 +3140,9 @@ dependencies = [
+@@ -3380,9 +3141,9 @@ dependencies = [
  
  [[package]]
  name = "rtcp"
@@ -479,7 +492,7 @@ index 7c76b2b..5cccc25 100644
  dependencies = [
   "bytes",
   "thiserror 1.0.31",
-@@ -3390,14 +3151,14 @@ dependencies = [
+@@ -3391,14 +3152,14 @@ dependencies = [
  
  [[package]]
  name = "rtp"
@@ -497,7 +510,7 @@ index 7c76b2b..5cccc25 100644
   "serde",
   "thiserror 1.0.31",
   "webrtc-util",
-@@ -3413,12 +3174,6 @@ dependencies = [
+@@ -3414,12 +3175,6 @@ dependencies = [
   "ordered-multimap",
  ]
  
@@ -510,7 +523,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "rustc-hash"
  version = "1.1.0"
-@@ -3443,19 +3198,6 @@ dependencies = [
+@@ -3444,19 +3199,6 @@ dependencies = [
   "nom 7.1.1",
  ]
  
@@ -530,7 +543,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "rustls"
  version = "0.20.4"
-@@ -3555,7 +3297,7 @@ dependencies = [
+@@ -3556,7 +3298,7 @@ dependencies = [
   "security-framework 3.7.0",
   "security-framework-sys",
   "webpki-root-certs",
@@ -539,7 +552,7 @@ index 7c76b2b..5cccc25 100644
  ]
  
  [[package]]
-@@ -3633,11 +3375,11 @@ dependencies = [
+@@ -3634,11 +3376,11 @@ dependencies = [
  
  [[package]]
  name = "sdp"
@@ -554,7 +567,7 @@ index 7c76b2b..5cccc25 100644
   "substring",
   "thiserror 1.0.31",
   "url",
-@@ -3811,9 +3553,9 @@ dependencies = [
+@@ -3812,9 +3554,9 @@ dependencies = [
  
  [[package]]
  name = "signature"
@@ -566,7 +579,7 @@ index 7c76b2b..5cccc25 100644
  
  [[package]]
  name = "signature"
-@@ -3849,33 +3591,6 @@ version = "1.15.2"
+@@ -3850,33 +3592,6 @@ version = "1.15.2"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
  
@@ -600,7 +613,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "smol_str"
  version = "0.2.2"
-@@ -4099,15 +3814,15 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+@@ -4100,15 +3815,15 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
  
  [[package]]
  name = "stun"
@@ -619,7 +632,7 @@ index 7c76b2b..5cccc25 100644
   "ring 0.17.14",
   "subtle",
   "thiserror 1.0.31",
-@@ -4479,9 +4194,8 @@ dependencies = [
+@@ -4468,9 +4183,8 @@ dependencies = [
  
  [[package]]
  name = "tokio-tungstenite"
@@ -631,28 +644,42 @@ index 7c76b2b..5cccc25 100644
  dependencies = [
   "futures-util",
   "log",
-@@ -4492,7 +4206,7 @@ dependencies = [
+@@ -4481,21 +4195,10 @@ dependencies = [
   "tokio",
   "tokio-native-tls",
   "tokio-rustls 0.26.1",
 - "tungstenite 0.26.2",
-+ "tungstenite 0.29.0",
++ "tungstenite",
   "webpki-roots 0.26.7",
  ]
  
-@@ -4670,9 +4384,9 @@ dependencies = [
+-[[package]]
+-name = "tokio-tungstenite"
+-version = "0.29.0"
+-source = "git+https://github.com/rustdesk-org/tokio-tungstenite?rev=c241b11b03de4881faf1ecd2fe6e867c92f3013b#c241b11b03de4881faf1ecd2fe6e867c92f3013b"
+-dependencies = [
+- "futures-util",
+- "log",
+- "tokio",
+- "tungstenite 0.29.0",
+-]
+-
+ [[package]]
+ name = "tokio-util"
+ version = "0.7.1"
+@@ -4651,9 +4354,8 @@ checksum = "59547bce71d9c38b83d9c0e92b6066c4253371f15005def0c30d9657f50c7642"
  
  [[package]]
  name = "tungstenite"
 -version = "0.26.2"
-+version = "0.29.0"
- source = "registry+https://github.com/rust-lang/crates.io-index"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
 -checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
-+checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
++version = "0.29.0"
++source = "git+https://github.com/rustdesk-org/tungstenite-rs?rev=efce47e5364f00a63302cf07ab1fb13ded478914#efce47e5364f00a63302cf07ab1fb13ded478914"
  dependencies = [
   "bytes",
   "data-encoding",
-@@ -4686,15 +4400,14 @@ dependencies = [
+@@ -4667,30 +4369,14 @@ dependencies = [
   "rustls-pki-types",
   "sha1",
   "thiserror 2.0.19",
@@ -660,6 +687,21 @@ index 7c76b2b..5cccc25 100644
   "webpki-roots 0.26.7",
  ]
  
+-[[package]]
+-name = "tungstenite"
+-version = "0.29.0"
+-source = "git+https://github.com/rustdesk-org/tungstenite-rs?rev=efce47e5364f00a63302cf07ab1fb13ded478914#efce47e5364f00a63302cf07ab1fb13ded478914"
+-dependencies = [
+- "bytes",
+- "data-encoding",
+- "http 1.4.2",
+- "httparse",
+- "log",
+- "rand 0.9.5",
+- "sha1",
+- "thiserror 2.0.19",
+-]
+-
  [[package]]
  name = "turn"
 -version = "0.11.0"
@@ -670,7 +712,7 @@ index 7c76b2b..5cccc25 100644
  dependencies = [
   "async-trait",
   "base64 0.22.1",
-@@ -4702,7 +4415,7 @@ dependencies = [
+@@ -4698,7 +4384,7 @@ dependencies = [
   "log",
   "md-5",
   "portable-atomic",
@@ -679,7 +721,20 @@ index 7c76b2b..5cccc25 100644
   "ring 0.17.14",
   "stun",
   "thiserror 1.0.31",
-@@ -4987,124 +4700,6 @@ dependencies = [
+@@ -4814,12 +4500,6 @@ dependencies = [
+  "log",
+ ]
+ 
+-[[package]]
+-name = "utf-8"
+-version = "0.7.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
+-
+ [[package]]
+ name = "utf8_iter"
+ version = "1.0.4"
+@@ -4983,124 +4663,6 @@ dependencies = [
   "unicode-ident",
  ]
  
@@ -804,7 +859,7 @@ index 7c76b2b..5cccc25 100644
  [[package]]
  name = "web-sys"
  version = "0.3.77"
-@@ -5169,25 +4764,26 @@ dependencies = [
+@@ -5165,25 +4727,26 @@ dependencies = [
  
  [[package]]
  name = "webrtc"
@@ -835,7 +890,7 @@ index 7c76b2b..5cccc25 100644
   "sdp",
   "serde",
   "serde_json",
-@@ -5195,12 +4791,13 @@ dependencies = [
+@@ -5191,12 +4754,13 @@ dependencies = [
   "smol_str",
   "stun",
   "thiserror 1.0.31",
@@ -850,7 +905,7 @@ index 7c76b2b..5cccc25 100644
   "webrtc-ice",
   "webrtc-mdns",
   "webrtc-media",
-@@ -5211,9 +4808,9 @@ dependencies = [
+@@ -5207,9 +4771,9 @@ dependencies = [
  
  [[package]]
  name = "webrtc-data"
@@ -862,7 +917,7 @@ index 7c76b2b..5cccc25 100644
  dependencies = [
   "bytes",
   "log",
-@@ -5224,18 +4821,55 @@ dependencies = [
+@@ -5220,18 +4784,55 @@ dependencies = [
   "webrtc-util",
  ]
  
@@ -921,7 +976,7 @@ index 7c76b2b..5cccc25 100644
   "serde",
   "serde_json",
   "stun",
-@@ -5251,9 +4885,9 @@ dependencies = [
+@@ -5247,9 +4848,9 @@ dependencies = [
  
  [[package]]
  name = "webrtc-mdns"
@@ -933,7 +988,7 @@ index 7c76b2b..5cccc25 100644
  dependencies = [
   "log",
   "socket2 0.5.8",
-@@ -5264,22 +4898,22 @@ dependencies = [
+@@ -5260,22 +4861,22 @@ dependencies = [
  
  [[package]]
  name = "webrtc-media"
@@ -961,7 +1016,7 @@ index 7c76b2b..5cccc25 100644
  dependencies = [
   "arc-swap",
   "async-trait",
-@@ -5287,7 +4921,7 @@ dependencies = [
+@@ -5283,7 +4884,7 @@ dependencies = [
   "crc",
   "log",
   "portable-atomic",
@@ -970,7 +1025,7 @@ index 7c76b2b..5cccc25 100644
   "thiserror 1.0.31",
   "tokio",
   "webrtc-util",
-@@ -5295,9 +4929,9 @@ dependencies = [
+@@ -5291,9 +4892,9 @@ dependencies = [
  
  [[package]]
  name = "webrtc-srtp"
@@ -982,7 +1037,7 @@ index 7c76b2b..5cccc25 100644
  dependencies = [
   "aead",
   "aes",
-@@ -5318,19 +4952,20 @@ dependencies = [
+@@ -5314,19 +4915,20 @@ dependencies = [
  
  [[package]]
  name = "webrtc-util"
@@ -1006,7 +1061,7 @@ index 7c76b2b..5cccc25 100644
   "thiserror 1.0.31",
   "tokio",
   "winapi",
-@@ -5779,18 +5414,6 @@ dependencies = [
+@@ -5775,18 +5377,6 @@ dependencies = [
   "time",
  ]
  
@@ -1033,10 +1088,10 @@ index 69cea8d..229b904 160000
 -Subproject commit 69cea8dafee147848ae88702029f4bf7df7224c3
 +Subproject commit 229b904508364c8997aad0fb5af57effac859f60
 diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
-index eaf7190..275eaf0 100644
+index 84c0293..dad8192 100644
 --- a/src/rendezvous_server.rs
 +++ b/src/rendezvous_server.rs
-@@ -1239,7 +1239,7 @@ impl RendezvousServer {
+@@ -1322,7 +1322,7 @@ impl RendezvousServer {
                  Some(peer) => {
                      let pk = peer.read().await.pk.clone();
                      sign::sign(

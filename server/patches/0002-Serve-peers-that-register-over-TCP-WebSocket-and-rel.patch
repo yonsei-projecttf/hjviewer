@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 05:25:50 +0900
-Subject: [PATCH 2/8] Serve peers that register over TCP/WebSocket, and relay
+Subject: [PATCH 02/11] Serve peers that register over TCP/WebSocket, and relay
  WebRTC signaling
 
 A controlled peer behind a firewall that only lets HTTPS out cannot reach
@@ -15,28 +15,34 @@ online. Now:
   the connection its signaling channel; PunchHole, RequestRelay and
   IceCandidate for it go through that connection. It gets an empty frame
   every 10s, echoing it refreshes its online state, and closing it takes
-  the peer offline at once.
+  the peer offline at once. Both transports share handle_register_pk, so
+  the 253-byte id limit holds for both.
 - Every TCP/WebSocket connection is written by its own task through a
   queue, so it stays addressable after a reply: a WebRTC controller keeps
-  receiving ICE candidates after the answer.
+  receiving ICE candidates after the answer. The message limit and the
+  handshake deadline stay on both accept paths.
 - PunchHole carries the controller's webrtc_sdp_offer and force_relay,
   PunchHoleResponse the peer's webrtc_sdp_answer, and IceCandidate is routed
   both ways (by peer id to the peer, by socket_addr to the controller).
 - OnlineRequest is answered on the WebSocket endpoint, where clients in
   WebSocket mode send it.
 - X-Real-Port from the reverse proxy completes X-Real-IP: connections are
-  keyed by address, and clients behind one NAT all collided on ip:0.
+  keyed by address, and the peer answers a controller at the socket_addr
+  its punch hole named, so that must be the client's own port, not the
+  proxy's. X-Real-IP is parsed as an address, and an IPv4 client that a
+  dual-stack proxy writes as ::ffff:a.b.c.d keeps its IPv4 form instead
+  of falling back to the proxy's 127.0.0.1.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  src/peer.rs              |  10 +-
- src/rendezvous_server.rs | 477 +++++++++++++++++++++++++++------------
- tests/tcp_signaling.rs   | 440 ++++++++++++++++++++++++++++++++++++
- 3 files changed, 783 insertions(+), 144 deletions(-)
+ src/rendezvous_server.rs | 479 +++++++++++++++++++++++++++------------
+ tests/tcp_signaling.rs   | 440 +++++++++++++++++++++++++++++++++++
+ 3 files changed, 783 insertions(+), 146 deletions(-)
  create mode 100644 tests/tcp_signaling.rs
 
 diff --git a/src/peer.rs b/src/peer.rs
-index 0f218df..1b9e595 100644
+index 9e4cbec..895650c 100644
 --- a/src/peer.rs
 +++ b/src/peer.rs
 @@ -4,7 +4,7 @@ use hbb_common::{
@@ -48,9 +54,9 @@ index 0f218df..1b9e595 100644
      ResultType,
  };
  use serde_derive::{Deserialize, Serialize};
-@@ -23,6 +23,10 @@ pub const IP_CHANGE_DUR_X2: u64 = IP_CHANGE_DUR * 2;
- pub const DAY_SECONDS: u64 = 3600 * 24;
- pub const IP_BLOCK_DUR: u64 = 60;
+@@ -26,6 +26,10 @@ pub const IP_BLOCK_DUR: u64 = 60;
+ // and every peer entry and punch-request record keeps its own copy.
+ pub const MAX_PEER_ID_LEN: usize = 253;
  
 +/// Outbound queue of one TCP/WebSocket connection to hbbs. The connection's task owns the sink
 +/// and drains this, so the connection can be addressed while it keeps reading.
@@ -59,7 +65,7 @@ index 0f218df..1b9e595 100644
  #[derive(Debug, Default, Serialize, Deserialize, Clone)]
  pub(crate) struct PeerInfo {
      #[serde(default)]
-@@ -39,6 +43,9 @@ pub(crate) struct Peer {
+@@ -42,6 +46,9 @@ pub(crate) struct Peer {
      pub(crate) info: PeerInfo,
      // pub(crate) disabled: bool,
      pub(crate) reg_pk: (u32, Instant), // how often register_pk
@@ -69,7 +75,7 @@ index 0f218df..1b9e595 100644
  }
  
  impl Default for Peer {
-@@ -53,6 +60,7 @@ impl Default for Peer {
+@@ -56,6 +63,7 @@ impl Default for Peer {
              // user: None,
              // disabled: false,
              reg_pk: (0, get_expired_time()),
@@ -78,7 +84,7 @@ index 0f218df..1b9e595 100644
      }
  }
 diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
-index 275eaf0..47ade0e 100644
+index dad8192..02d706b 100644
 --- a/src/rendezvous_server.rs
 +++ b/src/rendezvous_server.rs
 @@ -8,7 +8,7 @@ use hbb_common::{
@@ -105,7 +111,7 @@ index 275eaf0..47ade0e 100644
 +            match self {
 +                Incoming::TcpStream(s) => return s.next().await?.ok().map(|b| b.freeze()),
 +                Incoming::Ws(s) => match s.next().await?.ok()? {
-+                    tungstenite::Message::Binary(bytes) => return Some(Bytes::from(bytes)),
++                    tungstenite::Message::Binary(bytes) => return Some(bytes),
 +                    tungstenite::Message::Close(_) => return None,
 +                    _ => {}
 +                },
@@ -129,7 +135,7 @@ index 275eaf0..47ade0e 100644
  type Sender = mpsc::UnboundedSender<Data>;
  type Receiver = mpsc::UnboundedReceiver<Data>;
  static ROTATION_RELAY_SERVER: AtomicUsize = AtomicUsize::new(0);
-@@ -81,7 +113,7 @@ struct Inner {
+@@ -140,7 +172,7 @@ struct Inner {
  
  #[derive(Clone)]
  pub struct RendezvousServer {
@@ -138,18 +144,16 @@ index 275eaf0..47ade0e 100644
      pm: PeerMap,
      tx: Sender,
      relay_servers: Arc<RelayServers>,
-@@ -369,89 +401,9 @@ impl RendezvousServer {
+@@ -429,89 +461,9 @@ impl RendezvousServer {
                      }
                  }
                  Some(rendezvous_message::Union::RegisterPk(rk)) => {
 -                    if rk.uuid.is_empty() || rk.pk.is_empty() {
 -                        return Ok(());
-+                    if let Some(res) = self.handle_register_pk(rk, addr).await {
-+                        send_rk_res(socket, addr, res).await?;
-                     }
+-                    }
 -                    let id = rk.id;
 -                    let ip = addr.ip().to_string();
--                    if id.len() < 6 {
+-                    if id.len() < 6 || id.len() > MAX_PEER_ID_LEN {
 -                        return send_rk_res(socket, addr, UUID_MISMATCH).await;
 -                    } else if !self.check_ip_blocker(&ip, &id).await {
 -                        return send_rk_res(socket, addr, TOO_FREQUENT).await;
@@ -220,7 +224,9 @@ index 275eaf0..47ade0e 100644
 -                    }
 -                    if changed {
 -                        self.pm.update_pk(id, peer, addr, rk.uuid, rk.pk, ip).await;
--                    }
++                    if let Some(res) = self.handle_register_pk(rk, addr).await {
++                        send_rk_res(socket, addr, res).await?;
+                     }
 -                    let mut msg_out = RendezvousMessage::new();
 -                    msg_out.set_register_pk_response(RegisterPkResponse {
 -                        result: register_pk_response::Result::OK.into(),
@@ -230,7 +236,7 @@ index 275eaf0..47ade0e 100644
                  }
                  Some(rendezvous_message::Union::PunchHoleRequest(ph)) => {
                      // UDP PunchHoleRequest is intentionally unsupported.
-@@ -504,35 +456,105 @@ impl RendezvousServer {
+@@ -564,18 +516,28 @@ impl RendezvousServer {
      async fn handle_tcp(
          &mut self,
          bytes: &[u8],
@@ -264,7 +270,10 @@ index 275eaf0..47ade0e 100644
                      allow_err!(self.handle_tcp_punch_hole_request(addr, ph, key, ws).await);
                      return true;
                  }
-                 Some(rendezvous_message::Union::RequestRelay(mut rf)) => {
+@@ -587,19 +549,79 @@ impl RendezvousServer {
+                         );
+                         return false;
+                     }
 -                    // there maybe several attempt, so sink can be none
 -                    if let Some(sink) = sink.take() {
 -                        self.tcp_punch.lock().await.insert(try_into_v4(addr), sink);
@@ -307,8 +316,8 @@ index 275eaf0..47ade0e 100644
 +                        self.send_to_tcp(msg_out, addr_a).await;
                      }
 +                    // one connection carries the whole trickle
-+                    return true;
-+                }
+                     return true;
+                 }
 +                Some(rendezvous_message::Union::RegisterPk(rk)) => {
 +                    // a peer that cannot use UDP registers here and keeps this connection
 +                    let id = rk.id.clone();
@@ -336,17 +345,17 @@ index 275eaf0..47ade0e 100644
 +                        ..Default::default()
 +                    });
 +                    Self::send_to_conn(&conn.tx, msg_out);
-                     return true;
-                 }
++                    return true;
++                }
 +                Some(rendezvous_message::Union::OnlineRequest(or)) => {
 +                    // over WebSocket, online queries share the rendezvous endpoint
 +                    let msg_out = self.online_response(or.peers).await;
 +                    Self::send_to_conn(&conn.tx, msg_out);
 +                }
                  Some(rendezvous_message::Union::RelayResponse(mut rr)) => {
-                     let addr_b = AddrMangle::decode(&rr.socket_addr);
-                     rr.socket_addr = Default::default();
-@@ -572,16 +594,7 @@ impl RendezvousServer {
+                     if let Err(err) = validate_relay_response(&rr.uuid, &rr.relay_server) {
+                         log::warn!(
+@@ -646,16 +668,7 @@ impl RendezvousServer {
                          res.cu = MessageField::from_option(Some(cu));
                      }
                      msg_out.set_test_nat_response(res);
@@ -364,7 +373,7 @@ index 275eaf0..47ade0e 100644
                  }
                  _ => {}
              }
-@@ -653,6 +666,7 @@ impl RendezvousServer {
+@@ -727,6 +740,7 @@ impl RendezvousServer {
              socket_addr: AddrMangle::encode(addr).into(),
              pk: self.get_pk(&phs.version, phs.id).await,
              relay_server: phs.relay_server.clone(),
@@ -372,7 +381,7 @@ index 275eaf0..47ade0e 100644
              ..Default::default()
          };
          if let Ok(t) = phs.nat_type.enum_value() {
-@@ -796,6 +810,8 @@ impl RendezvousServer {
+@@ -862,6 +876,8 @@ impl RendezvousServer {
                      socket_addr,
                      nat_type: ph.nat_type,
                      relay_server,
@@ -381,7 +390,7 @@ index 275eaf0..47ade0e 100644
                      ..Default::default()
                  });
              }
-@@ -816,6 +832,13 @@ impl RendezvousServer {
+@@ -882,6 +898,13 @@ impl RendezvousServer {
          stream: &mut FramedStream,
          peers: Vec<String>,
      ) -> ResultType<()> {
@@ -395,7 +404,7 @@ index 275eaf0..47ade0e 100644
          let mut states = BytesMut::zeroed((peers.len() + 7) / 8);
          for (i, peer_id) in peers.iter().enumerate() {
              if let Some(peer) = self.pm.get_in_memory(peer_id).await {
-@@ -834,31 +857,51 @@ impl RendezvousServer {
+@@ -900,31 +923,48 @@ impl RendezvousServer {
              states: states.into(),
              ..Default::default()
          });
@@ -428,7 +437,7 @@ index 275eaf0..47ade0e 100644
 -                        allow_err!(s.send(Bytes::from(bytes)).await);
 -                    }
 -                    Sink::Ws(ws) => {
--                        allow_err!(ws.send(tungstenite::Message::Binary(bytes)).await);
+-                        allow_err!(ws.send(tungstenite::Message::Binary(Bytes::from(bytes))).await);
 -                    }
 -                }
 +    fn send_to_conn(tx: &ConnTx, msg: RendezvousMessage) -> bool {
@@ -442,10 +451,7 @@ index 275eaf0..47ade0e 100644
 +    async fn send_bytes(sink: &mut Sink, bytes: Bytes) -> bool {
 +        match sink {
 +            Sink::TcpStream(s) => s.send(bytes).await.is_ok(),
-+            Sink::Ws(ws) => ws
-+                .send(tungstenite::Message::Binary(bytes.to_vec()))
-+                .await
-+                .is_ok(),
++            Sink::Ws(ws) => ws.send(tungstenite::Message::Binary(bytes)).await.is_ok(),
 +        }
 +    }
 +
@@ -465,7 +471,7 @@ index 275eaf0..47ade0e 100644
              }
          }
      }
-@@ -869,8 +912,7 @@ impl RendezvousServer {
+@@ -935,8 +975,7 @@ impl RendezvousServer {
          msg: RendezvousMessage,
          addr: SocketAddr,
      ) -> ResultType<()> {
@@ -475,7 +481,7 @@ index 275eaf0..47ade0e 100644
          Ok(())
      }
  
-@@ -882,9 +924,10 @@ impl RendezvousServer {
+@@ -948,9 +987,10 @@ impl RendezvousServer {
          key: &str,
          ws: bool,
      ) -> ResultType<()> {
@@ -487,7 +493,7 @@ index 275eaf0..47ade0e 100644
          } else {
              self.send_to_tcp_sync(msg, addr).await?;
          }
-@@ -1177,8 +1220,7 @@ impl RendezvousServer {
+@@ -1251,8 +1291,7 @@ impl RendezvousServer {
          key: &str,
          ws: bool,
      ) -> ResultType<()> {
@@ -497,7 +503,7 @@ index 275eaf0..47ade0e 100644
              use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
              let callback = |req: &Request, response: Response| {
                  let headers = req.headers();
-@@ -1195,41 +1237,190 @@ impl RendezvousServer {
+@@ -1269,9 +1308,18 @@ impl RendezvousServer {
                      .get("X-Real-IP")
                      .or_else(|| headers.get("X-Forwarded-For"))
                      .and_then(|header_value| header_value.to_str().ok());
@@ -507,29 +513,41 @@ index 275eaf0..47ade0e 100644
 +                let real_port = headers
 +                    .get("X-Real-Port")
 +                    .and_then(|header_value| header_value.to_str().ok())
-+                    .and_then(|port| port.parse::<u16>().ok())
-+                    .unwrap_or(0);
++                    .and_then(|port| port.parse::<u16>().ok());
                  if let Some(ip) = real_ip {
-                     if ip.contains('.') {
--                        addr = format!("{ip}:0").parse().unwrap_or(addr);
-+                        addr = format!("{ip}:{real_port}").parse().unwrap_or(addr);
-                     } else {
--                        addr = format!("[{ip}]:0").parse().unwrap_or(addr);
-+                        addr = format!("[{ip}]:{real_port}").parse().unwrap_or(addr);
+-                    if let Ok(ip) = ip.parse() {
+-                        addr = SocketAddr::new(ip, addr.port());
++                    // A dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; to_canonical
++                    // keeps it in its IPv4 form, as the client would be seen without the proxy.
++                    if let Ok(ip) = ip.parse::<IpAddr>() {
++                        addr = SocketAddr::new(ip.to_canonical(), real_port.unwrap_or(addr.port()));
                      }
                  }
                  Ok(response)
-             };
-             let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
+@@ -1286,33 +1334,174 @@ impl RendezvousServer {
+                 tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(ws_config)),
+             )
+             .await??;
 -            let (a, mut b) = ws_stream.split();
 -            sink = Some(Sink::Ws(a));
 -            while let Ok(Some(Ok(msg))) = timeout(30_000, b.next()).await {
 -                if let tungstenite::Message::Binary(bytes) = msg {
 -                    if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+-                        break;
+-                    }
+-                }
+-            }
 +            let (a, b) = ws_stream.split();
 +            (Sink::Ws(a), Incoming::Ws(b))
-+        } else {
-+            let (a, b) = Framed::new(stream, BytesCodec::new()).split();
+         } else {
+             let mut framed = Framed::new(stream, BytesCodec::new());
+             framed.codec_mut().set_max_packet_length(*MAX_MESSAGE);
+-            let (a, mut b) = framed.split();
+-            sink = Some(Sink::TcpStream(a));
+-            while let Ok(Some(Ok(bytes))) = timeout(30_000, b.next()).await {
+-                if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+-                    break;
++            let (a, b) = framed.split();
 +            (Sink::TcpStream(a), Incoming::TcpStream(b))
 +        };
 +        let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
@@ -544,16 +562,9 @@ index 275eaf0..47ade0e 100644
 +                    };
 +                    last_recv = Instant::now();
 +                    if !self.handle_tcp(&bytes, &mut conn, addr, key, ws).await {
-                         break;
-                     }
-                 }
--            }
--        } else {
--            let (a, mut b) = Framed::new(stream, BytesCodec::new()).split();
--            sink = Some(Sink::TcpStream(a));
--            while let Ok(Some(Ok(bytes))) = timeout(30_000, b.next()).await {
--                if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
--                    break;
++                        break;
++                    }
++                }
 +                Some(bytes) = rx.recv() => {
 +                    if !Self::send_bytes(&mut sink, bytes).await {
 +                        break;
@@ -626,7 +637,7 @@ index 275eaf0..47ade0e 100644
 +        }
 +        let id = rk.id;
 +        let ip = addr.ip().to_string();
-+        if id.len() < 6 {
++        if id.len() < 6 || id.len() > MAX_PEER_ID_LEN {
 +            return Some(UUID_MISMATCH);
 +        } else if !self.check_ip_blocker(&ip, &id).await {
 +            return Some(TOO_FREQUENT);
@@ -706,7 +717,7 @@ index 275eaf0..47ade0e 100644
          if version.is_empty() || self.inner.sk.is_none() {
 diff --git a/tests/tcp_signaling.rs b/tests/tcp_signaling.rs
 new file mode 100644
-index 0000000..4dc58c4
+index 0000000..d7cdc51
 --- /dev/null
 +++ b/tests/tcp_signaling.rs
 @@ -0,0 +1,440 @@
@@ -855,7 +866,7 @@ index 0000000..4dc58c4
 +    async fn send(&mut self, msg: RendezvousMessage) {
 +        let bytes = msg.write_to_bytes().expect("encode");
 +        self.ws
-+            .send(WsMessage::Binary(bytes))
++            .send(WsMessage::Binary(bytes.into()))
 +            .await
 +            .expect("send to hbbs");
 +    }
@@ -865,7 +876,7 @@ index 0000000..4dc58c4
 +        loop {
 +            match timeout(within, self.ws.next()).await {
 +                Err(_) => return None,
-+                Ok(Some(Ok(WsMessage::Binary(bytes)))) => return Some(bytes),
++                Ok(Some(Ok(WsMessage::Binary(bytes)))) => return Some(bytes.to_vec()),
 +                Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) => {
 +                    panic!("hbbs closed the connection")
 +                }
@@ -884,7 +895,7 @@ index 0000000..4dc58c4
 +                .expect("a message from hbbs within 5s");
 +            if bytes.is_empty() {
 +                self.ws
-+                    .send(WsMessage::Binary(Vec::new()))
++                    .send(WsMessage::Binary(Default::default()))
 +                    .await
 +                    .expect("echo the heartbeat");
 +                continue;
@@ -1083,7 +1094,7 @@ index 0000000..4dc58c4
 +            .expect("a heartbeat within the heartbeat interval");
 +        assert!(heartbeat.is_empty());
 +        peer.ws
-+            .send(WsMessage::Binary(Vec::new()))
++            .send(WsMessage::Binary(Default::default()))
 +            .await
 +            .expect("echo the heartbeat");
 +        assert_eq!(online_states(&server, &[PEER_ID]).await, vec![0x80]);

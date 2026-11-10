@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 12 Oct 2026 21:50:34 +0900
-Subject: [PATCH 4/8] hbbs: tell hjv-api a device's signed key, and keep Pro
+Subject: [PATCH 04/11] hbbs: tell hjv-api a device's signed key, and keep Pro
  fields out of relay requests
 
 hjv-api (hjviewer's server/api) adds a Windows PC to an account only with
@@ -43,10 +43,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 tests/hjv_pk.rs
 
 diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
-index 47ade0e..87f9af1 100644
+index 02d706b..5483954 100644
 --- a/src/rendezvous_server.rs
 +++ b/src/rendezvous_server.rs
-@@ -490,6 +490,12 @@ impl RendezvousServer {
+@@ -557,6 +557,12 @@ impl RendezvousServer {
                          let id = rf.id.clone();
                          let mut msg_out = RendezvousMessage::new();
                          rf.socket_addr = AddrMangle::encode(addr).into();
@@ -59,7 +59,7 @@ index 47ade0e..87f9af1 100644
                          msg_out.set_request_relay(rf);
                          let peer_addr = peer.read().await.socket_addr;
                          self.send_to_peer(&id, peer_addr, msg_out).await;
-@@ -1006,14 +1012,15 @@ impl RendezvousServer {
+@@ -1069,14 +1075,15 @@ impl RendezvousServer {
          match fds.next() {
              Some("h") => {
                  res = format!(
@@ -77,7 +77,7 @@ index 47ade0e..87f9af1 100644
                  )
              }
              Some("relay-servers" | "rs") => {
-@@ -1158,6 +1165,43 @@ impl RendezvousServer {
+@@ -1221,6 +1228,43 @@ impl RendezvousServer {
                      }
                  }
              }
@@ -123,7 +123,7 @@ index 47ade0e..87f9af1 100644
          res
 diff --git a/tests/hjv_pk.rs b/tests/hjv_pk.rs
 new file mode 100644
-index 0000000..97dce93
+index 0000000..637774c
 --- /dev/null
 +++ b/tests/hjv_pk.rs
 @@ -0,0 +1,424 @@
@@ -307,7 +307,7 @@ index 0000000..97dce93
 +    async fn send(&mut self, msg: RendezvousMessage) {
 +        let bytes = msg.write_to_bytes().expect("encode");
 +        self.ws
-+            .send(WsMessage::Binary(bytes))
++            .send(WsMessage::Binary(bytes.into()))
 +            .await
 +            .expect("send to hbbs");
 +    }
@@ -323,7 +323,7 @@ index 0000000..97dce93
 +            };
 +            if bytes.is_empty() {
 +                self.ws
-+                    .send(WsMessage::Binary(Vec::new()))
++                    .send(WsMessage::Binary(Default::default()))
 +                    .await
 +                    .expect("echo the heartbeat");
 +                continue;

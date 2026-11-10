@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Fri, 16 Oct 2026 22:59:31 +0900
-Subject: [PATCH 7/8] hbbs: review fixes
+Subject: [PATCH 07/11] hbbs: review fixes
 
 Findings of the review of the access tickets (0006):
 
@@ -184,10 +184,10 @@ index 1c84bf1..d404792 100644
      fn a_file_that_breaks_or_goes_keeps_the_last_good_rule() {
          let mut watcher = Watcher::new(PathBuf::from("/p/access.conf"));
 diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
-index 87a3e03..f62c9cd 100644
+index 0db68b2..66e12db 100644
 --- a/src/rendezvous_server.rs
 +++ b/src/rendezvous_server.rs
-@@ -1446,7 +1446,8 @@ impl RendezvousServer {
+@@ -1527,7 +1527,8 @@ impl RendezvousServer {
      }
  
      /// Validates and stores a peer's public key. `None` for a request without uuid or pk, which
@@ -197,7 +197,7 @@ index 87a3e03..f62c9cd 100644
      async fn handle_register_pk(
          &mut self,
          rk: RegisterPk,
-@@ -1458,9 +1459,16 @@ impl RendezvousServer {
+@@ -1539,9 +1540,16 @@ impl RendezvousServer {
          }
          let id = rk.id;
          let ip = addr.ip().to_string();
@@ -208,14 +208,14 @@ index 87a3e03..f62c9cd 100644
 +        } else {
 +            format!("{ip}/noticket")
 +        };
-         if id.len() < 6 {
+         if id.len() < 6 || id.len() > MAX_PEER_ID_LEN {
              return Some(UUID_MISMATCH);
 -        } else if !self.check_ip_blocker(&ip, &id).await {
 +        } else if !self.check_ip_blocker(&budget, &id).await {
              return Some(TOO_FREQUENT);
          }
          let peer = self.pm.get_or(&id).await;
-@@ -1529,7 +1537,9 @@ impl RendezvousServer {
+@@ -1610,7 +1618,9 @@ impl RendezvousServer {
          }
          if changed && online {
              self.pm.update_pk(id, peer, addr, rk.uuid, rk.pk, ip).await;
@@ -227,7 +227,7 @@ index 87a3e03..f62c9cd 100644
          }
          Some(register_pk_response::Result::OK)
 diff --git a/tests/access.rs b/tests/access.rs
-index a7283bb..667f18d 100644
+index 30815ac..6e20e10 100644
 --- a/tests/access.rs
 +++ b/tests/access.rs
 @@ -317,6 +317,20 @@ impl Hbbs {

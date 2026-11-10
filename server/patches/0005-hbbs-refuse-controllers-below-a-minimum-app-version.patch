@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 17:20:40 +0900
-Subject: [PATCH 5/8] hbbs: refuse controllers below a minimum app version
+Subject: [PATCH 05/11] hbbs: refuse controllers below a minimum app version
 
 The apps that are already installed never look for updates, and each of
 them sends its version in the punch hole request that starts a connection
@@ -1476,10 +1476,10 @@ index d422c3c..a7142af 100644
      );
      init_args(&args, "hbbs", "RustDesk ID/Rendezvous Server");
 diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
-index 87f9af1..d4b6491 100644
+index 5483954..f4c6b25 100644
 --- a/src/rendezvous_server.rs
 +++ b/src/rendezvous_server.rs
-@@ -109,6 +109,8 @@ struct Inner {
+@@ -168,6 +168,8 @@ struct Inner {
      mask: Option<Ipv4Network>,
      local_ip: String,
      sk: Option<sign::SecretKey>,
@@ -1488,7 +1488,7 @@ index 87f9af1..d4b6491 100644
  }
  
  #[derive(Clone)]
-@@ -181,6 +183,7 @@ impl RendezvousServer {
+@@ -240,6 +242,7 @@ impl RendezvousServer {
                  sk,
                  mask,
                  local_ip,
@@ -1496,7 +1496,7 @@ index 87f9af1..d4b6491 100644
              }),
          };
          log::info!("mask: {:?}", rs.inner.mask);
-@@ -737,6 +740,11 @@ impl RendezvousServer {
+@@ -811,6 +814,11 @@ impl RendezvousServer {
              });
              return Ok((msg_out, None));
          }
@@ -1510,7 +1510,7 @@ index 87f9af1..d4b6491 100644
          // check if in same intranet first,
 diff --git a/tests/min_version.rs b/tests/min_version.rs
 new file mode 100644
-index 0000000..c11861d
+index 0000000..cf752f9
 --- /dev/null
 +++ b/tests/min_version.rs
 @@ -0,0 +1,1067 @@
@@ -1796,7 +1796,7 @@ index 0000000..c11861d
 +    async fn send(&mut self, msg: RendezvousMessage) {
 +        let bytes = msg.write_to_bytes().expect("encode");
 +        self.ws
-+            .send(WsMessage::Binary(bytes))
++            .send(WsMessage::Binary(bytes.into()))
 +            .await
 +            .expect("send to hbbs");
 +    }
@@ -1806,7 +1806,7 @@ index 0000000..c11861d
 +        loop {
 +            match timeout(within, self.ws.next()).await {
 +                Err(_) => return None,
-+                Ok(Some(Ok(WsMessage::Binary(bytes)))) => return Some(bytes),
++                Ok(Some(Ok(WsMessage::Binary(bytes)))) => return Some(bytes.to_vec()),
 +                Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) => {
 +                    panic!("hbbs closed the connection")
 +                }
@@ -1825,7 +1825,7 @@ index 0000000..c11861d
 +                .expect("a message from hbbs within 5s");
 +            if bytes.is_empty() {
 +                self.ws
-+                    .send(WsMessage::Binary(Vec::new()))
++                    .send(WsMessage::Binary(Default::default()))
 +                    .await
 +                    .expect("echo the heartbeat");
 +                continue;
@@ -1847,7 +1847,7 @@ index 0000000..c11861d
 +                None => return,
 +                Some(bytes) if bytes.is_empty() => {
 +                    self.ws
-+                        .send(WsMessage::Binary(Vec::new()))
++                        .send(WsMessage::Binary(Default::default()))
 +                        .await
 +                        .expect("echo the heartbeat");
 +                }

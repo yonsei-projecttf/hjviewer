@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Fri, 16 Oct 2026 22:08:08 +0900
-Subject: [PATCH 6/8] hbbs: admit only holders of an access ticket (off by
+Subject: [PATCH 06/11] hbbs: admit only holders of an access ticket (off by
  default)
 
 From 1.8.0 HJViewer is for Yonsei University staff. hjv-api signs
@@ -1848,10 +1848,10 @@ index a7142af..b9665b4 100644
      );
      init_args(&args, "hbbs", "RustDesk ID/Rendezvous Server");
 diff --git a/src/peer.rs b/src/peer.rs
-index 1b9e595..f258949 100644
+index 895650c..0f028d0 100644
 --- a/src/peer.rs
 +++ b/src/peer.rs
-@@ -140,6 +140,45 @@ impl PeerMap {
+@@ -143,6 +143,45 @@ impl PeerMap {
          register_pk_response::Result::OK
      }
  
@@ -1898,7 +1898,7 @@ index 1b9e595..f258949 100644
      pub(crate) async fn get(&self, id: &str) -> Option<LockPeer> {
          let p = self.map.read().await.get(id).cloned();
 diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
-index d4b6491..87a3e03 100644
+index f4c6b25..0db68b2 100644
 --- a/src/rendezvous_server.rs
 +++ b/src/rendezvous_server.rs
 @@ -78,6 +78,8 @@ impl Incoming {
@@ -1910,7 +1910,7 @@ index d4b6491..87a3e03 100644
  }
  // A peer registered over TCP/WebSocket gets an empty frame this often and echoes it, which
  // refreshes its online state and keeps NATs and proxies from idling the connection out.
-@@ -111,6 +113,8 @@ struct Inner {
+@@ -170,6 +172,8 @@ struct Inner {
      sk: Option<sign::SecretKey>,
      /// HJViewer: the lowest app version a controller may have (--hjv-min-controller-file)
      min_controller: crate::hjv_min_controller::MinController,
@@ -1919,7 +1919,7 @@ index d4b6491..87a3e03 100644
  }
  
  #[derive(Clone)]
-@@ -184,6 +188,7 @@ impl RendezvousServer {
+@@ -243,6 +247,7 @@ impl RendezvousServer {
                  mask,
                  local_ip,
                  min_controller: crate::hjv_min_controller::MinController::start(!key.is_empty()),
@@ -1927,7 +1927,7 @@ index d4b6491..87a3e03 100644
              }),
          };
          log::info!("mask: {:?}", rs.inner.mask);
-@@ -387,6 +392,23 @@ impl RendezvousServer {
+@@ -447,6 +452,23 @@ impl RendezvousServer {
      ) -> ResultType<()> {
          if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(bytes) {
              match msg_in.union {
@@ -1950,8 +1950,8 @@ index d4b6491..87a3e03 100644
 +                    if self.inner.access.refuses_udp(&rk.id) => {}
                  Some(rendezvous_message::Union::RegisterPeer(rp)) => {
                      // B registered
-                     if !rp.id.is_empty() {
-@@ -404,7 +426,7 @@ impl RendezvousServer {
+                     if !rp.id.is_empty() && rp.id.len() <= MAX_PEER_ID_LEN {
+@@ -464,7 +486,7 @@ impl RendezvousServer {
                      }
                  }
                  Some(rendezvous_message::Union::RegisterPk(rk)) => {
@@ -1960,7 +1960,7 @@ index d4b6491..87a3e03 100644
                          send_rk_res(socket, addr, res).await?;
                      }
                  }
-@@ -489,6 +511,13 @@ impl RendezvousServer {
+@@ -556,6 +578,13 @@ impl RendezvousServer {
                          .lock()
                          .await
                          .insert(try_into_v4(addr), conn.tx.clone());
@@ -1974,7 +1974,7 @@ index d4b6491..87a3e03 100644
                      if let Some(peer) = self.pm.get_in_memory(&rf.id).await {
                          let id = rf.id.clone();
                          let mut msg_out = RendezvousMessage::new();
-@@ -533,9 +562,19 @@ impl RendezvousServer {
+@@ -600,9 +629,19 @@ impl RendezvousServer {
                  Some(rendezvous_message::Union::RegisterPk(rk)) => {
                      // a peer that cannot use UDP registers here and keeps this connection
                      let id = rk.id.clone();
@@ -1995,7 +1995,7 @@ index d4b6491..87a3e03 100644
                      if res == register_pk_response::Result::OK {
                          if let Some(old_id) = conn.peer_id.take() {
                              if old_id != id {
-@@ -549,6 +588,7 @@ impl RendezvousServer {
+@@ -616,6 +655,7 @@ impl RendezvousServer {
                              peer.tcp_tx = Some(conn.tx.clone());
                          }
                          conn.peer_id = Some(id);
@@ -2003,7 +2003,7 @@ index d4b6491..87a3e03 100644
                      }
                      let mut msg_out = RendezvousMessage::new();
                      msg_out.set_register_pk_response(RegisterPkResponse {
-@@ -745,6 +785,10 @@ impl RendezvousServer {
+@@ -819,6 +859,10 @@ impl RendezvousServer {
          if let Some(msg_out) = self.inner.min_controller.refusal(addr, &ph.id, &ph.version) {
              return Ok((msg_out, None));
          }
@@ -2014,7 +2014,7 @@ index d4b6491..87a3e03 100644
          let id = ph.id;
          // punch hole request from A, relay to B,
          // check if in same intranet first,
-@@ -1020,7 +1064,7 @@ impl RendezvousServer {
+@@ -1083,7 +1127,7 @@ impl RendezvousServer {
          match fds.next() {
              Some("h") => {
                  res = format!(
@@ -2023,7 +2023,7 @@ index d4b6491..87a3e03 100644
                      "relay-servers(rs) <separated by ,>",
                      "reload-geo(rg)",
                      "ip-blocker(ib) [<ip>|<number>] [-]",
-@@ -1028,7 +1072,8 @@ impl RendezvousServer {
+@@ -1091,7 +1135,8 @@ impl RendezvousServer {
                      "punch-requests(pr) [<number>] [-]",
                      "always-use-relay(aur)",
                      "test-geo(tg) <ip1> <ip2>",
@@ -2033,7 +2033,7 @@ index d4b6491..87a3e03 100644
                  )
              }
              Some("relay-servers" | "rs") => {
-@@ -1210,6 +1255,10 @@ impl RendezvousServer {
+@@ -1273,6 +1318,10 @@ impl RendezvousServer {
                      res = format!("HJVPK1 {id} {signed} {age}\n");
                  }
              }
@@ -2044,7 +2044,7 @@ index d4b6491..87a3e03 100644
              _ => {}
          }
          res
-@@ -1314,7 +1363,11 @@ impl RendezvousServer {
+@@ -1395,7 +1444,11 @@ impl RendezvousServer {
              (Sink::TcpStream(a), Incoming::TcpStream(b))
          };
          let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
@@ -2057,7 +2057,7 @@ index d4b6491..87a3e03 100644
          let mut heartbeat = interval(Duration::from_millis(TCP_HEARTBEAT_MS));
          let mut last_recv = Instant::now();
          loop {
-@@ -1337,6 +1390,12 @@ impl RendezvousServer {
+@@ -1418,6 +1471,12 @@ impl RendezvousServer {
                      if last_recv.elapsed() > Duration::from_millis(TCP_IDLE_TIMEOUT_MS) {
                          break;
                      }
@@ -2070,7 +2070,7 @@ index d4b6491..87a3e03 100644
                      if conn.peer_id.is_some() && !Self::send_bytes(&mut sink, Bytes::new()).await {
                          break;
                      }
-@@ -1387,11 +1446,12 @@ impl RendezvousServer {
+@@ -1468,11 +1527,12 @@ impl RendezvousServer {
      }
  
      /// Validates and stores a peer's public key. `None` for a request without uuid or pk, which
@@ -2084,7 +2084,7 @@ index d4b6491..87a3e03 100644
      ) -> Option<register_pk_response::Result> {
          if rk.uuid.is_empty() || rk.pk.is_empty() {
              return None;
-@@ -1467,8 +1527,10 @@ impl RendezvousServer {
+@@ -1548,8 +1608,10 @@ impl RendezvousServer {
                  );
              }
          }
@@ -2098,7 +2098,7 @@ index d4b6491..87a3e03 100644
      }
 diff --git a/tests/access.rs b/tests/access.rs
 new file mode 100644
-index 0000000..a7283bb
+index 0000000..30815ac
 --- /dev/null
 +++ b/tests/access.rs
 @@ -0,0 +1,1484 @@
@@ -2513,7 +2513,7 @@ index 0000000..a7283bb
 +
 +    async fn send_bytes(&mut self, bytes: Vec<u8>) {
 +        self.ws
-+            .send(WsMessage::Binary(bytes))
++            .send(WsMessage::Binary(bytes.into()))
 +            .await
 +            .expect("send to hbbs");
 +    }
@@ -2524,7 +2524,7 @@ index 0000000..a7283bb
 +        loop {
 +            match timeout(within, self.ws.next()).await {
 +                Err(_) => return None,
-+                Ok(Some(Ok(WsMessage::Binary(bytes)))) => return Some(Some(bytes)),
++                Ok(Some(Ok(WsMessage::Binary(bytes)))) => return Some(Some(bytes.to_vec())),
 +                Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => {
 +                    return Some(None)
 +                }
