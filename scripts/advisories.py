@@ -24,19 +24,27 @@ sources are skipped) and pub.dev's for pubspec.lock (hosted there; git, path and
 An advisory that OSV holds under several IDs (RUSTSEC, GHSA, CVE) is one line, named by its
 RUSTSEC ID where it has one, with the others in brackets and the versions that fix it.
 
-Exit status: 0 nothing to do, 1 a failure (above), 2 a lock file that cannot be read or a wrong
-argument, 3 OSV could not be asked or gave an answer this script cannot read: then nothing was
-checked, and a later run asks again.
+Exit status: 0 nothing to do, 1 a failure (above), 2 a lock file that cannot be read (also a
+Cargo.lock that lists no package, which only a cut or emptied file does) or a wrong argument, 3 OSV
+could not be asked or gave an answer this script cannot read (cut off, no HTTP, no JSON, or pages
+without end): then nothing was checked, and a later run asks again. It needs Python 3.11 or later
+(tomllib).
 """
 import argparse
 import concurrent.futures
 import datetime
 import glob
+import http.client
 import json
 import os
 import re
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 and older: exit 2, not 1 (a failure)
+    print("advisories: this needs Python 3.11 or later (tomllib)", file=sys.stderr)
+    sys.exit(2)
 import urllib.error
 import urllib.request
 
@@ -44,6 +52,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OSV = "https://api.osv.dev"
 # OSV takes at most 1000 queries in one batch
 BATCH = 1000
+# the pages of one package's answer: far more than any package has, and an answer that never ends
+# is one this script cannot read
+PAGES = 100
 TIMEOUT = 60
 CRATES = "crates.io"
 PUB = "Pub"
@@ -70,13 +81,17 @@ class NetworkError(Exception):
 
 def cargo_packages(text, name="Cargo.lock"):
     """The (name, version) pairs of crates.io packages in a Cargo.lock (versions 3 and 4, and the
-    older ones, which have the same [[package]] tables): git and path sources are skipped."""
+    older ones, which have the same [[package]] tables): git and path sources are skipped. A lock
+    file without [[package]] is no Cargo.lock: every real one lists at least its root package."""
     try:
         lock = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise InputError(f"{name}: not a Cargo.lock ({e})") from None
+    packages = lock.get("package")
+    if not isinstance(packages, list) or not packages:
+        raise InputError(f"{name}: no [[package]], not even the root one (cut or emptied?)")
     out = set()
-    for p in lock.get("package", []):
+    for p in packages:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str) or not isinstance(p.get("version"), str):
             raise InputError(f"{name}: a [[package]] without name or version")
         source = p.get("source")
@@ -140,6 +155,8 @@ def read_lock(path, name):
             text = f.read()
     except OSError as e:
         raise InputError(f"{name}: {e.strerror}") from None
+    except UnicodeDecodeError as e:
+        raise InputError(f"{name}: not UTF-8 ({e.reason} at byte {e.start})") from None
     if path.endswith("pubspec.lock"):
         return PUB, pub_packages(text, name)
     return CRATES, cargo_packages(text, name)
@@ -180,6 +197,10 @@ class Osv:
             raise NetworkError(f"{self.base}{path}: HTTP {e.code}") from None
         except (urllib.error.URLError, OSError) as e:
             raise NetworkError(f"{self.base}{path}: {getattr(e, 'reason', e)}") from None
+        # an answer cut off (IncompleteRead) or no HTTP (BadStatusLine), which urllib passes on
+        # as they are
+        except http.client.HTTPException as e:
+            raise NetworkError(f"{self.base}{path}: {type(e).__name__} {e}") from None
         except ValueError as e:
             raise NetworkError(f"{self.base}{path}: the answer is no JSON ({e})") from None
 
@@ -202,7 +223,7 @@ def ask(osv, packages):
         if not isinstance(results, list) or len(results) != len(part):
             raise NetworkError("OSV's batch answer does not have one result per package")
         for key, query, result in zip(part, queries, results):
-            found = []
+            found, pages = [], 0
             while True:
                 if not isinstance(result, dict):
                     raise NetworkError("OSV's batch answer has a result that is no object")
@@ -211,11 +232,15 @@ def ask(osv, packages):
                     if not isinstance(v, dict) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}", str(v.get("id"))):
                         raise NetworkError("OSV's batch answer has an advisory without a readable ID")
                     found.append(v["id"])
+                pages += 1
                 token = result.get("next_page_token")
                 if not token:
                     break
+                if pages >= PAGES:
+                    raise NetworkError(f"OSV's answer for {key[1]} {key[2]} goes on past {PAGES} pages")
                 again = osv.querybatch([dict(query, page_token=token)])
-                result = (again.get("results") or [None])[0] if isinstance(again, dict) else None
+                more = again.get("results") if isinstance(again, dict) else None
+                result = more[0] if isinstance(more, list) and more else None
             if found:
                 ids[key] = sorted(set(found))
     return ids
@@ -343,6 +368,8 @@ def read_known(path):
         return known
     except OSError as e:
         raise InputError(f"{path}: {e.strerror}") from None
+    except UnicodeDecodeError as e:
+        raise InputError(f"{path}: not UTF-8 ({e.reason} at byte {e.start})") from None
     for n, raw in enumerate(lines, 1):
         text = raw.split("#", 1)[0].strip()
         if not text:
