@@ -9,7 +9,10 @@
 [Unit]
 Description=HJViewer rendezvous server (hbbs)
 Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/server-runbook.md
-After=network.target
+# hbbs resolves the -r domain when it starts; it forwards that name whether or not it resolved
+# (server patch 0010), and logs "Invalid relay-servers <domain>" (ERROR) when it did not
+Wants=network-online.target
+After=network.target network-online.target
 
 [Service]
 Type=simple
