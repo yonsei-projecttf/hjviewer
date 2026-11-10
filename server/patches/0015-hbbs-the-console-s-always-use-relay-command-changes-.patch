@@ -49,7 +49,7 @@ index 2c3fa34..552bc3c 100644
                      let _ = writeln!(
                          res,
 diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
-index f8e3868..d964957 100644
+index c9526c8..a4ea844 100644
 --- a/tests/untrusted_input.rs
 +++ b/tests/untrusted_input.rs
 @@ -4,8 +4,9 @@
@@ -61,10 +61,10 @@ index f8e3868..d964957 100644
 +//! when hbbs started, and whatever the console's always-use-relay command is given; ICE
 +//! candidates for a peer go only from the connection whose punch hole request reached it; what
 +//! is forwarded to a connection that does not read stays within a
- //! bound, past which the connection is closed; every connection hbbs accepts has a small send
+ //! bound, past which the connection is reset; every connection hbbs accepts has a small send
  //! buffer of its own, so that one that stops reading holds little in the kernel and has hbbs's
  //! write wait, which ends it with a reset at the write deadline, while one that reads gets every
-@@ -712,6 +713,50 @@ fn no_relay_configured_leaves_the_names_as_upstream() {
+@@ -714,6 +715,50 @@ fn no_relay_configured_leaves_the_names_as_upstream() {
      });
  }
  
