@@ -1359,12 +1359,14 @@ check_systemd_api() {
 
 # The account API's nginx limits from the package (zones file and locations), with Ubuntu's nginx
 # in an unprivileged user and network namespace that has an IPv6 /64 of its own: hjv-relay's
-# registrations are counted per IPv4 address and per IPv6 /64 (relay/PROTOCOL.md 4.3), also on a
-# dual-stack listener (ipv6only=off), where IPv4 clients arrive as ::ffff:a.b.c.d; logins per
-# address. No hjv-api runs, so what passes the limits gets the "server unavailable" answer.
+# registrations, the logins and the access password's tries are counted per IPv4 address and per
+# IPv6 /64 (relay/PROTOCOL.md 4.3), also on a dual-stack listener (ipv6only=off), where IPv4
+# clients arrive as ::ffff:a.b.c.d. No hjv-api runs, so what passes the limits gets the "server
+# unavailable" answer, and nginx's error log a line for each such request, but none for a path
+# with a PC's ID (/api/hjv/devices/).
 check_api_limits() { # <unpacked package>
   local pkg=$1 ng="$CI/nginx-api"
-  step "deploy: the account API's nginx limits, per IPv4 address and IPv6 /64"
+  step "deploy: the account API's nginx limits, per IPv4 address and IPv6 /64; no PC's ID in its error log"
   if ! unshare -rn true 2> /dev/null; then
     skip "the account API's nginx limits (no unprivileged user and network namespaces here)"
     return 0
@@ -1434,10 +1436,31 @@ check "relay hello, one IPv4 address on a dual-stack listener" http://127.0.0.1:
 code=$(post 127.0.0.4 http://127.0.0.1:18451/api/hjv/relay/hello)
 echo "relay hello from another IPv4 address on the dual-stack listener: $code"
 [ "$code" != 429 ] || { echo "FAIL: the IPv4 clients of a dual-stack listener share one limit"; exit 1; }
+later='{"error":"잠시 뒤 다시 시도해 주세요"}'
+for path in /api/login /api/hjv/guest; do
+  check "$path, two addresses of one IPv6 /64" "http://[2001:db8:1:2::1]:18450$path" "$later" $a $b $a $b $a $b $a
+  code=$(post 2001:db8:1:3::1 "http://[2001:db8:1:2::1]:18450$path")
+  echo "$path from another /64: $code"
+  [ "$code" != 429 ] || { echo "FAIL: $path: another /64 shares the limit"; exit 1; }
+done
 v4=(127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1)
-check "login, one IPv4 address" http://127.0.0.1:18450/api/login '{"error":"잠시 뒤 다시 시도해 주세요"}' "${v4[@]}"
-check "access password, one IPv4 address" http://127.0.0.1:18450/api/hjv/guest '{"error":"잠시 뒤 다시 시도해 주세요"}' \
-  "${v4[@]}"
+check "login, one IPv4 address" http://127.0.0.1:18450/api/login "$later" "${v4[@]}"
+check "access password, one IPv4 address" http://127.0.0.1:18450/api/hjv/guest "$later" "${v4[@]}"
+v4=(127.0.0.5 127.0.0.5 127.0.0.5 127.0.0.5 127.0.0.5 127.0.0.5 127.0.0.5)
+check "login, one IPv4 address on a dual-stack listener" http://127.0.0.1:18451/api/login "$later" "${v4[@]}"
+code=$(post 127.0.0.6 http://127.0.0.1:18451/api/login)
+echo "login from another IPv4 address on the dual-stack listener: $code"
+[ "$code" != 429 ] || { echo "FAIL: the IPv4 clients of a dual-stack listener share one login limit"; exit 1; }
+# A PC's ID in the path (wake, Wake-on-LAN, removal): no line of nginx's error log names it, while
+# a request of /api/hjv/ that fails the same way has one (else the check below proves nothing)
+curl -s -o /dev/null --interface 127.0.0.1 http://127.0.0.1:18450/api/hjv/devices-ci/987654321
+curl -s -o /dev/null --interface 127.0.0.1 -X POST -d '{}' http://127.0.0.1:18450/api/hjv/devices/123456789/wake
+curl -s -o /dev/null --interface 127.0.0.1 http://127.0.0.1:18450/api/hjv/devices/123456789/wol
+curl -s -o /dev/null --interface 127.0.0.1 -X DELETE http://127.0.0.1:18450/api/hjv/devices/123456789
+grep -q 'request: "GET /api/hjv/devices-ci/987654321 ' "$dir/error.log" ||
+  { echo "FAIL: no error-log line for a failed request of /api/hjv/"; exit 1; }
+if grep 123456789 "$dir/error.log"; then echo "FAIL: nginx's error log names a PC's ID (above)"; exit 1; fi
+echo "error log: a line for /api/hjv/devices-ci/, none for /api/hjv/devices/<ID> (wake, wol, DELETE)"
 EOF
 }
 
