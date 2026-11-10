@@ -33,7 +33,8 @@
 #                          release build (server/api); relay, hjv-relay's tests (relay/); release,
 #                          tools/hjv-release's format, lints, tests (its shared test vectors among
 #                          them) and release build
-#   scripts/ci.sh client   the offline tests of the Google Play upload script and of the build-key
+#   scripts/ci.sh client   the offline tests of the Google Play upload script, of the advisory check
+#                          (scripts/advisories.py, OSV's answers canned) and of the build-key
 #                          check (scripts/test_*.py, the key files also against hjv-release), the store
 #                          run's: the store texts (scripts/check-store-text.py and its tests), the
 #                          release record, the workflows' store rules and, with Node 20 or later,
@@ -1109,6 +1110,10 @@ client_offline() { # <hjv-release's release build, or nothing>
   else
     skip "the App Store Connect script's tests (Node 20 or later is not installed)"
   fi
+  # the advisory check that a release runs by hand (it asks OSV): its tests have OSV's answers canned
+  step "client: the advisory check of the lock files (scripts/advisories.py), offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_advisories.py' ||
+    fail "client: advisory check tests"
   step "client: the pinned public keys' check (scripts/check-build-keys.py, client-build.yml), offline tests"
   HJV_RELEASE_BIN="$1" python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
     fail "client: build-key check tests"
@@ -2844,7 +2849,8 @@ reuse_rules() {
       scripts/test_play_upload.py scripts/check-store-text.py scripts/test_check_store_text.py scripts/store-record.py
       scripts/test_store_record.py scripts/test_store_workflows.py scripts/run-summary.py scripts/asc-store.mjs
       scripts/asc-store.test.mjs scripts/test_check_build_keys.py scripts/hjv-fontsize-check.sh
-      scripts/hjv-fontsize-baseline.txt scripts/set-client-version.sh"
+      scripts/hjv-fontsize-baseline.txt scripts/set-client-version.sh scripts/advisories.py scripts/test_advisories.py
+      scripts/advisories-known.txt"
     # the E2E's client (client/, the pins, the keys of check-build-keys.py), hbbs and hjv-api's release
     # build (server/, which resolves hjv-relay's Cargo.toml, a dev-dependency, under --locked),
     # hjv-probe, hjv-release for the test policies, firewall-e2e.sh with the Caddyfile and guest-conf.py
