@@ -426,7 +426,7 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
   1. `sudo git -C /opt/hjviewer pull --ff-only`
   2. 3-4처럼 백그라운드로 빌드하고 `exit=0`을 확인합니다.
   3. `cd /opt/hjviewer/deploy && sudo docker compose up -d`
-- **B 경로 업데이트**(나중에, 사용이 적은 시간에)
+- **B 경로 업데이트**(나중에, 사용이 적은 시간에). 1.9.3의 서버 묶음은 9-12의 순서(넣기 전의 확인, 백업, nginx, hjv-api, hbbs·hbbr)로 넣습니다.
   1. 새 `VERSION`으로 4-1처럼 내려받아 체크섬을 확인합니다(그 블록의 앞부분까지만).
   2. 그 디렉터리에서 다음을 실행합니다.
      ```bash
@@ -462,7 +462,7 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
      if sudo grep -q '^#\?HJV_API_TICKET_PUBKEYS=' "$E"; then sudo sed -i "s|^#\?HJV_API_TICKET_PUBKEYS=.*|HJV_API_TICKET_PUBKEYS=$TICKET|" "$E"; else echo "HJV_API_TICKET_PUBKEYS=$TICKET" | sudo tee -a "$E" > /dev/null; fi
      sudo grep -c '^HJV_API_TICKET_PUBKEYS=.' "$E"    # 1
      sudo systemctl restart hjviewer-api
-     sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'ticket key'
+     sudo /opt/hjviewer/bin/hjv-api admin selfcheck 2>&1 | grep 'ticket key'
      ```
      두 줄 모두 `[ OK ]`이고 지문이 사용자가 키를 만들 때 본 것과 같아야 합니다. hbbs의 `access.conf`(서버 패치 0006)의 `KEY=` 값도 이 값입니다([access-tickets.md](access-tickets.md) 6-1).
 
@@ -483,7 +483,7 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
   아무것도 나오지 않으면 바꿀 것이 없습니다. `differ`(또는 `No such file`)가 나온 파일만 아래처럼 바꾸고, 끝나면 `rm -f "$N"`을 합니다. 조용한 시간에 하고 cron의 nginx 재적재 시각은 피합니다.
   1. 바꿀 파일마다 지금 파일을 `/root/hjv-backup/`(`sudo install -d -m 700`)에 `sudo cp -p`로 남깁니다.
   2. 설치합니다. 경로 파일은 `sudo install -m 644 "$N" "$L"`, 계정 API의 두 파일은 `sudo install -m 644 "$W/nginx-hjviewer-api.conf" /etc/nginx/snippets/hjviewer-api.conf`와 `sudo install -m 644 "$W/nginx-hjviewer-api-zones.conf" /etc/nginx/conf.d/hjviewer-api-zones.conf`입니다.
-  3. `sudo nginx -t`가 통과하면 `sudo systemctl reload nginx`를 하고, 5절의 첫 블록(7-8을 한 서버는 7-8의 3번도)으로 확인합니다. 실패하면 1번에서 남긴 파일을 되돌리고 멈춥니다.
+  3. `sudo nginx -t`가 통과하면 `sudo systemctl reload nginx`를 하고, 5절의 첫 블록(7-8을 한 서버는 7-8의 3번도)으로 확인합니다. 실패하면 1번에서 남긴 파일을 되돌리고 멈춥니다. `systemctl reload nginx`는 nginx가 새 설정을 거절해도 0으로 끝나므로, 계정 API의 두 파일을 바꿀 때는 9-12의 넣기 3번(새 worker의 확인)으로 합니다. 그 두 파일은 함께 바꾸고 함께 되돌립니다(한쪽만 바꾸면 `nginx -t`가 `zero size shared memory zone`으로 실패).
 - **B 경로 되돌리기**(사용자가 요청할 때만): 아래 순서를 지킵니다. include 줄을 남긴 채 경로 파일부터 지우면 `nginx -t`가 실패합니다.
   1. nginx의 include 줄을 지우거나 백업을 되돌리고, `sudo nginx -t && sudo systemctl reload nginx`를 실행합니다. (가) 새 사이트라면 sites-enabled의 링크를 지우고 reload합니다.
   2. 그다음 `sudo rm /etc/nginx/snippets/hjviewer-locations.conf`를 실행합니다.
@@ -758,7 +758,7 @@ $S systemd-run --wait --pipe --quiet -p IPAddressDeny=127.0.0.1 curl -sk -o /dev
 - nginx.conf가 `conf.d/*.conf`를 http 밖(main, stream, mail)에서도 읽으면 7-8 전에 보고합니다. 7-8의 zones 파일이 그 자리에서 `nginx -t`를 깹니다.
 - HJViewer 경로가 든 server 블록이나 http 블록에 바로(location 밖에) `limit_req`·`limit_conn`·`limit_rate`·`modsecurity`가 있거나, 그 server 블록에 바로 `if`·`return`·`rewrite`가 있으면 보고합니다. 7-8 뒤 계정 경로에도 걸립니다. grep 줄만으로는 그 줄이 location 안인지 알 수 없습니다(WordPress 사이트에는 location 안의 `if`·`return`·`rewrite`가 흔함). 걸린 줄마다 `sudo nginx -T` 출력에서 그 줄 번호의 앞을 보고, location 밖인 줄만 셉니다.
 - nginx 작업 프로세스의 그룹이 `www-data`가 아니면 보고합니다. 7-3에서 소켓 그룹을 드롭인으로 바꿉니다.
-- PHP-FPM이 `www-data`로 돌면 보고합니다. 같은 서버의 PHP도 hjv-api 소켓을 부를 수 있다는 뜻입니다(키, 자격 증명, DB는 다른 사용자라 읽지 못함).
+- PHP-FPM이 `www-data`로 돌면 보고합니다. 같은 서버의 PHP도 hjv-api 소켓을 부를 수 있다는 뜻입니다(키, 자격 증명, DB는 다른 사용자라 읽지 못함). 그 PHP는 nginx를 거치지 않으므로 요청마다 `X-Real-IP`를 스스로 정할 수 있고, 그러면 hjv-api의 주소별 한도를 모두 피하고 다른 주소를 잠글 수도 있습니다(hjv-api는 소켓에 온 그 헤더를 믿음). 막는 길(nginx만 아는 비밀 헤더)은 기록만 했습니다([architecture.md](architecture.md) 10절의 "기록만 한 것").
 - `www-data` 그룹에 다른 계정이 들어 있으면(`== www-data group members`가 0이 아니면) 보고합니다. 소켓은 `root:www-data` 0660이라 그 계정의 프로세스도 hjv-api 소켓에 닿습니다. 그 계정에 이미 비밀번호 없는 전체 sudo가 있으면 새로 열리는 권한이 없으므로 그대로 둡니다. 아니면 5단계 전에 사용자와 정합니다(그 계정을 그룹에서 빼거나, 7-3의 소켓 드롭인에 `SocketUser=www-data`와 `SocketMode=0600`을 둠).
 - 바깥 연결(프록시 없이): github.com이 000이거나, release-assets와 objects가 둘 다 000이면 멈춥니다(7-3, 7-6, 8-1의 내려받기). raw.githubusercontent.com만 000이면 진행하고, 8-1의 3번은 `incoming/`으로 받는 길로 합니다. api.telegram.org가 000이면 질문 12(경보 경로)를 정하기 전에 사용자에게 알립니다. `proxy variables`가 0이 아니면 보고합니다. hjv-api는 프록시 없이 SSO로 바로 나가므로, 셸의 프록시로 되는 연결은 증거가 되지 않습니다.
 - systemd가 254보다 낮으면 멈추고 판을 보고합니다. 경보 유닛의 `ImportCredential=`은 254부터입니다.
@@ -785,7 +785,7 @@ grep " $pkg.tar.gz\$" SHA256SUMS | sha256sum -c - || { echo 'STOP: 체크섬이 
 tar -xzf "$pkg.tar.gz" && cd "$pkg" || exit 1
 [ -x bin/hjv-api ] || { echo 'STOP: 묶음에 hjv-api가 없음'; exit 1; }
 if ldd bin/hjv-api | grep 'not found'; then echo 'STOP: 이 서버에서 실행할 수 없음'; exit 1; fi
-bin/hjv-api version; head -3 SOURCE.txt
+bin/hjv-api version; sed -n 4p SOURCE.txt   # 둘 다 이 묶음의 커밋(넷째 줄 "Corresponding Source of this build: …/tree/<커밋>". 첫 세 줄은 라이선스 문구)
 getent passwd hjviewer-api || sudo useradd --system --user-group --home-dir /var/lib/hjviewer-api --no-create-home --shell /usr/sbin/nologin hjviewer-api || { echo 'STOP: hjviewer-api 사용자를 만들지 못함'; exit 1; }
 sudo install -m 755 bin/hjv-api /opt/hjviewer/bin/
 sudo install -m 644 LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt /opt/hjviewer/share/
@@ -918,7 +918,7 @@ sudo journalctl --namespace=hjviewer -u hjviewer-api -p warning --since -10min -
 
 - 소켓은 `660 root:www-data`(또는 7-3에서 바꾼 그룹), 상태 디렉터리와 로그 디렉터리는 `700 hjviewer-api`, DB와 `operator.log`는 `600`이어야 합니다. 로그 디렉터리를 root로 만들거나 나중에 `chown`·`chmod`하지 않습니다. 추가 전용 속성이 걸린 파일 때문에 systemd가 소유자를 고치다 실패해 서비스가 시작하지 않습니다([server/api/README.md](../server/api/README.md)의 "The operator record").
 - `STOP: 공개키 대조값 …`이면 아무것도 시작하지 않은 채 멈춥니다. 설정 파일에 `HJV_API_TRUST_PUBKEYS=`, `HJV_API_COMMAND_PUBKEYS=`, `HJV_API_TICKET_PUBKEYS=` 가운데 없는 줄이 있는 것이니 묶음의 env 예시와 비교합니다.
-- `selfcheck`는 SSO 주소의 DNS·TCP·TLS, hbbs 콘솔, 목록 키, 명령 키, 출입증 키를 봅니다. 키마다 두 줄입니다: 고정한 공개키의 지문(`list keys the apps pin …`, `command keys the relays pin …`, `ticket keys hbbs takes …`)과 쓰는 키가 고정한 그 번호의 키인지(`list key in use (HJV_API_LIST_KID 1): the pinned key 1, …`, `command key in use (HJV_API_COMMAND_KID 1): the pinned key 1, …`, `ticket key in use (HJV_API_TICKET_KID 1): the key 1 hbbs takes, …`). 7단계 전에는 `hbbs console` 줄 하나만 `[FAIL]`(패치 0004 전)이고 나머지는 `[ OK ]`여야 합니다. 7-6을 먼저 했으면(hjv-api를 시작하기 전에 hbbs를 0004로 바꿈) 그 줄도 `[ OK ] hbbs console: answers hjv-pk (patch 0004)`여야 하고, 7-6에서 건너뛴 확인이 이것입니다.
+- `selfcheck`는 SSO 주소의 DNS·TCP·TLS, hbbs 콘솔, 목록 키, 명령 키, 출입증 키를 봅니다. 키마다 두 줄입니다: 고정한 공개키의 지문(`list keys the apps pin …`, `command keys the relays pin …`, `ticket keys hbbs takes …`)과 쓰는 키가 고정한 그 번호의 키인지(`list key in use (HJV_API_LIST_KID 1): the pinned key 1, …`, `command key in use (HJV_API_COMMAND_KID 1): the pinned key 1, …`, `ticket key in use (HJV_API_TICKET_KID 1): the key 1 hbbs takes, …`). 7단계 전에는 `hbbs console` 줄 하나만 `[FAIL]`(패치 0004 전)이고 나머지는 `[ OK ]`여야 합니다. 7-6을 먼저 했으면(hjv-api를 시작하기 전에 hbbs를 0004로 바꿈) 그 줄도 `[ OK ] hbbs console: answers hjv-pk (patch 0004)`여야 하고, 7-6에서 건너뛴 확인이 이것입니다. `[FAIL]` 줄이 하나라도 있으면 selfcheck는 보고 전체를 표준 오류로 쓰고(`hjv-api: `로 시작) 1로 끝납니다. 그래서 이 런북에서 selfcheck의 출력을 `grep`으로 고르는 줄은 모두 `2>&1`을 붙입니다. 붙이지 않으면 `[FAIL]` 줄이 있을 때 `grep`이 아무것도 받지 못해, 멈춰야 할 확인(9-2, 9-3)이 통과처럼 지나갑니다(2026-11-10 점검에서 고침).
 - 목록 키, 명령 키, 출입증 키 줄이 `[FAIL]`이면 멈춥니다. 고정한 목록 키가 다르면 모든 PC가 모든 목록을 거절하고, 명령 키가 다르면 모든 중계기가 켜기 명령을 거절하고, 출입증 키가 다르면 hbbs가 출입 확인을 켠 뒤 모든 연결과 PC 등록을 거절합니다. `HJV_API_COMMAND_PUBKEYS`나 `HJV_API_TICKET_PUBKEYS`가 비어 있어도 쓰는 키를 대조할 수 없어 `[FAIL]`입니다. 출입증 키 가운데 공개된 시험 키가 있어도 `[FAIL]`입니다(`… is a public test key …`).
 - 지문 줄(공개값)은 사용자가 5단계에서 키를 만들 때 본 지문과 같아야 하고, 8단계의 대조에 쓰므로 목록 키와 명령 키 것을 모두 보고에 옮깁니다. 출입증 키의 지문도 보고에 옮깁니다.
 - 서비스가 시작하지 않으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -o cat | grep -E '^hjv-api: ' | tail -3`의 원인 줄(hjv-api가 멈추며 남긴 `hjv-api: <원인>`)을 사용자에게만 보여 줍니다. 이 줄에는 우선순위 앞머리가 없어 저널은 info로 두므로 `-p err`로 거르면 보이지 않습니다. 원인 줄은 틀린 설정의 이름, 자격 증명의 이름, 파일 경로만 말하고 사람의 값은 싣지 않습니다(7-0). 아무것도 나오지 않거나 그 밖의 줄이 필요하면 사용자가 서버에서 직접 봅니다. 설정 파일의 모르는 `HJV_API_` 이름, 빠진 SSO 값, 없는 자격 증명(명령 키와 출입증 키 포함, 7-4)이 흔한 원인입니다.
@@ -965,18 +965,18 @@ sudo systemctl daemon-reload
 sudo systemctl restart hjviewer-hbbs
 sleep 3; systemctl is-active hjviewer-hbbs hjviewer-hbbr
 sudo journalctl -q -u hjviewer-hbbs --since -2min -o cat | grep -E 'ERROR|panicked' | tail -5   # config.rs 두 줄 말고는 없어야 함(아래)
-sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'hbbs console'   # 7-5 전(hjv-api가 아직 돌지 않음)에는 실패함: 건너뛰고 7-5에서 봄
+sudo /opt/hjviewer/bin/hjv-api admin selfcheck 2>&1 | grep 'hbbs console'   # 7-5 전(hjv-api가 아직 돌지 않음)에는 실패함: 건너뛰고 7-5에서 봄
 cd / && rm -rf "$T"
 ```
 
 - 지금 운영 중인 서버의 유닛은 `server-2026.10.10` 묶음의 것이고, 1.6.0 묶음의 유닛과는 `Documentation=` 줄(저장소를 옮기기 전의 주소라 지금은 404)만 다릅니다. 그래서 비교에서 그 줄을 빼고, 같으면 두 유닛을 새것으로 바꿔 링크도 고칩니다. hbbr은 다시 시작하지 않습니다. 바뀐 것이 설명 줄뿐이라 `daemon-reload`로 충분합니다.
-- 이 절은 hbbr의 실행 파일을 바꾸지 않습니다(유닛은 위처럼 설명 줄만 바뀜). 설치된 hbbr은 지금(2026-10-15)도 `server-2026.10.10`의 것입니다. 서버 패치 0001–0003은 그 뒤 바뀌지 않았고(패치 머리의 `[PATCH n/m]` 번호만 바뀜), 0004와 0005는 hbbs의 파일만 고치기 때문입니다. hbbr은 나중의 B 경로 업데이트(6절)로만 바꿉니다.
+- 이 절은 hbbr의 실행 파일을 바꾸지 않습니다(유닛은 위처럼 설명 줄만 바뀜). 설치된 hbbr은 지금(2026-10-15)도 `server-2026.10.10`의 것입니다. 서버 패치 0001–0003은 그 뒤 바뀌지 않았고(패치 머리의 `[PATCH n/m]` 번호만 바뀜), 0004와 0005는 hbbs의 파일만 고치기 때문입니다. hbbr은 나중의 B 경로 업데이트(6절)로만 바꿉니다. 이 문단은 2026-10-15의 기록입니다. 1.9.3의 서버 묶음은 upstream의 2026-11 수정 때문에 hbbr의 실행 파일도 바꾸므로, 그때는 9-12대로 둘을 함께 백업하고 바꿉니다.
 - `STOP: hbbs 유닛도 바뀜`(또는 `hbbr`)이면 아무것도 바꾸지 않은 채 멈추고, `diff`가 보인 차이를 보고합니다. 그 차이는 "B 경로 업데이트"처럼 사용자 승인을 받아 따로 반영합니다.
 - `grep -E 'ERROR|panicked'` 줄에는 아래 둘 말고 아무것도 없어야 합니다. 다른 줄이 있으면 멈추고 보고합니다.
   - 다시 시작할 때마다 나오는 hbb_common의 클라이언트 설정 줄은 해가 없으므로 세지 않습니다: ERROR `config.rs:566` `Failed to load config '<홈>/.config/rustdesk/RustDesk.toml'`과 ERROR `config.rs:605` `Failed to store config: …`, 그리고 같은 때의 WARN `ID is invalid, generating new one`과 INFO `Generated id …` 한 쌍(grep에는 나오지 않음)입니다. upstream hbbs는 시작할 때 RustDesk 클라이언트의 설정 파일을 한 번 읽는데, 지금 운영 서버처럼 hbbs 사용자의 홈에 있는 `~/.config/rustdesk` 디렉터리에 실행 권한(x)이 없으면(600) 그 파일을 열지도 쓰지도 못해 이 줄들이 납니다. hbbs의 서버 기능은 그 파일을 쓰지 않으므로 고칠 것이 없습니다.
 - `hbbs console: answers hjv-pk (patch 0004)`가 나와야 합니다. 이 확인은 hjv-api의 관리 소켓으로 하므로, hjv-api를 아직 시작하지 않았으면(7-5 전에 이 절을 하는 경우) 실패합니다. 그때는 이 줄을 건너뛰고 7-5의 `selfcheck`에서 `hbbs console` 줄을 봅니다. 5절의 첫 블록을 다시 실행해 `/ws/id`, `/ws/relay`가 101인지도 봅니다. 사용자는 바깥에서 `hjv-probe`로 확인합니다.
 - `/etc/hjviewer/min-controller.conf`가 이미 있는 서버(8-3의 파일을 넣은 뒤)에서는 hbbs의 `min-controller` 줄도 봅니다(8-3의 "hbbs를 다시 시작한 뒤" 블록). `min-controller <MIN> from …`(또는 `min-controller off: …`)여야 하고, ERROR(`… no minimum is in force`)면 hbbs가 최소 버전 없이 도는 것이니 멈추고 보고합니다.
-- 되돌리기: 보관한 `/root/hjv-backup/hbbs-before-<VERSION>`을 같은 방법으로 넣고 hbbs만 다시 시작합니다(7-12).
+- 되돌리기: 보관한 `/root/hjv-backup/hbbs-before-<VERSION>`을 같은 방법으로 넣고 hbbs만 다시 시작합니다(7-12). 1.9.3의 묶음 뒤에는 `hbbr-before-<VERSION>`도 넣고 둘을 함께 다시 시작합니다(9-12의 '되돌리기').
 
 ### 7-7. 앱과 중계기 빌드, 지문 대조 (8단계, 개발 PC)
 
@@ -1123,7 +1123,7 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
    ```
 
    로그인한 앱은 회수할 수 없으므로 로그인 창과 "내 PC" 탭에 오류가 남습니다. 1.9.0부터 이 탭의 오류는 "내 PC 목록을 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요."이고 원문 오류는 보이지 않습니다. hjv-api를 멈추면 PC들의 목록은 24시간 안에 만료되어 저절로 비밀번호로 돌아갑니다. hjv-api를 일부러 멈춰 둘 때는 점검 타이머와 백업 타이머를 먼저 멈춥니다(`sudo systemctl disable --now hjviewer-api-check.timer hjviewer-api-backup.timer`). 그대로 두면 점검과 백업이 실패할 때마다 경보가 납니다. 다시 켤 때 타이머도 켭니다(7-5의 마지막 블록).
-3. **hbbs**: 보관한 옛 실행 파일(`/root/hjv-backup/hbbs-before-<VERSION>`)을 넣고 조용한 시간에 hbbs만 다시 시작합니다. 로그인은 되지만 새 PC 묶기와 켜짐 확인은 안 되고, 0005가 있었다면 최소 버전 거절도 멈춥니다.
+3. **hbbs**: 보관한 옛 실행 파일(`/root/hjv-backup/hbbs-before-<VERSION>`)을 넣고 조용한 시간에 hbbs만 다시 시작합니다(1.9.3의 묶음 뒤에는 hbbr도 `hbbr-before-<VERSION>`으로 함께, 9-12의 '되돌리기'). 로그인은 되지만 새 PC 묶기와 켜짐 확인은 안 되고, 0005가 있었다면 최소 버전 거절도 멈춥니다.
 4. **중계기**(사용자, 7-0): `hjv-api admin relay revoke <중계기 ID>`. NAS에서는 사용자가 공유 폴더에 `hjv-relay.stop`을 두고 작업을 끕니다(재부팅 없이, [relay-dsm.md](relay-dsm.md) 10장). 폐기한 중계기의 키는 다시 승인되지 않습니다(`relay approve`가 거절). 잘못 폐기했으면 사용자가 NAS에서 중계기의 상태 폴더를 지워(같은 장의 "제거") 새 키와 새 등록 코드를 만든 뒤 7-11처럼 다시 승인받습니다.
 5. **hjv-api 새 판**: 설치 전에 남긴 스냅숏과 설정 파일을 옛 실행 파일과 함께 되돌립니다(7-14의 업그레이드). App Review 데모 계정(7-17)을 켠 뒤라면 먼저 7-17의 7번대로 그 계정과 설정 줄을 지웁니다.
 6. **앱을 1.5.1로**: 사용자에게 먼저 그 기기에서 로그아웃하라고 안내합니다. 로그인한 채로 1.5.1을 설치하면 설정이 남고, 1.5.1은 저장된 성명(또는 포탈 ID)을 연결하는 PC마다 보냅니다. 최소 버전 강제(7-10)가 켜진 뒤에는 이 길이 닫힙니다.
@@ -1166,23 +1166,31 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
 
 hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속되므로 아무도 모릅니다. 24시간 뒤 모든 PC가 한꺼번에 비밀번호 창으로 돌아갑니다. 그래서 감시를 둡니다. 동작 원리와 명령은 [server/api/README.md](../server/api/README.md)의 "Monitoring"과 "Backup and restore"에 있고, 시험 서버에서 한 연습의 기록은 [hjv-api-drill.md](hjv-api-drill.md)에 있습니다.
 
-- **감시**: `hjviewer-api.service`, 점검 유닛, 백업 유닛이 실패하면 `OnFailure=`로 경보 유닛(`hjviewer-api-alert@.service`)이 돕니다. 5분 타이머(`hjviewer-api-check.timer`)의 점검(`hjv-api check`)은 `report`의 줄이 아니라 소켓(`/run/hjviewer-api.sock`)의 `GET /api/hjv/source`와 관리 소켓의 `health`를 봅니다. 경보가 되는 것은 다음입니다.
+- **감시**: `hjviewer-api.service`, 점검 유닛, 백업 유닛이 실패하면 `OnFailure=`로 경보 유닛(`hjviewer-api-alert@.service`)이 돕니다. 1.9.3의 유닛부터는 `hjviewer-hbbs.service`와 `hjviewer-hbbr.service`도 같습니다(9-12, 아래 "경보 경로"). 5분 타이머(`hjviewer-api-check.timer`)의 점검(`hjv-api check`)은 `report`의 줄이 아니라 소켓(`/run/hjviewer-api.sock`)의 `GET /api/hjv/source`와 관리 소켓의 `health`를 봅니다. 경보가 되는 것은 다음입니다.
   - 소켓이나 관리 소켓이 답하지 않음
   - 묶음을 가진 PC 가운데 켜진 PC가 있는데 그중 어느 것도 10분 안에 동기화하지 않음. 켜진 PC는 hbbs가 저장된 키로 90초 안에 등록한 것으로 본 PC이고, 지난 4분 동안의 점검마다 그렇게 보인 것만 셉니다(막 깨어난 PC가 첫 동기화를 할 시간)
   - hbbs 콘솔이 답하지 않음
-  - SSO 호출 중지(지금 또는 지난 10분 안). `invalid_client`(7-15의 "SSO 자격 증명이 바뀔 때")와 주소 거절을 구분해 알립니다. 이 경보가 되풀이되면(앱에서는 새 로그인이 2분씩 통째로 막힘) 매일 보고에 그날의 정지와 SSO 오류의 줄 수를 넣습니다: `sudo journalctl --namespace=hjviewer -u hjviewer-api --since yesterday -o cat | grep -c 'login: SSO calls paused'`, 같은 명령의 `grep -c 'login: SSO error:'`(개수만). SSO 장애 없이 정지가 되풀이되면 한 ID가 정지를 계속 여는지 사용자가 봅니다(7-1의 5번 "실제 연세 SSO의 답")
+  - SSO 호출 중지(지금 또는 지난 10분 안). `invalid_client`(`sso_client`, 7-15의 "SSO 자격 증명이 바뀔 때")와 주소 거절(`sso_address`)을 그 밖의 실패(`sso`)와 구분해 알립니다. 이 경보가 되풀이되면(앱에서는 새 로그인이 2분씩 통째로 막힘) 매일 보고에 그날의 정지와 SSO 오류의 줄 수를 넣습니다: `sudo journalctl --namespace=hjviewer -u hjviewer-api --since yesterday -o cat | grep -c 'login: SSO calls paused'`, 같은 명령의 `grep -c 'login: SSO error:'`(개수만). SSO 장애 없이 정지가 되풀이되면 한 ID가 정지를 계속 여는지 사용자가 봅니다(7-1의 5번 "실제 연세 SSO의 답")
   - 명단에 없는 포탈 ID들의 SSO 호출이 한도를 채움(`sso_new`, 지난 10분 안, 열린 로그인에서만). 누군가 여러 포탈 ID에 비밀번호를 시험하고 있을 수 있으므로 7-13의 "비밀번호 시험이 의심될 때"대로 합니다
   - 연세 SSO의 사용자 정보 호출이 서로 다른 계정 3개를 10분 안에 잇달아 거절함(`sso_user`, 마지막 거절이 지난 10분 안). 모두가 거절되면 `HJV_API_SSO_CLIENT_ID`나 자격 증명 `hjviewer-sso-api-uuid`가 틀린 것이므로 7-13의 "모두가 거절될 때"대로 합니다
   - 1시간 넘게 묻지 않은 활성 NAS 중계기. NAS를 밤에 끄거나 재우는 곳에서는 그때마다 이 경보가 나므로, 그런 일정이 있으면 사용자에게 알려 기준을 정합니다(질문 15)
+  - PC들이 지난 5분 안에 동기화했는데 hbbs가 두 번의 점검 내내 그 PC를 하나도 켜진 것으로 보지 못함(`unseen`, 1.9.3의 hjv-api부터). PC는 hjv-api에 닿지만 hbbs에는 닿지 못하는 것이고, 그동안 아무도 PC에 연결하지 못합니다. nginx의 `/ws/id` 경로(5절의 첫 블록), 모든 등록을 거절하는 hbbs(9-7의 "hbbs를 다시 시작한 뒤" 블록의 규칙 줄, `access.conf`의 `KEY=`와 9-1의 selfcheck 줄), PC가 닿지 못하는 hbbs(`systemctl is-active hjviewer-hbbs`)를 봅니다. PC 몇 대만 등록하지 못하는 일, 컨트롤러 쪽이나 중계(hbbr)만의 고장, 콘솔이 답하지 않는 hbbs(위의 결과)는 이 결과가 아닙니다
+  - 기한이 있는 운영 파일(`review.conf`, `guest.conf`, `door2.conf`)이 7일 안에 끝남(`file_ending`), `UNTIL`이 지났는데 그대로 있음(`file_ended`), 있지만 쓰이지 않음(`file_refused`: 읽을 수 없거나 형식이 틀림), 1.9.3의 hjv-api부터. 아래 "운영 파일의 끝"
 
   꺼진 PC는 아무것도 말하지 않으므로 모든 PC가 잠든 밤은 경보가 아닙니다. 새 키로 다시 설치되어 그 PC에서 다시 로그인하기를 기다리는 PC(`report`의 needs-relogin)도 빼고 봅니다. 결과가 있으면 줄마다 저널에 오류를 쓰고 `/run/hjviewer-api-check/findings`에 남긴 뒤 유닛이 실패합니다. 이상이 없으면 저널에 한 줄입니다.
-- **경보 경로(질문 12)**: 경보 유닛은 언제나 저널(이름 공간 `hjviewer`)에 오류 한 줄을 씁니다. 텔레그램을 쓰지 않으면 이 줄이 경보이고, 운영 에이전트의 매일 보고가 그 수를 셉니다(개수만): `sudo journalctl --namespace=hjviewer -p warning --since yesterday -o cat | wc -l`과 `sudo /opt/hjviewer/bin/hjv-api admin report | sed -E 's/^(  active relay )[^:]*/\1…/'`(활성 중계기마다의 줄에서 중계기 ID를 지운 꼴, 7-0). nginx가 hjv-api 앞에서 끊은 로그인과 중계기 등록(주소별 한도)은 hjv-api에 닿지 않아 저널과 `report`에 없으므로, 그 수도 셉니다. 이 줄은 HJViewer 경로가 든 server 블록의 `error_log`에 남고, 그 블록에 자기 `error_log`가 없을 때만 http나 main의 것(보통 `/var/log/nginx/error.log`)에 남습니다. 사전 점검이나 `sudo nginx -T 2>/dev/null | grep -nE '^\s*error_log\s'`로 그 블록의 파일을 찾은 뒤 개수만 셉니다: `E=<그 파일>; sudo grep -c -E 'limiting (requests|connections).*zone "hjv_(login|login_conn|relay_hello)"' "$E"`. 그 `error_log`의 수준이 `error`보다 높으면(`crit` 등) 이 줄이 남지 않아 수가 늘 0이므로, 그때는 사용자에게 알립니다. 같은 주소(학내 NAT, 공용 Wi-Fi) 뒤의 누군가가 한도를 채우면 묶인 PC의 로그인도 nginx에서 막히므로, 이 수가 늘면 사용자에게 알립니다. 텔레그램으로 받기로 하면 사용자가 봇을 서버에 직접 넣습니다(에이전트 없이). 경보 유닛은 이 자격 증명이 있을 때만 가져옵니다(`ImportCredential=`).
+- **경보 경로(질문 12)**: 경보 유닛은 언제나 저널(이름 공간 `hjviewer`)에 오류 한 줄을 씁니다. 텔레그램을 쓰지 않으면 이 줄이 경보이고, 운영 에이전트의 매일 보고가 그 수를 셉니다(개수만): `sudo journalctl --namespace=hjviewer -p warning --since yesterday -o cat | wc -l`과 `sudo /opt/hjviewer/bin/hjv-api admin report | sed -E 's/^(  active relay )[^:]*/\1…/'`(활성 중계기마다의 줄에서 중계기 ID를 지운 꼴, 7-0). nginx가 hjv-api 앞에서 끊은 로그인, 이용 비밀번호, 중계기 등록(IPv4 주소 또는 IPv6 /64마다의 한도)은 hjv-api에 닿지 않아 저널과 `report`에 없으므로, 그 수도 셉니다. 이 줄은 HJViewer 경로가 든 server 블록의 `error_log`에 남고, 그 블록에 자기 `error_log`가 없을 때만 http나 main의 것(보통 `/var/log/nginx/error.log`)에 남습니다. 사전 점검이나 `sudo nginx -T 2>/dev/null | grep -nE '^\s*error_log\s'`로 그 블록의 파일을 찾은 뒤 개수만 셉니다: `E=<그 파일>; sudo grep -c -E 'limiting (requests|connections).*zone "hjv_((login|guest)(_net)?(_conn)?|relay_hello)"' "$E"`. 1.9.3의 zones 파일부터 로그인과 이용 비밀번호의 zone 이름에 `_net`이 붙으므로(9-12) 이 식은 옛 이름과 새 이름을 함께 셉니다(바꾸는 날에는 둘 다 나옴). 1.9.3 전의 식은 이용 비밀번호의 zone(`hjv_guest`, `hjv_guest_conn`)을 세지 않았습니다. 그 `error_log`의 수준이 `error`보다 높으면(`crit` 등) 이 줄이 남지 않아 수가 늘 0이므로, 그때는 사용자에게 알립니다. 같은 주소(학내 NAT, 공용 Wi-Fi. IPv6는 같은 /64, 곧 한 LAN이나 한 Wi-Fi. 1.9.3의 nginx 파일부터) 뒤의 누군가가 한도를 채우면 묶인 PC의 로그인도 nginx에서 막히므로, 이 수가 늘면 사용자에게 알립니다. 텔레그램으로 받기로 하면 사용자가 봇을 서버에 직접 넣습니다(에이전트 없이). 경보 유닛은 이 자격 증명이 있을 때만 가져옵니다(`ImportCredential=`).
   ```bash
   { printf 'TELEGRAM_BOT_TOKEN='; systemd-ask-password -n "bot token:"; printf '\nTELEGRAM_CHAT_ID=%s\n' '<채팅 번호>'; } |
     sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-telegram - /etc/credstore.encrypted/hjviewer-api-telegram
   sudo systemctl start hjviewer-api-alert@test.service   # 시험 메시지
   ```
   같은 유닛이 같은 방식으로 끝나고(systemd가 넘기는 `MONITOR_SERVICE_RESULT`, `MONITOR_EXIT_CODE`, `MONITOR_EXIT_STATUS`) 결과도 같으면 6시간에 한 번만 보내고, 그 밖에는 바로 보냅니다. 비정상 종료와 그 뒤의 시작 실패는 서로 다른 경보입니다. 메시지에는 유닛, 끝난 방식, 호스트 이름, 시각, 결과(개수와 상태)만 있고 사람, 기기, 주소, 비밀은 없습니다. 보내지 않으려면 그 자격 증명 파일을 지웁니다. 텔레그램을 쓰기로 정하면 [privacy.md](privacy.md) 9절에 경보 문구(위의 내용)가 텔레그램을 거친다는 한 줄을 두 언어로 더합니다.
+
+  1.9.3의 유닛부터 hbbs와 hbbr도 실패하면 경보가 돕니다(`OnFailure=`, 9-12). 실패로 치는 것은 0이 아닌 종료, 신호로 죽음(메모리 상한 1G의 OOM kill 포함), 시작 실패(hbbr의 `ExecStartPre`, 키 파일), 멈추기가 `TimeoutStopSec`를 넘어 SIGKILL된 것이고, `systemctl stop`과 `restart`로 제때 멈춘 것은 아닙니다. systemd 254부터(운영 서버는 255) `Restart=`가 곧 다시 시작하는 실패에도 돌므로, 실패마다 저널에 `alert: hjviewer-hbbs.service failed [<끝난 방식>]` 한 줄이고, 5초마다 죽는 고리면 5초마다 한 줄, 텔레그램은 같은 끝난 방식이면 6시간에 한 번입니다. 1.9.3의 hjv-api가 보내는 두 유닛의 메시지는 무엇이 멈췄는지 말하고(`hbbs(연결 서버)가 멈췄습니다. …`, `hbbr(중계 서버)가 멈춰 중계를 거치던 원격 세션이 끊겼습니다. …`), 확인 줄이 기본 저널입니다: `sudo journalctl -u hjviewer-hbbs -n 50`(또는 `-u hjviewer-hbbr`). hbbs와 hbbr은 이름 공간 `hjviewer`가 아니라 기본 저널에 쓰므로, 1.9.2의 hjv-api가 보낸 메시지의 확인 줄(`--namespace=hjviewer`, "유닛이 실패했습니다.")로는 아무것도 나오지 않습니다. 운영 에이전트는 그 저널을 붙이지 않고 `sudo journalctl -u hjviewer-hbbs --since -1h -o cat | grep -E '^Error|Caused|panicked' | cut -c1-160 | tail -3`의 까닭 줄만 보고합니다. 경보 줄 자체의 수는 `sudo journalctl --namespace=hjviewer -u 'hjviewer-api-alert@*' --since -1h -o cat | grep -c '^alert: '`입니다. 경보 경로를 시험하려고 hbbs를 죽이거나 `hjviewer-api-alert@hjviewer-hbbs.service.service`를 손으로 시작하지 않습니다(텔레그램에 가짜 경보가 감). 서 있는 결과 하나는 5분마다 err 두 줄(`check: <code>: …`와 `alert: …`), 하루 약 576줄을 매일 보고의 수에 더합니다.
+- **운영 파일의 끝**(1.9.3의 hjv-api부터): `review.conf`(7-17), `guest.conf`(9-4), `door2.conf`(8-4)는 `UNTIL`에 저절로 끝나고, 도구가 90일까지만 쓰므로 해마다 몇 번씩 끝을 맞습니다. 끝나는 것은 조용합니다(앱 쪽에서는 로그인 실패, 이용 비밀번호의 "닫힘", 문 2의 404). 그래서 5분 점검이 미리 알립니다. 세 파일의 상태는 `sudo /opt/hjviewer/bin/hjv-api admin report | grep '^operator file '`로 봅니다(파일마다 한 줄: `active until <UTC>, <n> days left`, `ended at <UTC>, <n> days ago, still installed`, `there but not used (the journal says why)`, `not there`, `not set`. ID, 코드, 주소가 없으므로 그대로 보고에 옮겨도 됨. 7-0은 `report` 전체를 여전히 막음). 운영 서버의 끝은 문 2 2026-11-29T15:00:00Z, 이용 비밀번호 2027-01-14T15:00:00Z, 심사 계정 2027-01-24T15:00:00Z이고, `file_ending`은 각각 그 7일 전부터입니다.
+  - `file_ending`: 계속 쓸지 사용자가 정합니다. 쓰면 더 늦은 `UNTIL`의 새 파일(`guest-conf.py`, `review-conf.py`, 문 2는 `hjv-release hbbs-conf --door2-until`)을 그 파일의 넣기 블록으로 넣고, `operator file` 줄에 새 끝이 보이는지 봅니다. 끝내려면 끝나게 두고 `file_ended`대로 합니다. 이 결과는 파일을 바꾸거나 지우는 것 말고는 멈출 길이 없어, 마지막 주에 텔레그램이 6시간마다(하루 4번, 약 28번) 옵니다. 메시지를 멈추려고 파일을 일찍 지우지 않습니다(그러면 그 기능이 일찍 끝남).
+  - `file_ended`: 그 파일이 여는 것(App Review 계정, 이용 비밀번호, 문 2)은 이미 닫혔습니다. 새 파일을 넣거나 파일을 지웁니다. 문 2는 8-4 "닫기"의 순서(먼저 S2 문구)로 지우고, 심사 계정은 7-17의 6번입니다. 다음 점검이 통과합니다.
+  - `file_refused`: 저널의 `<파일의 머리> is not used: <까닭>` 줄(값은 없음)을 봅니다: `sudo journalctl --namespace=hjviewer -u hjviewer-api --since -1d -o cat | grep -E "(App Review file|access password's file|door 2's file) .*is not used" | tail -3`. 파일을 다시 만들어 넣거나 지웁니다. 까닭이 `it cannot be read`인데 파일이 맞아 보이면 경로의 권한(`sudo namei -l /etc/hjviewer/guest.conf`: hjv-api는 `hjviewer-api`로 돌고 `/etc/hjviewer`를 지나 파일을 읽어야 함)과 유닛의 샌드박스 줄을 봅니다.
 - **hjv-api가 멈춰 있는 동안**: 원격 세션과 ID·비밀번호 연결은 그대로이고, 비밀번호 없는 연결도 PC가 받아 둔 목록으로 하루 동안 계속됩니다. 달라지는 것은 웹 서버가 hjv-api로 넘기는 계정 경로(`/api/login`, `/api/currentUser`, `/api/logout`, `/api/users`, `/api/peers`, `/api/hjv/…`)의 답입니다. 세 웹 서버 모두 그 경로에 503과 JSON `{"error":"HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다. 잠시 뒤 다시 시도해 주세요."}`로 답하고, 로그인한 앱은 "HJViewer 서버를 지금 쓸 수 없습니다" 안내를 보입니다. 그 밖의 `/api/`(`/api/heartbeat` 등)는 전처럼 404입니다.
   - **nginx**(7-8의 전환을 한 서버): `/api/login-options`와 `/api/device-group/accessible`은 nginx가 직접 답하므로 그대로입니다. 비정상 종료는 systemd가 5초 뒤 스스로 다시 시작하고 경보가 갑니다. 그래도 503이 이어지면 다음을 보고 사용자에게 알립니다.
     ```bash
@@ -1195,7 +1203,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
     - 이런 서버에 맞는 앱은 계정 공개키(`HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`)를 넣지 않은 빌드입니다. 그런 앱에는 로그인이 없어 계정 경로를 부르지 않습니다([architecture.md](architecture.md) 5-9). 계정 공개키를 넣은 앱을 이런 서버에 붙이면 로그인할 때 위 문구가 나옵니다. 워크플로를 직접 실행한 빌드는 공개키가 없어도 되지만, 비공개 빌드 저장소를 거친 1.6.0 출시 빌드는 계정 공개키가 있어야 통과합니다([ci.md](ci.md)의 "계정 기능의 공개키").
     - Caddy는 `/api/login-options`와 `/api/device-group/accessible`에 직접 답하고, Apache는 이 둘도 hjv-api로 넘기므로 함께 503입니다. nginx와 달리 두 웹 서버에는 로그인과 중계기 등록의 주소별 한도가 없고 hjv-api 자신의 한도만 있습니다.
     - 이 런북 밖에서 hjv-api를 직접 붙여 둔 서버라면 nginx와 같은 순서(상태, 시작, `selfcheck`)로 봅니다. 소켓 유닛의 그룹이 그 웹 서버의 작업 프로세스 그룹이어야 합니다(7-3의 드롭인).
-- **백업**: 매일 타이머(`hjviewer-api-backup.timer`)가 `hjv-api admin backup --keep-days 14 /var/lib/hjviewer-api/backup`(SQLite 온라인 백업)으로 그 폴더에 root만 읽는 0600 파일(`hjv-api-<UTC 시각>.sqlite3`)을 만들고 14일이 지난 백업을 지웁니다. 아래의 복원 전 사본과 업그레이드 스냅숏도 이 폴더에 두므로 14일 뒤 함께 지워집니다. 디스크 손상이나 잘못된 업그레이드에서 되돌리는 용도입니다. 자격 증명, `/var/lib/systemd/credential.secret`, 운영자 기록은 넣지 않습니다. 서버 밖 사본은 1.6.0에서 만들지 않습니다(질문 8). 디스크를 통째로 잃으면 사용자 약 10명이 기기마다 한 번 다시 로그인합니다.
+- **백업**: 매일 타이머(`hjviewer-api-backup.timer`)가 `hjv-api admin backup --keep-days 14 /var/lib/hjviewer-api/backup`(SQLite 온라인 백업)으로 그 폴더에 root만 읽는 0600 파일(`hjv-api-<UTC 시각>.sqlite3`)을 만들고 14일이 지난 백업을 지웁니다. 1.9.3의 hjv-api부터는 폴더의 가장 새 백업 셋(방금 만든 것 포함)은 나이와 상관없이 남깁니다. 나이는 서버 시계로 재므로, 시계가 크게 앞서 가면 다음 실행이 좋은 백업을 모두 지우고 그때의 DB 사본만 남기기 때문입니다. 그래도 시계가 뛰면 한 번에 셋 말고는 모두 지워지므로, 시계 사고 뒤에는 다음 03:30 전에 `sudo ls -lt /var/lib/hjviewer-api/backup | head -5`(파일 이름과 시각뿐)를 봅니다. 아래의 복원 전 사본과 업그레이드 스냅숏도 이 폴더에 두므로 14일 뒤 함께 지워집니다. 디스크 손상이나 잘못된 업그레이드에서 되돌리는 용도입니다. 자격 증명, `/var/lib/systemd/credential.secret`, 운영자 기록은 넣지 않습니다. 서버 밖 사본은 1.6.0에서 만들지 않습니다(질문 8). 디스크를 통째로 잃으면 사용자 약 10명이 기기마다 한 번 다시 로그인합니다.
 - **운영자의 서버 밖 백업**: 사용자가 따로 두는 서버 백업(예: 매일 NAS로 보내는 백업)이 `/etc/hjviewer`와 `/var/lib/hjviewer`를 담을 수 있습니다. 그러면 문 2의 코드(`door2.conf`), hjv-api 설정 파일(최고운영자의 포탈 ID, 학교 주소 대역), hbbs 개인키도 그 백업에 들어가므로, 그 백업은 사용자 계정만 읽을 수 있어야 합니다. hjv-api의 DB(`/var/lib/hjviewer-api`)와 자격 증명(`/etc/credstore.encrypted`, `/var/lib/systemd/credential.secret`)은 그 백업에도 넣지 않습니다(위의 "서버 밖 사본은 1.6.0에서 만들지 않습니다").
 - **복원**: 백업은 그 뒤에 폐기한 키와 토큰, 스위치 변경, 묶음 해제, 중계기 폐기를 되돌리므로, 복원은 그 자체로 사고 대응입니다. 복원한 백업은 비밀번호 없는 연결이 모든 계정에서 꺼진 채로 시작합니다. hjv-api가 백업 파일을 처음 열 때 첫 응답 전에 끄고 저널에 남깁니다. PC들은 2분마다 동기화하므로, 그렇지 않으면 시작과 다음 명령 사이에 백업 때의 스위치와 그 뒤 폐기한 키가 담긴 서명된 목록을 받을 수 있습니다. DB 파일을 바꾸는 일은 7-0의 "하지 말 것"의 예외이므로, 사용자가 직접 하거나 사용자가 이 복원을 승인한 뒤에만 합니다. 파일 내용은 출력하지 않습니다.
   ```bash
@@ -1263,7 +1271,7 @@ for name, sql, arg in (
 ```
 
 - **최고운영자 정하기**(사용자 승인): 최고운영자는 앱에서 이 서비스의 사용자와 PC(이름, 주소)를 보기만 하는 사람입니다([server/api/README.md](../server/api/README.md)의 "Admin overview"). 누구로 할지는 사용자가 정하고, 포탈 ID는 저장소에도 대화에도 두지 않으므로 사용자가 서버에서 직접 넣습니다: `sudoedit /etc/hjviewer/hjviewer-api.env`에서 `HJV_API_OPERATORS=` 줄 끝에 포탈 ID를 적습니다(여럿이면 쉼표로). 운영 에이전트는 사용자 승인을 받아 조용한 시간에 `sudo systemctl restart hjviewer-api`와 첫 줄의 확인만 합니다(`sudo /opt/hjviewer/bin/hjv-api admin operators | head -1`, 7-0). 그 첫 줄이 `super operators (HJV_API_OPERATORS): 1 configured, 1 with an account`이고, 사용자가 본 그 사람의 줄에서 `account`와 `allowlist`가 `yes`이면 됩니다(아직 로그인하지 않았으면 `account`가 `no`이니 로그인한 뒤 다시 봅니다. 열린 로그인에서는 처음 로그인할 때 명단에 저절로 올라 `allowlist`가 `yes`가 됩니다. `blocked`이면 막힌 것이니 사용자가 `unblock`합니다. 명단 방식(`HJV_API_LOGIN=list`)에서 `no`이면 사용자가 `allow import`로 넣습니다). 출력의 ID는 가려져 있고, 그 줄의 꼬리표가 운영자 기록에 남는 `cmd="app overview" acct=<꼬리표>` 줄의 것입니다. 그만두게 할 때는 그 줄의 값을 지우고 같은 방법으로 다시 시작합니다. 볼 때마다 운영자 기록과 저널에 한 줄씩 남는다는 것은 개인정보 처리방침에 있습니다([privacy.md](privacy.md) 3절, 9절).
-- **SSO 자격 증명이 바뀔 때**: hjv-api는 같은 서버의 WordPress SSO 로그인 플러그인(projecttf-auth)과 같은 SSO 등록을 씁니다. 그 플러그인의 client secret이나 api uuid가 바뀌면 같은 날 사용자가 7-4의 (나)처럼 `hjviewer-sso-client-secret`(또는 `hjviewer-sso-api-uuid`)를 다시 만들고 `sudo systemctl restart hjviewer-api`를 합니다. 그대로 두면 어느 값이 바뀌었는지에 따라 다르게 드러납니다. client secret이 바뀌었으면 토큰 호출이 `invalid_client`로 거절되어 모든 로그인이 "연세 인증 서버에 지금 연결할 수 없습니다"가 되고 감시가 `sso` 경보를 냅니다. api uuid(또는 설정 파일의 `HJV_API_SSO_CLIENT_ID`)가 바뀌었으면 사용자 정보 호출이 모두를 거절할 수 있어, 맞는 비밀번호에도 '이 계정으로는 HJViewer를 쓸 수 없습니다. …'가 나오고 감시가 `sso_user` 경보를 냅니다(7-13의 "모두가 거절될 때").
+- **SSO 자격 증명이 바뀔 때**: hjv-api는 같은 서버의 WordPress SSO 로그인 플러그인(projecttf-auth)과 같은 SSO 등록을 씁니다. 그 플러그인의 client secret이나 api uuid가 바뀌면 같은 날 사용자가 7-4의 (나)처럼 `hjviewer-sso-client-secret`(또는 `hjviewer-sso-api-uuid`)를 다시 만들고 `sudo systemctl restart hjviewer-api`를 합니다. 그대로 두면 어느 값이 바뀌었는지에 따라 다르게 드러납니다. client secret이 바뀌었으면 토큰 호출이 `invalid_client`로 거절되어 모든 로그인이 "연세 인증 서버에 지금 연결할 수 없습니다"가 되고 감시가 `sso_client` 경보를 냅니다. api uuid(또는 설정 파일의 `HJV_API_SSO_CLIENT_ID`)가 바뀌었으면 사용자 정보 호출이 모두를 거절할 수 있어, 맞는 비밀번호에도 '이 계정으로는 HJViewer를 쓸 수 없습니다. …'가 나오고 감시가 `sso_user` 경보를 냅니다(7-13의 "모두가 거절될 때").
 - **목록 키 바꾸기**(목록 키 1번이 샜거나 잃었을 때):
   1. 사용자가 오프라인 매체의 목록 키 2번(`hjviewer-list-2.key`)을 7-4의 (가) 3번처럼 표준 입력으로 넣습니다. 자격 증명 이름은 그대로 `hjviewer-api-list-key`이고(명령의 `--name=`과 파일 이름만 그것으로 바꾸고 `--tpm2-pcrs=`(7-4에서 `--with-key=host`를 골랐으면 그것)는 그대로 둠), 그 안의 키가 2번으로 바뀝니다.
   2. 설정 파일에 `HJV_API_LIST_KID=2`를 넣고 `sudo systemctl restart hjviewer-api`, `admin selfcheck`로 확인합니다(`HJV_API_TRUST_PUBKEYS`는 그대로 `1:…,2:…`).
@@ -1296,11 +1304,13 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
 
 1.9.1부터 심사자는 앱에서 이 계정을 지울 수 있습니다(지침 5.1.1(v), 설정 → 계정 → [계정 삭제]). 계정과 키·토큰은 다른 계정처럼 지워지지만 명단 항목은 남고 파일도 그대로이므로, 다음 심사 로그인은 이름 "App Review"의 빈 계정으로 시작합니다. 1.9.2부터는 이 계정이 가진 데모 PC가 같은 트랜잭션에서 만든 같은 ID의 새 빈 계정으로 넘어가, 묶음과 출입증이 이어지고 데모 PC가 온라인으로 남습니다(저널 줄 끝에 `, 1 demo PCs kept`). 심사자의 내 PC 목록에는 데모 PC가 보이지 않고(예전처럼 빈 목록), 심사자는 데모 PC의 ID와 영구 비밀번호로 연결합니다. 운영자가 할 일은 없습니다(저널 줄은 5번).
 
+기록(2026-10-29, KST): 9-11의 hjv-api(09:37:53) 뒤, 새 `review.conf`(`UNTIL=2027-01-24T15:00:00Z`, 데모 PC 한 대)를 11:18:50에 1번 블록으로 넣었고(`OK_PC=1`, 다시 시작 없음), hjv-api가 그 파일을 읽었습니다(`1 demo PC(s)`). 데모 PC는 "데모 PC 묶기"대로 묶여 온라인입니다. 소유자가 그날 메시지의 6·7단계(iPhone의 확인 로그인과 [계정 삭제], iPad 자체 시험)를 건너뛰었으므로 4번의 [계정 삭제]가 없었고, **데모 PC의 HJViewer는 App Review 계정으로 로그인된 채입니다**(심사 메모의 데모 PC 문단이 이 상태를 말함, [store/README.md](../store/README.md)의 "심사 메모"). 1.9.2(빌드 263010510)는 13:18에 다시 제출했고, 등록되지 않은 앱(Unlisted) 요청은 같은 날 냈습니다. App Review는 2026-11-03에 지침 3.2로 다시 거절했고(Unlisted 요청의 결과를 기다린 뒤 다시 낼 것), 소유자가 2026-11-04에 답했습니다.
+
 - 파일은 사용자가 에이전트 세션이 아닌 자기 터미널(Linux, macOS나 WSL)에서 `python3 -I deploy/review-conf.py --until <YYYY-MM-DD> --out ~/review.conf [--pc <데모 PC ID>]...`로 만들어(ID와 비밀번호는 도구가 터미널에서 물음) 운영 에이전트의 홈으로 보냅니다. 형식은 [deploy/review.conf.example](../deploy/review.conf.example)에 있습니다.
 - **데모 PC 줄**(1.8.0, 교직원 전용): 출입 확인을 켠 뒤(`access.conf`의 `MODE=enforce`) 이 계정은 `PC=` 줄의 PC(1~3대)에만 연결합니다. 이 줄이 없으면 아무 PC에도 연결하지 못합니다. `--pc`를 주면 도구가 이 줄을 씁니다. 데모 PC를 둘지, 어느 PC로 할지는 사용자가 정합니다(추천: 웹캠을 붙인 전용 물리 Windows PC 한 대. 심사 메모가 카메라 보기가 열린다고 말하기 때문입니다. VM은 웹캠이 없어 카메라 보기가 "No cameras" 오류이므로, 심사 메모의 웹캠 없음 변형(store/README.md의 "심사 메모")과 함께만 씁니다. 운영자의 업무 PC는 쓰지 않음). 이 줄은 출입증을 아는 새 hjv-api만 읽습니다. 옛 hjv-api는 이 줄이 있는 파일 전체를 거부해 계정이 없어지므로, 새 hjv-api를 넣은 뒤에 이 줄이 든 파일을 넣습니다.
 - **데모 PC의 묶음**(1.9.2, 9-11의 hjv-api부터): 데모 PC는 교직원 계정이 아니라 **이 계정으로 묶습니다**(아래 "데모 PC 묶기"). 묶인 데모 PC는 동기화마다 등록만 하는 출입증(`staff`/`pc`, 24시간, `UNTIL`을 넘지 않음)을 받아 재부팅해도 온라인이고, 심사자가 앱에서 이 계정을 지워도, 운영자가 `user revoke-all`을 해도, hjv-api가 다시 시작해도 그대로 남습니다. 비밀번호 없는 연결은 받지 않으므로(스위치와 상관없이) 심사자는 영구 비밀번호로 연결합니다. 교직원 계정에 묶어 둔 PC는 그 계정의 것으로 남고(이 계정의 로그인은 `other_account`) 그 계정을 앱에서 지우면 풀리므로, 먼저 그 PC에서 그 교직원 로그인을 로그아웃해 풉니다. 1.9.2 전의 hjv-api에서는 이 계정이 PC를 묶지 못합니다.
 - 운영 에이전트는 이 파일을 출력하지 않고(`cat`, `less` 등), ID를 보고·대화·명령 인자에 옮기지 않습니다. 옮겨도 되는 것은 `UNTIL`과 저널의 꼬리표뿐입니다. 이 계정으로 로그인해 보지 않습니다. 확인은 사용자가 앱으로 합니다(4번).
-- 아래 명령의 `T`는 이 계정의 꼬리표입니다(`T='<꼬리표>'`로 둠). 2번의 read 줄에 처음 나오고, 보고(8번)마다 적습니다. 저널은 30일만 남으므로 그 뒤에는 보고에 적은 값을 씁니다. 저널에 아직 있으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -o cat | grep 'App Review file (HJV_API_REVIEW_FILE) read:' | grep -o 'acct=[0-9a-f]\{16\}' | tail -1`로도 얻습니다.
+- 아래 명령의 `T`는 이 계정의 꼬리표입니다(`T='<꼬리표>'`로 둠). 2번의 read 줄에 처음 나오고, 보고(8번)마다 적습니다. 저널은 30일만 남으므로 그 뒤에는 보고에 적은 값을 씁니다. 저널에 아직 있으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -o cat | grep 'App Review file (HJV_API_REVIEW_FILE) read:' | grep -o 'acct=[0-9a-f]\{16\}' | tail -1`로도 얻습니다. 그 줄의 `until`과 데모 PC 수까지 보려면 `grep -o` 없이 2번 블록의 마지막 줄을 `--since` 없이 돌립니다(`… -o cat | grep -e 'App Review file (HJV_API_REVIEW_FILE)' -e 'no App Review account' | tail -2`, 이 계정의 줄이라 볼 수 있음, 7-0). read 줄은 파일을 바꾼 뒤 처음 읽힐 때(보통 다음 로그인) 한 번만 남으므로 `--since -1min`에는 보통 나오지 않습니다.
 - **데모 PC 묶기**(1.9.2, 사용자와 운영 에이전트, 9-11의 hjv-api가 돈 뒤): 순서가 중요합니다. `PC=` 줄의 ID는 데모 자격 증명을 가진 누구나 이 계정에 묶을 수 있고, hbbs는 처음 등록한 키로 그 ID를 기억하므로, **아직 hbbs가 모르는 ID를 미리 넣으면** 그 ID를 먼저 자기 키로 등록한 사람이 그 ID를 이 계정에 묶어 심사자를 자기 PC로 부를 수 있습니다.
   1. 사용자가 데모 PC에 HJViewer 1.9.2를 설치하고 켭니다. 출입 확인이 켜진 서버는 아직 그 PC의 등록을 받지 않지만(오프라인) 그 키는 기억합니다. 사용자가 데모 PC의 ID를 메모해 둡니다(보고와 대화에는 적지 않음). 그 PC의 권한 설정에서 'Enable recording session'과 'Enable remote restart'를 끕니다. iOS 앱은 세션을 녹화하지 않는데, PC가 녹화를 허락하면 세션 메뉴에 눌러도 아무 일도 하지 않는 녹화 항목이 보이기 때문입니다(끄면 그 항목이 사라짐). 원격 재시작은 심사자가 데모 PC를 다시 시작하지 않게 끕니다.
   2. 사용자가 `--pc <그 ID>`로 파일을 만들어 보내고, 운영 에이전트가 1번 블록으로 넣은 뒤(지금 파일의 `PC=` 줄과 다르면 블록이 멈추므로, 데모 PC를 넣는 파일이라고 사용자가 확인한 뒤 `OK_PC=1`로), `PC=`의 ID마다 hbbs가 키를 아는지 봅니다. ID는 파일에서 바로 넘기므로 화면에 나오지 않습니다. `PC=`의 ID마다 한 줄이 나오고 모두 `known`이어야 합니다. `unknown`이 하나라도 있으면 멈추고 보고합니다(1단계가 아직이거나 ID가 틀림). `no answer`는 hbbs 콘솔이 답하지 않은 것이니 멈추고 보고합니다.
@@ -1344,7 +1354,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    sudo install -o root -g hjviewer-api -m 0640 "$SRC" /etc/hjviewer/review.conf.new &&
      sudo mv -f /etc/hjviewer/review.conf.new /etc/hjviewer/review.conf && sudo rm -f "$SRC"
    ```
-   새 `UNTIL`이나 새 비밀번호로 다시 만든 파일은 `PC=` 줄이 지금 파일과 같아야 합니다(도구에 같은 `--pc`를 같은 순서로). 다르면 블록이 ID를 보이지 않고 멈춥니다. 사용자가 데모 PC를 더하거나 빼는 것이라고 확인하면("데모 PC 묶기"의 6단계) `OK_PC=1`로 다시 합니다. 심사 중에 `PC=` 줄이 빠진 파일이 들어가면 데모 PC는 새 출입증을 받지 못해 최대 24시간 뒤 오프라인이 되고, 그 사이 심사자가 앱에서 계정을 지우면 데모 PC가 계정과 함께 풀립니다. 바꾼 파일은 이 계정의 다음 로그인이나 요청 때 읽힙니다(교직원 로그인으로는 읽히지 않음). 그래서 바꾼 뒤에는 사용자가 앱으로 한 번 로그인해 확인하고(심사 중이면 4번과 달리 계정은 지우지 않음), 운영 에이전트는 그 뒤 저널의 read 줄을 봅니다(2번 블록의 마지막 줄, `--since`만 넓혀서). 새 비밀번호로 바꾼 파일이면(사용자가 알려 줌) 옛 비밀번호로 받은 세션은 파일을 바꿔도 끝나지 않으므로 `sudo /opt/hjviewer/bin/hjv-api admin user revoke-all "tag:$T"`로 끝냅니다.
+   새 `UNTIL`이나 새 비밀번호로 다시 만든 파일은 `PC=` 줄이 지금 파일과 같아야 합니다(도구에 같은 `--pc`를 같은 순서로). 다르면 블록이 ID를 보이지 않고 멈춥니다. 사용자가 데모 PC를 더하거나 빼는 것이라고 확인하면("데모 PC 묶기"의 6단계) `OK_PC=1`로 다시 합니다. 심사 중에 `PC=` 줄이 빠진 파일이 들어가면 데모 PC는 새 출입증을 받지 못해 최대 24시간 뒤 오프라인이 되고, 그 사이 심사자가 앱에서 계정을 지우면 데모 PC가 계정과 함께 풀립니다. 바꾼 파일은 이 계정의 다음 로그인이나 요청 때 읽힙니다(교직원 로그인으로는 읽히지 않음). 그래서 바꾼 뒤에는 사용자가 앱으로 한 번 로그인해 확인하고(심사 중이면 4번과 달리 계정은 지우지 않음), 운영 에이전트는 그 뒤 저널의 read 줄을 봅니다(2번 블록의 마지막 줄을 `--since` 없이. 마지막 줄이 가장 새 read 줄). 새 비밀번호로 바꾼 파일이면(사용자가 알려 줌) 옛 비밀번호로 받은 세션은 파일을 바꿔도 끝나지 않으므로 `sudo /opt/hjviewer/bin/hjv-api admin user revoke-all "tag:$T"`로 끝냅니다.
 2. **새 hjv-api와 설정**(처음 한 번, 사용자 승인 뒤 조용한 시간에). 이 계정은 `HJV_API_REVIEW_FILE`을 아는 hjv-api에서만 됩니다. 2026-10-15부터 운영 중인 hjv-api(3b283b2, 7-14)는 이 이름을 몰라서, 설정 파일에 이 줄이 있으면 `unknown setting HJV_API_REVIEW_FILE`로 시작하지 않고, 그동안 로그인과 PC 동기화가 모두 멈춥니다. 그래서 먼저 이 기능이 든 새 서버 묶음으로 hjv-api만 바꿉니다. 7-14의 "업그레이드"대로 스냅숏, 옛 실행 파일, 설정 파일을 남긴 뒤 6절 "B 경로 업데이트"의 4번을 합니다(hbbs와 hbbr은 다시 시작하지 않음). 그다음 아래 블록으로 설정 줄을 넣고 다시 시작합니다. 첫 줄은 설치된 hjv-api가 이 이름을 아는지 봅니다.
    ```bash
    sudo grep -qa HJV_API_REVIEW_FILE /opt/hjviewer/bin/hjv-api || { echo 'STOP: 설치된 hjv-api가 HJV_API_REVIEW_FILE을 모름(먼저 새 묶음으로 바꿈)'; exit 1; }
@@ -1377,7 +1387,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    echo "$J" | grep -c "login: a demo PC joined the App Review account (acct=$T"   # 데모 PC를 묶은 수(1.9.2): 사용자가 묶은 때만 늘어야 함
    echo "$J" | grep -c "account delete: refused from a demo PC of the App Review account (acct=$T"   # 데모 PC 자신의 [계정 삭제](1.9.2, 거절됨)
    ```
-   데모 PC를 묶은 줄이 사용자가 묶지 않은 날에 늘었으면 바로 보고합니다("데모 PC 묶기"의 4단계).
+   데모 PC를 묶은 줄이 사용자가 묶지 않은 날에 늘었으면 바로 보고합니다("데모 PC 묶기"의 4단계). 날을 넘는 기간의 수(심사 기간, 확인 로그인과 그 뒤의 삭제가 다른 날)는 `J=` 줄의 `--since yesterday` 대신 그 기간이 시작한 때로 셉니다. 보통은 그 기능이 든 hjv-api가 다시 시작한 시각(9-11이나 9-12의 보고에 적은 `ActiveEnterTimestamp`)을 UTC로 적습니다(예: `--since '2026-10-29 00:37:53 UTC'`). `--since today`나 `yesterday`로는 날을 넘는 수가 빠지고, 그 전의 이 계정 줄까지 셀 수 있습니다. 데모 PC의 지금 상태는 "데모 PC 묶기" 4단계의 블록으로 봅니다(그 블록의 `joined` 줄은 `--since today`라 묶은 날이 아니면 0이 맞음).
 6. **끝내기**(심사가 끝났거나 사용자가 정한 때, 사용자 승인 뒤): 파일을 지우면 그 계정의 토큰이 바로 멈추고 앱은 다음 요청에서 로그아웃됩니다. 그다음 `admin user delete`로 계정(키, 토큰, 명단 항목)을 지웁니다. **데모 PC를 끝내는 것도 이 `user delete`입니다**: 데모 PC가 풀리고 다음 동기화(보통 2분)에 서명된 `revoked`를 받아 몇 분 안에 오프라인이 됩니다. 파일만 지우면 데모 PC는 새 출입증을 받지 못할 뿐, 받아 둔 출입증으로 최대 24시간(`UNTIL`까지) 더 등록되어 있습니다. `HJV_API_REVIEW_FILE` 줄은 두어도 됩니다(파일이 없으면 계정도 없음). hjv-api를 이 기능 전의 판으로 되돌릴 때만 지웁니다(7번).
    ```bash
    T='<꼬리표>'                                     # ← 보고에 적은 이 계정의 꼬리표
@@ -1385,7 +1395,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    sudo rm /etc/hjviewer/review.conf
    sudo /opt/hjviewer/bin/hjv-api admin user delete "tag:$T"
    ```
-   심사자가 앱에서 이미 지웠어도 데모 PC를 가진 새 계정이 남으므로 `user delete`는 그 계정과 데모 PC를 함께 지우고 풉니다(`deleted the account with <n> devices, …`). 데모 PC가 없던 계정을 심사자가 지웠고 그 뒤 다시 로그인하지 않았으면 `no such account`로 끝나고 명단 항목만 남습니다. 사람의 포탈 ID가 아니므로 그대로 둡니다(계정 없는 항목은 명단에 오른 지 1년 뒤의 정리가 지움). 끝낸 뒤 `sudo /opt/hjviewer/bin/hjv-api admin binding list | awk -v t="$T" '$3 == t' | wc -l`이 0인지 봅니다.
+   심사자가 앱에서 이미 지웠어도 데모 PC를 가진 새 계정이 남으므로 `user delete`는 그 계정과 데모 PC를 함께 지우고 풉니다(`deleted the account with <n> devices, …`). 데모 PC가 없던 계정을 심사자가 지웠고 그 뒤 다시 로그인하지 않았으면 `no such account`로 끝나고 명단 항목만 남습니다. 사람의 포탈 ID가 아니므로 그대로 둡니다(계정 없는 항목은 명단에 오른 지 1년 뒤의 정리가 지움). 끝낸 뒤 `sudo /opt/hjviewer/bin/hjv-api admin binding list | awk -v t="$T" '$3 == t' | wc -l`이 0인지 봅니다. 1.9.3의 hjv-api부터 5분 점검은 `UNTIL` 7일 전부터 `file_ending`, 지난 뒤 파일이 남아 있으면 `file_ended`입니다(7-14). 심사가 이어지면 그 전에 새 `UNTIL`의 파일을 1번으로 넣습니다(운영 서버의 파일은 2027-01-24T15:00:00Z까지).
 7. **되돌리기**(hjv-api를 이 기능 전의 판으로 되돌릴 때, 사용자 승인 뒤): 옛 판은 `HJV_API_REVIEW_FILE`을 몰라 그 줄이 있으면 시작하지 않고, 이 계정을 따로 다루지도 않습니다. 옛 판에서는 이 계정의 토큰이 파일이나 `UNTIL`과 상관없이 보통 토큰처럼 통하고(쓰지 않아도 90일), 새 버전과 짧은 링크도 받습니다. 그래서 새 판이 도는 동안 먼저 계정을 지우고, 설정 줄을 지운 뒤 옛 실행 파일로 바꿉니다. 1.9.2의 hjv-api(9-11)를 그 전 판(1.9.1의 b389ea2 등)으로만 되돌릴 때도 **먼저 데모 PC를 풉니다**(아래 블록의 `user delete`, 또는 사용자의 `binding revoke`, 7-0). 옛 판은 PC를 가진 이 계정의 로그인을 `review-existing`으로 거절하고, 묶인 데모 PC에는 교직원 PC처럼 `staff`/`both`를 주기 때문입니다.
    ```bash
    T='<꼬리표>'                                     # ← 보고에 적은 이 계정의 꼬리표
@@ -1400,6 +1410,15 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    ```
    새 판이 3b283b2에 이 기능만 더한 판이면 DB 스키마가 같아 이 블록으로 끝납니다. 다른 서버 변경도 함께 들어간 판이면 앞의 세 줄 뒤에 7-14의 "업그레이드"대로 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다.
 8. **보고**: `review.conf <넣음 | 바꿈 | 지움>, UNTIL <UTC>, 데모 PC <n>대(binding list의 묶음 <n>, disabled present <n>), hbbs online <n>/<n>, sync pc <n>, acct=<꼬리표>, 저널 <read | is not used <이유> | no App Review account>, 어제 로그인 <n>줄, 틀린 비밀번호 <n>줄, ID 한도 <n>줄, 앱 삭제 <n>줄, 데모 PC 묶음 <n>줄, 데모 PC의 삭제 거절 <n>줄, user delete <했음 | 안 함 | no such account>`. ID와 비밀번호, 데모 PC의 ID는 적지 않습니다.
+9. **막기의 개수**(제출 전과 심사 중, 사용자 승인 뒤, 읽기만): 심사자는 대개 한국 밖의 망에서 시험하므로, 서버 전체와 `/ws/`에 걸리는 막기가 한국 밖의 주소를 막는지 개수로만 봅니다. 규칙과 주소는 찍지 않고, whois를 하지 않으며(설치하지 않고, 주소를 서버 밖으로 보내고, 등록자의 이름이 나옴), 차단 목록·방화벽·fail2ban은 바꾸지 않습니다(맨 앞의 "하지 말 것", 차단 목록은 다른 사이트의 설정). `ufw status`, `iptables -S`, `nft list ruleset`, `fail2ban-client status <jail>`을 그대로 돌리면 규칙과 주소를 찍으므로 아래 꼴로만 셉니다.
+   ```bash
+   echo "(가) nginx deny in 17.0.0.0/8: $(sudo nginx -T 2>/dev/null | sed 's/#.*//' | grep -oE '\bdeny[[:space:]]+[0-9.]+(/[0-9]+)?[[:space:]]*;' | grep -cE 'deny[[:space:]]+17\.')"
+   echo "(나) nginx deny of a /0-/16: $(sudo nginx -T 2>/dev/null | sed 's/#.*//' | grep -oE '\bdeny[[:space:]]+[0-9.]+/([0-9]|1[0-6])[[:space:]]*;' | wc -l)"
+   echo "(다) firewall rules by country or of a /0-/16: $({ sudo iptables-save; sudo nft list ruleset; } 2>/dev/null | grep -iE '\b(drop|reject)\b' | grep -ciE '([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|1[0-6])\b|geoip|src-cc|country')"
+   echo "(다) /0-/16 in sets: $({ sudo nft list sets; sudo ipset list; } 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|1[0-6])\b' | wc -l)"
+   echo "(다) fail2ban bans in 17.0.0.0/8: $(for j in $(sudo fail2ban-client status 2>/dev/null | sed -n 's/.*Jail list:[[:space:]]*//p' | tr ',' ' '); do sudo fail2ban-client status "$j" | sed -n 's/.*Banned IP list:[[:space:]]*//p' | tr -s ' \t' '\n' | grep -c '^17\.'; done | awk '{ s += $1 } END { print s + 0 }')"
+   ```
+   (가)는 nginx가 읽는 `deny`(매일 20:00의 자동 차단이 쓰는 목록 포함) 가운데 Apple의 17.0.0.0/8, (나)는 /0–/16 대역(`deny all`은 세지 않음), (다)는 호스트 방화벽의 국가 단위나 넓은 대역의 DROP·REJECT 규칙(같은 규칙이 두 번 셀 수 있음), 집합과 ipset의 넓은 대역, fail2ban이 지금 막은 17.0.0.0/8의 주소입니다. 제출 전에 한 번 보고, 심사 중에는 매일 보고에 넣습니다. 제출 전보다 하나라도 늘면 바로 그 수만 사용자에게 알리고, 무엇을 할지는 사용자가 개발 PC와 정합니다. 17.0.0.0/8 밖의 Apple 대역을 셀 일이 있으면 개발 PC가 대역을 적어 보냅니다. 학교 방화벽은 서버에서 볼 수 없습니다.
 
 ## 8. 최소 버전과 업데이트 배포 (1.6.0)
 
@@ -1663,7 +1682,9 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 1.5.x 사용자가 새 버전(걸린 정책의 `latest`. 2026-10-28의 seq 7부터 1.9.2)을 받는 비밀 링크 `https://<도메인>/api/hjv/get/<코드>/`입니다. 링크는 hbbs 거절 문구(S1)와 운영자가 사용자에게 직접 보내는 메시지에만 나옵니다. 형식은 [deploy/door2.conf.example](../deploy/door2.conf.example)에 있고, 실제 파일은 사용자가 `hjv-release hbbs-conf --door2-out`으로 만들어 보냅니다.
 
 - **페이지**: 정책의 Windows·Android 패키지(크기와 SHA-256)와 그 옆의 알림 파일(LICENSE, NOTICE, SOURCE, THIRD_PARTY_NOTICES)을 보입니다. 바깥 사이트는 가리키지 않습니다(TestFlight 앱을 여는 링크만 있음. 사용자 요청, hjv-api 3b283b2부터, 7-14). 소스 코드(출시 태그)를 받는 곳은 아래 알림 파일의 SOURCE에 있다고 말하고, AGPL 6(d)의 '목적 코드 옆의 분명한 안내'는 그 SOURCE 고지가 맡습니다.
+- **내려받기 자리**(1.9.3의 hjv-api부터): 문 2의 패키지와 알림 파일은 동시 내려받기 자리(`HJV_API_DOWNLOADS_MAX`, 기본 4)의 절반까지만 씁니다(내림, 적어도 1. 기본 4에서 2, 1이면 그 1). 문 2의 코드는 바깥에 비밀이 아니므로(hbbs의 S1 문구가 그 링크를 실음), 그 전에는 누구나 느린 내려받기 넷으로 문 1(앱 안과 무인 업데이트), 짧은 링크, 지원 링크를 모두 503으로 막을 수 있었습니다. 둘이 받는 동안 문 2의 셋째 요청은 다른 자리가 비어 있어도 `503 {"error":"지금 내려받는 사람이 많습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"busy","retry_after":60}`(`Retry-After: 60`)를 받습니다. 바꿀 설정은 없고, 문 2가 주된 길인 날에는 `HJV_API_DOWNLOADS_MAX`(16까지)를 올리면 문 2의 몫도 함께 오릅니다. `HEAD`는 자리를 쓰지 않습니다.
 - **기록(2026-10-14)**: 사용자가 "windows 문 2 열자"로 정해 23:24(KST)에 열었습니다. `UNTIL=2026-11-29T15:00:00Z`(2026-11-30 0시 KST)이고, 페이지는 1.6.1의 Windows와 Android 패키지를 내주었습니다. 7-9의 관문 전입니다(7-10). 정책 seq 3을 넣은 2026-10-16부터는 1.7.0, seq 4(2026-10-18)부터는 1.8.0, seq 5(2026-10-20)부터는 1.9.0, seq 6(2026-10-27)부터는 Windows·Android 1.9.1, seq 7(2026-10-28)부터는 1.9.2의 패키지를 내줍니다(`UNTIL`은 그대로).
+- **끝(2026-11-30 0시 KST)**: 운영 서버의 `door2.conf`는 `UNTIL=2026-11-29T15:00:00Z`이고, 늘리지 않으면 그때 문 2가 저절로 닫힙니다. 그러나 **저절로 닫히는 것은 틀린 순서입니다**: hbbs 파일의 S1 문구는 그대로 남아, 1.5.x 사용자가 받는 거절 문구의 링크가 그때부터 404입니다. 그래서 그 전에 사용자가 정합니다. 계속 열면 `--door2-until`로 만든 파일을 넣고(아래 "닫는 시각 바꾸기"), 닫으면 아래 "닫기"의 순서(먼저 S2 문구의 hbbs 파일, 그다음 `door2.conf` 삭제)로 `UNTIL` 전에 닫습니다. 1.9.3의 hjv-api부터 5분 점검이 2026-11-22T15:00:00Z부터 `file_ending`으로, `UNTIL`이 지난 뒤 파일이 남아 있으면 `file_ended`로 알립니다(7-14의 "운영 파일의 끝").
 - **열기(여는 때는 사용자가 정함)**: 사용자가 보낸 `door2.conf`를 8-3의 "보낸 파일 옮기기" 블록으로 `incoming/`에 옮긴 뒤 넣습니다. 그 뒤 hbbs 파일(8-3)을 넣을 때는 S1 문구(같은 코드의 링크)가 든 파일을 넣습니다. S1 파일은 이 열기 뒤에만 넣습니다. 그 전에 넣으면 거절 문구의 링크가 404입니다. hbbs 파일을 넣는 일 자체는 배포 단계이므로 따로 정합니다(8-3의 첫 파일).
   ```bash
   F=/srv/hjviewer-updates/incoming/conf-20261020T060000Z/door2.conf   # ← 8-3의 옮기기 블록이 출력한 F= 줄
@@ -1678,8 +1699,8 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
   unset code
   sudo journalctl --namespace=hjviewer -u hjviewer-api --since -2min -o cat | grep "door 2's file" | tail -1
   ```
-  `door 2: 200`과 `update: door 2's file (HJV_API_DOOR2_FILE) read: open until <UTC> (code=<8자리>)`가 나와야 합니다. 8자리는 코드의 SHA-256 앞부분이라 옮겨도 됩니다. 코드 자체는 화면에도, 다른 프로세스의 명령줄에도 나오지 않습니다(위 블록은 변수와 표준 입력으로만 다룸). 코드를 명령의 인자로 쓰지 않습니다.
-  - 파일 권한을 나중에 고치지 않습니다. hjv-api는 읽지 못한 파일을 권한만 고쳐서는 다시 읽지 않을 수 있습니다. 위처럼 권한을 정해 임시 이름으로 넣고 `mv`합니다.
+  `door 2: 200`과 `update: door 2's file (HJV_API_DOOR2_FILE) read: open until <UTC> (code=<8자리>)`가 나와야 합니다. 8자리는 hjv-api의 기록 키로 만든 코드의 꼬리표 앞부분이라(기록 키 없이는 코드에서 계산할 수 없음) 옮겨도 됩니다. 코드 자체는 화면에도, 다른 프로세스의 명령줄에도 나오지 않습니다(위 블록은 변수와 표준 입력으로만 다룸). 코드를 명령의 인자로 쓰지 않습니다.
+  - 파일 권한을 나중에 고치지 않습니다. hjv-api는 파일이 바뀌면(ctime. 권한만 고쳐도 바뀜) 다시 읽지만, 권한이 틀린 동안의 요청은 그 파일 없이 답하고(문 2는 404), 1.9.3의 hjv-api부터는 5분 점검이 `file_refused`로 알립니다(7-14). 위처럼 권한을 정해 임시 이름으로 넣고 `mv`합니다.
 - **코드 바꾸기**(링크가 퍼졌거나, hbbs를 trace로 돌렸을 때): 사용자가 `--door2-rotate`로 새 `door2.conf`와 새 hbbs 파일을 함께 만들어 보냅니다. 두 파일을 8-3의 옮기기 블록으로 함께 옮기고, `door2.conf`를 넣고 바로 이어서 hbbs 파일을 8-3대로 넣습니다. 옛 링크는 바로 404가 되고, 그 사이 10초쯤은 hbbs 문구가 옛 링크를 보입니다.
 - **닫는 시각 바꾸기**: 사용자가 `--door2-until`로 만든 파일을 위처럼 넣습니다.
 - **닫기**: 아래를 모두 만족하면 사용자 승인 뒤 닫습니다.
@@ -1760,20 +1781,21 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 
 처음 설치 때(8-1) 한 번 보고, 바뀐 것이 있으면 보고합니다. 내용(사용자 이름, 경로)은 개수와 예/아니오로만 보고합니다.
 
-1. **nginx 작업 프로세스와 php-fpm 풀의 사용자**: 그 둘이 업데이트 구역과 문 2 파일을 읽지 못해야 합니다.
+1. **nginx 작업 프로세스와 php-fpm 풀의 사용자**: 그 둘이 업데이트 구역과 문 2·이용 비밀번호·심사 계정의 파일을 읽지 못해야 합니다.
    ```bash
    ps -o user= -C nginx | sort -u
    sudo grep -hE '^\s*user\s*=' /etc/php/*/fpm/pool.d/*.conf 2>/dev/null | sort -u
-   for f in /srv/hjviewer-updates/pkg /etc/hjviewer/door2.conf /etc/hjviewer/min-controller.conf; do sudo test -e "$f" || echo "NOT YET: $f"; done
+   for f in /srv/hjviewer-updates/pkg /etc/hjviewer/door2.conf /etc/hjviewer/min-controller.conf /etc/hjviewer/guest.conf /etc/hjviewer/review.conf; do sudo test -e "$f" || echo "NOT YET: $f"; done
    for u in $(ps -o user= -C nginx | sort -u) $(sudo grep -hE '^\s*user\s*=' /etc/php/*/fpm/pool.d/*.conf 2>/dev/null | sed 's/.*=\s*//' | sort -u); do
      [ "$u" = root ] && continue
      id -nG "$u" | grep -qwE 'hjviewer|hjviewer-api' && echo "IN A HJVIEWER GROUP: $u"
-     for f in /srv/hjviewer-updates/pkg /etc/hjviewer/door2.conf /etc/hjviewer/min-controller.conf; do
+     for f in /srv/hjviewer-updates/pkg /etc/hjviewer/door2.conf /etc/hjviewer/min-controller.conf /etc/hjviewer/guest.conf /etc/hjviewer/review.conf; do
        sudo runuser -u "$u" -- test -r "$f" && echo "READABLE by $u: $f"
      done
    done; echo CHECKED
+   for f in /etc/hjviewer/door2.conf /etc/hjviewer/guest.conf /etc/hjviewer/review.conf; do sudo test -e "$f" && sudo stat -c '%U:%G %a %n' "$f"; done   # 있는 파일마다 root:hjviewer-api 640
    ```
-   `READABLE`이나 `IN A HJVIEWER GROUP` 줄이 나오면 멈추고 보고합니다(그 사용자가 `hjviewer-api`나 `hjviewer` 그룹에 들어 있는 것). nginx는 정책 파일(0644)만 읽으면 됩니다. 읽기 확인은 `runuser`로 합니다. root가 어느 사용자로든 실행하므로, `sudo -u`와 달리 운영 에이전트의 sudo가 root로만 실행을 허락해도 거절되지 않습니다(거절되면 `READABLE` 줄이 없어 통과처럼 보임). `NOT YET` 줄이 있으면(8-1 때는 `door2.conf`와 `min-controller.conf`가 아직 없음) 8-3과 8-4 뒤에 이 블록을 한 번 더 돌립니다. 운영 서버는 2026-10-14에 둘 다 했고, 그때마다 다시 돌렸습니다: 8-4 뒤 `NOT YET` 1(`min-controller.conf`), 8-3 뒤 `NOT YET` 0, 둘 다 `READABLE` 0, `IN A HJVIEWER GROUP` 0.
+   `READABLE`이나 `IN A HJVIEWER GROUP` 줄이 나오면 멈추고 보고합니다(그 사용자가 `hjviewer-api`나 `hjviewer` 그룹에 들어 있는 것). nginx는 정책 파일(0644)만 읽으면 됩니다. 읽기 확인은 `runuser`로 합니다. root가 어느 사용자로든 실행하므로, `sudo -u`와 달리 운영 에이전트의 sudo가 root로만 실행을 허락해도 거절되지 않습니다(거절되면 `READABLE` 줄이 없어 통과처럼 보임). `NOT YET` 줄이 있으면(8-1 때는 `door2.conf`와 `min-controller.conf`가 아직 없음) 8-3과 8-4 뒤에 이 블록을 한 번 더 돌립니다. 운영 서버는 2026-10-14에 둘 다 했고, 그때마다 다시 돌렸습니다: 8-4 뒤 `NOT YET` 1(`min-controller.conf`), 8-3 뒤 `NOT YET` 0, 둘 다 `READABLE` 0, `IN A HJVIEWER GROUP` 0. `guest.conf`(9-4)와 `review.conf`(7-17)는 2026-11-10의 점검으로 더했습니다(같은 까닭: 이용 비밀번호의 해시와 심사 계정의 ID). 마지막 `for` 줄은 운영 파일 셋의 소유자와 모드를 봅니다. 넣는 블록(8-4, 9-4의 1번, 7-17의 1번)이 `root:hjviewer-api` 0640으로 넣고 hjv-api는 모드를 확인하지 않으므로, 다른 값이 나오면 멈추고 보고합니다. 넣지 않은 파일은 그 두 줄에 `NOT YET`으로 나오고 마지막 줄에는 나오지 않습니다.
 2. **매일 20:00의 `auto_block_ips.sh`가 무엇을 세는지**(어느 기록의 어떤 줄: 404, 경로). HJViewer의 `/api/` 경로와 정책 위치는 접속 기록을 남기지 않고, 짧은 링크와 문 2는 오류 기록도 남기지 않습니다. 그 스크립트가 다른 기록(예: 방화벽이나 hjv-api 저널)을 센다면 사용자에게 알립니다. 학내 NAT 뒤의 사용자들이 한 주소로 막히면 443 전체, 곧 연결 중계까지 막힙니다.
 3. **사이트의 `error_page 404`**: `sudo nginx -T 2>/dev/null | grep -n 'error_page'`. 정책 위치는 자기 404를 쓰므로 상관없지만, 7-8 전(1.5.1 배치)의 `/api/` 블록은 그 페이지(WordPress 등)로 넘어갑니다. 7-8 뒤의 계정 API 블록은 스스로 답합니다. 있으면 보고합니다.
 4. **(선택) php-fpm에서 HJViewer 파일 숨기기**: WordPress 플러그인의 파일 읽기 취약점까지 막으려면 php-fpm 유닛에 drop-in을 둡니다. PHP가 띄운 셸에도 걸리므로 `open_basedir`보다 강합니다. WordPress 쪽 변경이라 사용자와 WordPress 운영자의 동의가 필요하고, php-fpm 재시작이 들므로 조용한 시간에 합니다.
@@ -1838,7 +1860,7 @@ hbbs: <min-controller 줄 그대로(MIN, FROM) | off>, 어제 거절 <n>줄
 출입증이 든 서버 묶음(hjv-api의 `/api/hjv/ticket`, hbbs의 서버 패치 0006~0008)을 6절 "B 경로 업데이트"로 넣을 때, 그 4번이 출입증 키를 요구하고 사용자가 7-4 (나)의 출입증 키 줄로 만듭니다(화면: `1:<base64>`와 지문). 사용자가 알려 준 첫 줄을 6절의 블록대로 `HJV_API_TICKET_PUBKEYS`에 넣은 뒤 다음을 봅니다.
 
 ```bash
-sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'ticket key'      # 두 줄 모두 [ OK ]
+sudo /opt/hjviewer/bin/hjv-api admin selfcheck 2>&1 | grep 'ticket key'      # 두 줄 모두 [ OK ]
 sudo /opt/hjviewer/bin/hjv-api admin ticket status | sed -n '1,3p'
 ```
 
@@ -1854,7 +1876,7 @@ sudo /opt/hjviewer/bin/hjv-api admin ticket status | sed -n '1,3p'
 sudo grep -qa hjv-access-file /opt/hjviewer/bin/hbbs || { echo 'STOP: 설치된 hbbs가 출입 확인(서버 패치 0006)을 모름: 먼저 새 묶음으로 바꿈(6절)'; exit 1; }
 TICKET=$(sudo sed -n 's/^HJV_API_TICKET_PUBKEYS=//p' /etc/hjviewer/hjviewer-api.env)
 [ -n "$TICKET" ] || { echo 'STOP: HJV_API_TICKET_PUBKEYS가 비어 있음(9-1 먼저)'; exit 1; }
-sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'ticket key' | grep -q FAIL && { echo 'STOP: selfcheck의 ticket key 줄이 FAIL'; exit 1; }
+sudo /opt/hjviewer/bin/hjv-api admin selfcheck 2>&1 | grep 'ticket key' | grep -q FAIL && { echo 'STOP: selfcheck의 ticket key 줄이 FAIL'; exit 1; }
 F=/etc/hjviewer/access.conf
 ! sudo test -e "$F" || { echo "STOP: $F 이(가) 이미 있음(바꾸기는 9-3)"; exit 1; }
 { echo 'MODE=off'; printf 'KEY=%s\n' ${TICKET//,/ }; echo 'NOT_BEFORE='; } | sudo tee "$F.new" > /dev/null
@@ -1890,7 +1912,7 @@ case $NB in
 esac
 TICKET=$(sudo sed -n 's/^HJV_API_TICKET_PUBKEYS=//p' /etc/hjviewer/hjviewer-api.env)
 [ -n "$TICKET" ] || { echo 'STOP: HJV_API_TICKET_PUBKEYS가 비어 있음'; exit 1; }
-sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'ticket key' | grep -q FAIL && { echo 'STOP: selfcheck의 ticket key 줄이 FAIL'; exit 1; }
+sudo /opt/hjviewer/bin/hjv-api admin selfcheck 2>&1 | grep 'ticket key' | grep -q FAIL && { echo 'STOP: selfcheck의 ticket key 줄이 FAIL'; exit 1; }
 echo "KEY: $(sudo grep '^KEY=' "$F" | sed 's/^KEY=//; s/:.*//' | paste -sd,) -> $(printf '%s\n' ${TICKET//,/ } | sed 's/:.*//' | paste -sd,)"   # 키 번호: 지금 -> 새 파일
 sudo install -d -m 700 /root/hjv-backup && sudo cp -p "$F" /root/hjv-backup/access.conf.before
 { echo "MODE=$MODE"; printf 'KEY=%s\n' ${TICKET//,/ }; echo "NOT_BEFORE=$NB"; sudo grep '^TEXT=' "$F"; } | sudo tee "$F.new" > /dev/null
@@ -1918,7 +1940,7 @@ curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; e
 
 로그인하지 않는 사람이 쓰는 비밀번호 하나입니다(계약 3-5). 파일에는 해시와 끝나는 때(`UNTIL`)만 있고, hjv-api는 파일이 바뀌면 다시 읽습니다(재시작 없음). 파일이 없거나 `UNTIL`이 지나면 아무도 이용 비밀번호로 들어오지 못하고, 틀린 비밀번호와 같은 401을 받습니다.
 
-- **만들기**(사용자, 에이전트 세션이 아닌 자기 터미널에서. Linux, macOS나 WSL): `python3 -I deploy/guest-conf.py --until <YYYY-MM-DD> --out ~/guest.conf`(비밀번호를 두 번 물음) 또는 `--random`(도구가 만들어 그 터미널에 한 번만 보임). 12~256자의 출력 가능한 ASCII이고, 공백으로 시작하거나 끝나지 않습니다(앱이 앞뒤 공백을 지움). `--until`은 90일까지입니다. 비밀번호는 개발 PC의 `build/leak-patterns.txt`에 넣고, 저장소, 채팅, 문서, 커밋, App Store와 Play의 메모에는 쓰지 않습니다. 필요한 사람에게만 직접 알립니다. 만든 파일은 운영 에이전트의 홈으로 보내고 자기 PC의 사본은 지웁니다.
+- **만들기**(사용자, 에이전트 세션이 아닌 자기 터미널에서. Linux, macOS나 WSL): `python3 -I deploy/guest-conf.py --until <YYYY-MM-DD> --out ~/guest.conf`(비밀번호를 두 번 물음) 또는 `--random`(도구가 만들어 그 터미널에 한 번만 보임). 12~256자의 출력 가능한 ASCII이고, 공백으로 시작하거나 끝나지 않습니다(앱이 앞뒤 공백을 지움). `--until`은 90일까지입니다(1.9.3의 hjv-api부터 끝나기 7일 전에 5분 점검이 `file_ending`으로 알림, 7-14. 운영 서버의 파일은 2027-01-14T15:00:00Z까지). 비밀번호는 개발 PC의 `build/leak-patterns.txt`에 넣고, 저장소, 채팅, 문서, 커밋, App Store와 Play의 메모에는 쓰지 않습니다. 필요한 사람에게만 직접 알립니다. 만든 파일은 운영 에이전트의 홈으로 보내고 자기 PC의 사본은 지웁니다.
 1. **넣기**(사용자 승인 뒤). 바꿀 때(새 비밀번호, 새 `UNTIL`)도 같은 블록입니다.
    ```bash
    SRC=/home/<사용자>/guest.conf                  # ← 사용자가 보낸 파일
@@ -1943,7 +1965,7 @@ curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; e
    - `active`가 아니면 7-17의 2번처럼 원인 줄(7-5)을 사용자에게만 보이고, 설정 줄(`HJV_API_GUEST_FILE=`)을 지운 뒤 다시 시작합니다.
    - `access password: closed: the file is not there or not used (the journal says why)`이면 `sudo journalctl --namespace=hjviewer -u hjviewer-api --since -5min -o cat | grep "access password's file" | tail -2`의 `… is not used: <이유>`를 보고합니다(이유에 해시는 없음). 이 꼴은 파일의 줄만 고릅니다. `access password`만으로 고르면 한 주소의 실패 한도 줄(`guest: limited-ip, the access password (ip=<꼬리표>); …`)도 나옵니다(7-0). 사용자가 파일을 다시 만듭니다.
 3. **바꾸기**: 1번의 블록에 새 파일을 넣습니다. 새 파일은 그때부터의 시도에 쓰이고, 이미 나간 출입증은 12시간 안에 끝납니다. 퍼진 비밀번호라서 바로 끊어야 하면 이어서 9-3을 `NB=now`로 합니다. 그때는 교직원과 묶인 PC의 출입증도 함께 끝나고, 몇 분 안에 저절로 새로 받습니다.
-4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 같습니다. 설정 줄은 두어도 됩니다. 1.9.0의 지원 코드는 이 파일을 보지 않으므로 그대로 됩니다. 지원 코드만 끄는 설정은 없습니다(9-7의 '지원 코드가 잘못 쓰임').
+4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 들어오지 못하는 것은 같지만, 끝난 파일은 지웁니다. 남겨 두면 1.9.3의 hjv-api부터 5분 점검이 `file_ended`로 실패하고 경보가 6시간마다 옵니다(7-14). 설정 줄은 두어도 됩니다. 1.9.0의 지원 코드는 이 파일을 보지 않으므로 그대로 됩니다. 지원 코드만 끄는 설정은 없습니다(9-7의 '지원 코드가 잘못 쓰임').
 5. **보기**: 매일 보고에 `sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep -E '^(access password|support codes)'`의 여섯 줄(파일의 상태, 수명, 어제의 결과별 시도 수, 1.9.0의 hjv-api(9-9)부터 지원 코드의 열린 수와 메모리에 둔 수, `support codes' waiting room:` 줄의 잡아 둔 대기실 요청과 내려받기가 남은 지원 링크의 수, 어제의 결과별 `code` 기록 수)을 넣습니다. 한 주소의 실패 한도에 걸린 경고(`guest: … hjv-api admin unlock tag:<꼬리표> lifts the address's`)가 잦으면 사용자에게 알립니다(줄 수만, 7-0). 풀기는 사용자가 그 줄의 명령으로 합니다.
 
 ### 9-5. `MODE=count`로 세어 보기 (선택)
@@ -2025,7 +2047,7 @@ hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
      sudo install -d -m 700 "/root/hjv-backup/share-before-$VERSION"
      sudo cp -p /opt/hjviewer/share/*.txt "/root/hjv-backup/share-before-$VERSION/"
      sudo install -m 644 LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt /opt/hjviewer/share/
-     head -3 /opt/hjviewer/share/SOURCE.txt
+     sed -n 4p /opt/hjviewer/share/SOURCE.txt     # …/tree/<이 묶음의 커밋>(첫 세 줄은 라이선스 문구라 head -3에는 커밋이 없음)
      ```
      2026-10-20의 1.9.0 작업에서는 이 단계가 빠져, `NOTICE.txt`와 `SOURCE.txt`를 정책 seq 5와 같은 작업에서 바꿨습니다(8-2의 기록).
   - 순서를 거꾸로 하면(새 hjv-api가 돌고 nginx 줄이 아직 없음) 지원 링크의 요청이 오류로 끝날 때(hjv-api가 다시 시작하는 몇 초, 끊긴 내려받기) nginx 오류 로그에 링크 값이 든 경로가 남고, 같은 서버의 웹 사이트 사용자가 그 로그를 읽을 수 있습니다. 그래서 nginx 줄을 hjv-api 뒤로 미루지 않습니다(짧은 링크와 문 2의 `location`과 같은 까닭). hjv-api가 다시 시작하는 몇 초 동안은 로그인, 동기화, 이용 비밀번호가 멈춥니다(가진 출입증은 그대로).
@@ -2080,7 +2102,7 @@ hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
   sudo journalctl --namespace=hjviewer -u hjviewer-api --since yesterday -o cat | grep -E '^account( delete)?:' | sed -E 's/(acct|ip|dev)=[0-9a-f]+/\1=…/g; s/ckid=[0-9]+/ckid=…/g; s/tag:[0-9a-f]+/tag:…/g' | sort | uniq -c
   ```
   줄 수와 종류만 보고에 옮깁니다(꼬리표가 필요하면 사용자가 서버에서 직접 봄, 7-0).
-- **되돌리기**: DB 스키마가 같으므로 7-14의 "업그레이드"대로 옛 실행 파일과 설정 파일로 돌아가면 됩니다(스냅숏은 넣지 않음: 넣으면 그 뒤에 지운 계정이 돌아옴). 이 경로는 404가 되고, 1.9.1 앱은 [계정 삭제]에서 위의 404 글을 보입니다. 이미 지운 계정은 되돌아오지 않습니다.
+- **되돌리기**: DB 스키마가 같으므로 7-14의 "업그레이드"대로 옛 실행 파일과 설정 파일로 돌아가면 됩니다(스냅숏은 넣지 않음: 넣으면 그 뒤에 지운 계정이 돌아옴). 이 경로는 404가 되고, 1.9.1 앱은 [계정 삭제]에서 위의 404 글을 보입니다. 이미 지운 계정은 되돌아오지 않습니다. 고지 파일도 9-9 '넣기'의 3번에서 남긴 것으로 되돌립니다: `sudo cp -p /root/hjv-backup/share-before-<VERSION>/{LICENSE,NOTICE,SOURCE,THIRD_PARTY_NOTICES}.txt /opt/hjviewer/share/`(`/root` 안의 `*.txt`는 sudo 앞의 셸이 펼치지 못하므로 네 이름을 적음). 그 뒤 `sed -n 4p /opt/hjviewer/share/SOURCE.txt`가 옛 hjv-api의 커밋으로 끝나야 합니다.
 
 ### 9-11. 1.9.2의 hjv-api: 심사 계정의 데모 PC
 
@@ -2102,13 +2124,136 @@ hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
   curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/source"; echo   # commit이 새 묶음의 커밋
   sudo /opt/hjviewer/bin/hjv-api admin selfcheck
   sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep '^lifetimes:'   # … the App Review account's demo PCs 24 h, never past its file's UNTIL
-  sudo journalctl --namespace=hjviewer -u hjviewer-api --since -5min -o cat | grep -e 'App Review file (HJV_API_REVIEW_FILE)' -e 'no App Review account' | tail -2   # 7-17의 2번처럼 read 줄
+  sudo journalctl --namespace=hjviewer -u hjviewer-api --since -1h -o cat | grep -e 'App Review file (HJV_API_REVIEW_FILE)' -e 'no App Review account' | tail -2   # 7-17의 2번처럼 read 줄
+  systemctl show -p ActiveEnterTimestamp --value hjviewer-api   # 다시 시작한 시각(보고에 적음)
   ```
+  read 줄은 hjv-api가 시작할 때 한 번만 남으므로 `--since -1h`로 봅니다(넣기의 재시작에서 5분이 지나면 `-5min`에는 나오지 않음). 다시 시작한 시각은 `ActiveEnterTimestamp`로 봅니다. `systemctl status`와 저널의 `tail`은 hjv-api의 저널 원문을 보이므로 쓰지 않습니다(7-0).
   `lifetimes:` 줄에 `demo PCs`가 없으면 옛 hjv-api가 돌고 있습니다. 멈추고 보고합니다.
+  - 기록(2026-10-29, KST): 서버 묶음 `server-2026.10.29`(pre-release, hjv-api 4ff6551, 묶음의 SHA-256 `6334d38274ebbd0a15089ec40bb16230c07a7de7483504f2ad5e2292f6b811c4`)을 허브-운영이 사용자 승인 뒤 '넣기'대로 넣었습니다. hjv-api만 09:37:53에 다시 시작했고 hbbs와 hbbr은 다시 시작하지 않았습니다. 확인: selfcheck `[FAIL]` 0줄, `lifetimes:` 줄에 demo PCs, nginx 파일은 비교만(다른 것 없음), 계정 4개. 그 뒤의 순서 ②–④는 7-17의 기록입니다.
 - **저널의 새 줄**(포탈 ID, 기기 ID는 없고 계정과 PC는 꼬리표로만. 운영 에이전트는 7-17의 5번처럼 `grep -c`로 줄 수만 셈, 7-0)
   - `login: a demo PC joined the App Review account (acct=<T>, dev=<D>)`: 데모 PC가 이 계정에 묶였습니다. 사용자가 묶은 때만 나와야 합니다(7-17의 "데모 PC 묶기" 4단계, 5번).
   - `account delete: refused from a demo PC of the App Review account (acct=<T>); the next ten minutes are not logged`: 데모 PC 자신의 [계정 삭제]를 거절했습니다(아무것도 지우지 않음). 누가 데모 PC의 HJViewer에서 로그인해 지우려 한 것이므로 보고합니다.
   - `update: a demo PC of the App Review account asked for a package and was refused (dev=<D>); …`: 데모 PC의 자동 업데이트가 새 버전을 찾았습니다. 심사 중 Windows `latest`가 1.9.2보다 높은지 봅니다.
   - `account: deleted at its own request (acct=<T>, the App Review account): …, <d> demo PCs kept`: 심사자(나 사용자)가 앱에서 계정을 지웠고 데모 PC는 남았습니다(9-10).
 - `admin ticket status`의 `sync pc <n>`은 시작한 뒤 데모 PC에 준 출입증의 수입니다(교직원 PC는 `sync both`). 데모 PC가 동기화하는 동안(보통 2분마다) 늘어야 합니다.
-- **되돌리기**: 먼저 데모 PC를 풉니다(7-17의 7번: `user delete "tag:$T"`, 또는 사용자의 `binding revoke`, 7-0). 풀지 않고 옛 판으로 돌아가면 옛 판은 PC를 가진 이 계정의 로그인을 `review-existing`으로 거절하고, 데모 PC에는 교직원 PC처럼 `staff`/`both`를 줍니다. 그다음 DB 스키마가 같으므로 7-14의 "업그레이드"대로 옛 실행 파일과 설정 파일로 돌아갑니다(스냅숏은 넣지 않음).
+- **되돌리기**: 먼저 데모 PC를 풉니다(7-17의 7번: `user delete "tag:$T"`, 또는 사용자의 `binding revoke`, 7-0). 풀지 않고 옛 판으로 돌아가면 옛 판은 PC를 가진 이 계정의 로그인을 `review-existing`으로 거절하고, 데모 PC에는 교직원 PC처럼 `staff`/`both`를 줍니다. 그다음 DB 스키마가 같으므로 7-14의 "업그레이드"대로 옛 실행 파일과 설정 파일로 돌아갑니다(스냅숏은 넣지 않음). 고지 파일도 9-9 '넣기'의 3번에서 남긴 것으로 되돌립니다: `sudo cp -p /root/hjv-backup/share-before-<VERSION>/{LICENSE,NOTICE,SOURCE,THIRD_PARTY_NOTICES}.txt /opt/hjviewer/share/`(`/root` 안의 `*.txt`는 sudo 앞의 셸이 펼치지 못하므로 네 이름을 적음). 그 뒤 `sed -n 4p /opt/hjviewer/share/SOURCE.txt`가 옛 hjv-api의 커밋으로 끝나야 합니다.
+
+### 9-12. 1.9.3의 서버: hbbs·hbbr의 새 바탕과 입력 상한, hjv-api의 점검, nginx 한도와 유닛
+
+2026-11-10의 서비스 점검에서 나온 서버 릴리스입니다. 앱은 바꿀 것이 없고, 설치된 1.9.0–1.9.2가 그대로 동작합니다(E2E가 1.9.2 앱으로 확인). 바뀌는 것은 **hbbs, hbbr, hjv-api 세 실행 파일**, 계정 API의 nginx 파일 둘(`snippets/hjviewer-api.conf`, `conf.d/hjviewer-api-zones.conf`), hbbs·hbbr 유닛입니다. 경로 파일(`snippets/hjviewer-locations.conf`), `access.conf`, `guest.conf`, `review.conf`, `door2.conf`, `min-controller.conf`, 설정 파일의 줄, 자격 증명은 그대로이고, DB 이전이 없습니다(hjv-api 스키마 6, hbbs의 `db_v2.sqlite3`도 같은 형식). 동작은 [architecture.md](architecture.md) 4절의 1.9.3 문단, 남긴 것은 10절의 "기록만 한 것"에 있습니다.
+
+- **들어 있는 것**
+  - **hbbs·hbbr**: upstream rustdesk-server `680b603`(2026-11-10의 master) 위의 서버 패치 0001–0013(`scripts/upstream.env`). upstream에서 온 것은 hbbs가 받는 메시지 하나의 상한 64 KiB(`MAX_MESSAGE_KB`, 넘으면 연결을 끊음. 누구나 보낼 수 있던 최대 64 MiB의 등록이 서버 메모리와 디스크를 채우던 문제), hbbr 연결의 첫 메시지 128 KiB, WebSocket 핸드셰이크 30초, 막힌 중계 쓰기 30초, 콘솔 답의 1초 기한, 중계 uuid 검사(영숫자·`-`·`_` 128자까지), 등록 ID 6–253바이트, 키 파일 확인(아래 "넣기 전"의 1번)입니다. 새 패치는 0009(등록의 uuid 128바이트, 키 64바이트), 0010(hbbs가 전달하는 중계기 이름은 `-r`에 적은 이름. 운영은 `-r ${HJV_DOMAIN}` 하나이고, 시작할 때 DNS가 늦어도 그대로), 0011(컨트롤러의 ICE 후보는 그 연결의 punch hole 요청이 그 PC에 닿았을 때만 그 PC로), 0012(연결마다 보내지 못하고 기다리는 데이터 256 KiB, 쓰기 한 번 10초. 넘으면 그 연결을 닫음), 0013(클라이언트가 보낸 ID와 중계 uuid는 로그에 64자까지의 한 줄로만, hbbr은 규칙에 맞지 않는 uuid를 거절)입니다. 0003의 수정은 upstream(134008e)이 같은 방식으로 가져가, 그 패치에는 회귀 시험만 남았습니다. 0012는 hbbs 안의 대기열만 묶습니다. 연결마다의 커널 송신 버퍼(nginx 뒤 루프백에서 약 2.5 MiB)는 묶지 않으므로, 읽기를 멈춘 연결 하나가 여전히 약 2.4 MiB를 잡습니다(10절의 기록. 유닛의 `MemoryMax=1G`가 hbbs 전체를 묶음).
+  - **hjv-api**: 알려진 권고를 고친 판의 rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.10, tokio 1.53.3, rusqlite 0.41(묶은 SQLite 3.54.1). 문 2는 내려받기 자리의 절반까지만(8-4). 기한이 있는 운영 파일 셋(`review.conf`, `guest.conf`, `door2.conf`)의 끝을 5분 점검이 알리고(`file_ending`, `file_ended`, `file_refused`), `admin report`가 `operator file` 세 줄로, `health`가 `files`로 보이고, 시작할 때 문 2의 상태를 한 줄 남깁니다(7-14의 "운영 파일의 끝"). PC들이 hjv-api에는 동기화하는데 hbbs가 두 번의 점검 내내 그 PC를 하나도 보지 못하면 `unseen`입니다(7-14). 백업 정리는 가장 새 백업 셋을 남깁니다(7-14). hbbs·hbbr의 경보 문구는 무엇이 멈췄는지와 기본 저널의 확인 줄을 말합니다(7-14). 대기실은 마지막 코드와 함께 그 계정 키의 기록을 잊습니다(앱은 알아차리지 못함).
+  - **nginx**: 로그인(`= /api/login`)과 이용 비밀번호(`= /api/hjv/guest`)의 한도를 IPv4 주소 또는 IPv6 /64마다 셉니다(hjv-api가 실패를 세는 단위, 중계기 등록 zone과 같은 map). 키가 바뀌어 zone 이름도 바뀝니다: `hjv_login`→`hjv_login_net`, `hjv_login_conn`→`hjv_login_net_conn`, `hjv_guest`→`hjv_guest_net`, `hjv_guest_conn`→`hjv_guest_net_conn`(`hjv_relay_hello`는 그대로). nginx는 이미 있는 zone의 키를 바꾸는 reload를 `nginx -t`가 통과한 뒤에도 거절하고 옛 설정으로 계속 돌기 때문입니다. PC의 켜기·Wake-on-LAN·지우기(`/api/hjv/devices/<ID>/wake`, `…/wol`, `DELETE /api/hjv/devices/<ID>`) 요청은 이제 짧은 링크처럼 nginx 오류 기록에 남지 않고(`location ^~ /api/hjv/devices/`), 빗금 없는 `/api/hjv/devices`는 nginx의 HTML 301 대신 JSON 404입니다. 두 파일은 **함께** 바꾸고 함께 되돌립니다. 한쪽만 바꾸면 `nginx -t`가 `zero size shared memory zone "hjv_login_net"`(또는 `"hjv_login"`)으로 실패합니다.
+  - **유닛**: hbbs·hbbr에 `OnFailure=hjviewer-api-alert@%n.service`(실패하면 hjv-api의 경보, 7-14)와 `LimitCORE=0`(코어 덤프 없음: hbbs는 서버 개인키를 메모리에 들고, hbbr은 시작할 때 그 파일을 읽음), hbbs에 `Wants=network-online.target`과 `After=network.target network-online.target`(재부팅 뒤 `-r`의 도메인을 풀기 전에 시작하는 일을 줄임). `OnFailure=`는 `daemon-reload`로 바로, `LimitCORE=0`은 다음 시작부터 걸립니다.
+- **다시 시작하는 것과 사용자가 알아차리는 것**: hbbs가 다시 시작하면 PC들이 몇 초 안에 다시 등록합니다(그동안 새 연결 시도는 실패할 수 있음). hbbr이 다시 시작하면 중계로 진행 중인 원격 세션이 끊겨 앱이 다시 연결해야 합니다(WebRTC로 직접 이어진 세션은 hbbr을 거치지 않음). hjv-api가 다시 시작하는 몇 초 동안은 로그인, 동기화, 이용 비밀번호가 멈추고 짧은 링크와 대기실이 잡은 요청이 끝납니다(가진 출입증은 그대로). nginx는 reload 한 번이라 열린 연결(`/ws/id`, `/ws/relay`)을 끊지 않습니다. 달라지는 것은 하나입니다: **같은 IPv6 /64의 사용자들(한 LAN, 한 Wi-Fi)이 로그인과 이용 비밀번호 시도의 한도(한 번에 6번, 그다음 1분에 10번, 동시에 4개)를 함께 나눕니다.** 한 IPv4 NAT 뒤의 사용자들이 이미 그랬던 것과 같고, 그 망에서 여럿이 한꺼번에 로그인하면(강의실에서 같이 설치) 뒤의 사람이 "잠시 뒤 다시 시도해 주세요"(429)를 받을 수 있습니다. IPv4만 쓰는 사용자는 전과 같습니다. 그래서 사용자 승인 뒤 **조용한 저녁에, cron의 nginx 재적재 시각(매일 20:00)을 피해** 한 작업으로 하고, hbbs와 hbbr은 한 번에 한 번만 다시 시작합니다(7-0). 같은 서버의 다른 서비스 일정과 겹치는지는 사용자가 정합니다.
+- **넣기 전**(읽기만, 옛 실행 파일이 도는 동안). 하나라도 기대와 다르면 아무것도 넣지 않고 그 줄만 보고합니다. 고칠지와 어떻게는 사용자가 정합니다.
+  1. **키 파일**: 새 hbbs·hbbr(upstream 873230e)은 `id_ed25519`의 그룹·기타 권한 비트를 0600으로 줄이지 못하거나, 키 파일을 열거나 읽지 못하거나, `id_ed25519.pub`이 개인키와 맞지 않으면 **시작하지 않고** 5초마다 다시 시도합니다(옛 실행 파일은 그래도 돌았음). 개인키의 내용은 읽지도 디코드하지도 않습니다(맨 앞의 "하지 말 것"). `.pub`이 개인키와 맞는지는 옛 hbbs·hbbr이 그 개인키에서 만든 공개키(`Key:` 줄)와 견주어 봅니다.
+     ```bash
+     sudo stat -c '%U:%G %a %F %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519 /var/lib/hjviewer/id_ed25519.pub
+     sudo journalctl -q -u hjviewer-hbbs -o cat | grep -oE 'Private key comes from id_ed25519|Private/public key written to' | tail -1
+     echo "pub  $(sudo cat /var/lib/hjviewer/id_ed25519.pub)"
+     for s in hbbs hbbr; do echo "$s $(sudo journalctl -q -u hjviewer-$s -o cat | grep -o 'Key: [A-Za-z0-9+/=]*' | tail -1 | cut -d' ' -f2)"; done
+     ```
+     기대: 첫 세 줄 모두 `hjviewer:hjviewer`, 디렉터리는 `700 directory`, `id_ed25519`는 `600 regular file`(또는 `400`), `.pub`은 `600 regular file`(또는 `644`). 다음 줄은 `Private key comes from id_ed25519`(또는 `Private/public key written to`: 옛 hbbs가 그때 키를 만든 것)이고, 마지막 세 값(`pub`, `hbbs`, `hbbr`)이 같습니다(4-2, 5절과 같은 대조). 그러면 옛 hbbs가 같은 파일을 읽어 `.pub`과 같은 공개키를 얻은 것이고, 새 hbbs도 같은 방법으로 읽습니다. 멈추는 경우: 소유자가 `hjviewer:hjviewer`가 아님, `id_ed25519`의 모드가 600이나 400이 아님(`640`, `644` 등. 소유자가 hjviewer면 새 hbbs가 줄이고 시작하지만 그래도 보고), 보통 파일이 아님, 세 값이 다름, `hbbs`나 `hbbr`의 값이 빔(저널이 회전함. 넣을지는 사용자가 정하고, 넣으면 새 실행 파일이 맞지 않는 `.pub`을 스스로 거절하므로 그때는 아래 '되돌리기').
+  2. **중계기 이름**: 0010부터 hbbs가 전달하는 모든 중계기 이름이 `-r`에 적힌 값이 되므로, 그 값이 **앱을 빌드한 `HJV_SERVER`와 같은 도메인**이어야 합니다. 앱은 자기 중계기 이름을 그 값으로 고정하고, 지금까지는 앱이 보낸 이름이 그대로 전달됐습니다. 같으면 진짜 세션이 받는 이름은 지금과 바이트까지 같습니다.
+     ```bash
+     sudo journalctl -q -u hjviewer-hbbs -o cat | grep -o 'relay-servers=\[[^]]*\]' | tail -1
+     systemctl show -p ExecStart hjviewer-hbbs | grep -o -- '-r [^ ;]*'
+     getent hosts "$(sudo sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env)" | wc -l
+     ```
+     기대: `relay-servers=["<HJV_DOMAIN의 값>"]`, `-r ${HJV_DOMAIN}`, 1 이상(주소는 찍지 않음). 그 도메인이 앱의 `HJV_SERVER`(이 런북의 `DOMAIN`, 맨 앞의 보고)와 같은지 사용자에게 확인합니다. `relay-servers=[]`이면 옛 hbbs가 시작할 때 도메인을 풀지 못한 것입니다. 새 hbbs는 그래도 적힌 이름으로 동작하지만 원인을 봅니다. 둘째나 셋째 줄이 기대와 다르면 멈춥니다. 첫 줄이 없으면(저널이 회전함) 둘째·셋째 줄만 보고, 넣은 뒤의 확인이 새 시작의 줄을 봅니다.
+  3. **hbbs가 이미 저장한 큰 행**: 새 상한(0009와 upstream)은 새로 들어오는 등록만 묶습니다. 1.9.2까지의 hbbs가 저장한 행에는 큰 uuid나 키(최대 64 MiB)가 있을 수 있고, 새 hbbs도 그 ID의 키 등록 한 번에 그 행을 통째로 메모리에 올립니다. 그런 행이 있는지 개수만 봅니다(행의 값은 찍지 않음, 읽기 전용으로 엶).
+     ```bash
+     sudo python3 -I -B -c 'import sqlite3; db = sqlite3.connect("file:/var/lib/hjviewer/db_v2.sqlite3?mode=ro", uri=True); print("oversized rows", db.execute("select count(*) from peer where length(cast(id as blob)) > 253 or length(uuid) > 128 or length(pk) > 64").fetchone()[0])'
+     sudo stat -c '%s bytes %n' /var/lib/hjviewer/db_v2.sqlite3
+     ```
+     기대: `oversized rows 0`, 크기는 몇 MB 안(PC 수백 대). 0이 아니거나 크기가 수십 MB를 넘으면 멈추고 그 수와 크기만 보고합니다. 그런 행을 지울지는 사용자가 개발 PC와 정합니다.
+  4. **hjv-api**: `sudo /opt/hjviewer/bin/hjv-api admin report | grep '^PCs holding their binding: '`(넣은 뒤와 견줌)와 `sudo /opt/hjviewer/bin/hjv-api admin selfcheck 2>&1 | grep -cF '[FAIL]'`(0이어야 함).
+  5. **nginx의 main 수준 `error_log`**(넣기의 3번이 씀): `sudo nginx -T 2>/dev/null | sed -n '\|^# configuration file /etc/nginx/nginx.conf:|,\|^# configuration file |p' | grep -nE '^[[:space:]]*(error_log|http[[:space:]]*\{)'`에서 `http {` 줄보다 앞에 나온 `error_log`의 파일이고, 없으면 `sudo nginx -V 2>&1 | grep -o 'error-log-path=[^ ]*'`의 것(보통 `/var/log/nginx/error.log`)입니다. 거절된 reload의 `[emerg]`는 master가 이 파일에 쓰고, HJViewer server 블록의 `error_log`(7-14의 `"$E"`)에는 남지 않습니다.
+- **넣기**(사용자 승인 뒤, 한 작업에서 이 순서로). 1번부터 5번까지 같은 묶음 디렉터리에서 합니다.
+  1. **내려받기와 비교**: 새 묶음을 4-1의 앞부분처럼 내려받아 `SHA256SUMS`로 확인하고, `bin/hjv-api version`의 괄호 안 커밋과 `sed -n 4p SOURCE.txt`(…`/tree/<커밋>`)가 사용자가 알려 준 묶음의 커밋인지 봅니다. 그다음 유닛을 비교합니다.
+     ```bash
+     for s in hbbs hbbr; do echo "== $s"; diff "/etc/systemd/system/hjviewer-$s.service" "systemd/hjviewer-$s.service" | grep -E '^[<>]' | grep -v '^> #'; done
+     sudo systemd-analyze verify systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service 2>&1 | grep -v 'is not executable'
+     ```
+     기대(순서는 상관없음): `== hbbs` 아래 `< After=network.target`, `> Wants=network-online.target`, `> After=network.target network-online.target`, `> OnFailure=hjviewer-api-alert@%n.service`, `> LimitCORE=0`, `== hbbr` 아래 `> OnFailure=hjviewer-api-alert@%n.service`, `> LimitCORE=0`뿐이고, `verify` 줄은 아무것도 찍지 않습니다. 다른 `<` 줄이 있으면 서버의 유닛이 묶음과 다르게 고쳐져 있는 것이니 멈춥니다.
+  2. **백업**: 지금 것을 모두 `/root/hjv-backup/`에 남깁니다. hjv-api는 7-14의 "업그레이드"대로(스냅숏, 옛 실행 파일, 설정 파일)입니다.
+     ```bash
+     VERSION='<버전>'                  # ← 이 묶음의 Release 버전(server- 뒤)
+     B=/root/hjv-backup; sudo install -d -m 700 "$B" "$B/share-before-$VERSION" || exit 1
+     sudo cp -p /opt/hjviewer/bin/hbbs "$B/hbbs-before-$VERSION" && sudo cp -p /opt/hjviewer/bin/hbbr "$B/hbbr-before-$VERSION" &&
+       sudo cp -p /etc/systemd/system/hjviewer-hbbs.service "$B/hjviewer-hbbs.service-before-$VERSION" &&
+       sudo cp -p /etc/systemd/system/hjviewer-hbbr.service "$B/hjviewer-hbbr.service-before-$VERSION" &&
+       sudo cp -p /etc/nginx/snippets/hjviewer-api.conf "$B/hjviewer-api.conf-before-$VERSION" &&
+       sudo cp -p /etc/nginx/conf.d/hjviewer-api-zones.conf "$B/hjviewer-api-zones.conf-before-$VERSION" &&
+       sudo cp -p /opt/hjviewer/share/{LICENSE,NOTICE,SOURCE,THIRD_PARTY_NOTICES}.txt "$B/share-before-$VERSION/" &&
+       sudo cp -p /opt/hjviewer/bin/hjv-api "$B/hjv-api-before-$VERSION" &&
+       sudo cp -p /etc/hjviewer/hjviewer-api.env "$B/hjviewer-api.env-before-$VERSION" || { echo 'STOP: 백업하지 못함'; exit 1; }
+     sudo /opt/hjviewer/bin/hjv-api admin backup "/var/lib/hjviewer-api/backup/before-$VERSION.sqlite3" || { echo 'STOP: 스냅숏을 만들지 못함'; exit 1; }
+     ```
+  3. **nginx**(계정 API의 두 파일을 함께): `systemctl reload nginx`는 nginx가 새 설정을 거절해도 0으로 끝나고(신호만 보냄), `nginx -T`는 디스크의 파일을 읽으므로 거절된 뒤에도 새 줄을 보입니다. 그래서 통과 조건은 **새 worker**입니다.
+     ```bash
+     VERSION='<버전>'                  # ← 2번과 같은 값
+     M=/var/log/nginx/error.log        # ← "넣기 전" 5번에서 찾은 main 수준의 error_log
+     A=/etc/nginx/snippets/hjviewer-api.conf Z=/etc/nginx/conf.d/hjviewer-api-zones.conf B=/root/hjv-backup
+     sudo test -f "$B/hjviewer-api.conf-before-$VERSION" && sudo test -f "$B/hjviewer-api-zones.conf-before-$VERSION" || { echo 'STOP: 2번의 백업이 없음'; exit 1; }
+     sudo nginx -t 2>/dev/null || { echo 'STOP: 지금 설정이 이미 실패'; exit 1; }
+     N=$(sudo wc -l < "$M"); W0=" $(ps -C nginx -o pid=,cmd= | awk '/worker process$/ {print $1}' | tr '\n' ' ')"
+     sudo install -m 644 web/nginx-hjviewer-api.conf "$A" && sudo install -m 644 web/nginx-hjviewer-api-zones.conf "$Z"
+     out=$(sudo nginx -t 2>&1); echo "$out" | tail -1
+     if echo "$out" | grep -qE 'emerg|test failed'; then
+       sudo cp -p "$B/hjviewer-api.conf-before-$VERSION" "$A" && sudo cp -p "$B/hjviewer-api-zones.conf-before-$VERSION" "$Z"; echo 'STOP: 설정 오류, 되돌림'; exit 1
+     fi
+     sudo systemctl reload nginx; sleep 2
+     ps -C nginx -o pid=,cmd= | awk -v old="$W0" '/worker process$/ {n++; if (index(old, " " $1 " ")) o++} END {print (n && !o) ? "reload OK: " n " new workers" : "reload REFUSED: " o " of " n " workers are the old ones"}'
+     echo "emerg lines since: $(sudo tail -n +$((N + 1)) "$M" | grep -cE 'emerg|uses the .* key')"                  # 0
+     sudo nginx -T 2>/dev/null | grep -cE 'zone=hjv_(login|guest)_net |hjv_(login|guest)_net_conn '                 # 4
+     sudo nginx -T 2>/dev/null | grep -c 'location \^~ /api/hjv/devices/'                                            # 1
+     D=$(sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env)
+     curl -s -o /dev/null -w 'login-options %{http_code}\n' --max-time 10 --resolve "$D:443:127.0.0.1" "https://$D/api/login-options"   # 200
+     curl -s -w ' %{http_code}\n' --max-time 10 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/devices"                              # {"error":"not found"} 404
+     ```
+     `reload OK: <수> new workers`, emerg 0, 4, 1, 200, `{"error":"not found"} 404`여야 합니다(옛 파일이면 마지막은 301). 옛 worker는 `worker process is shutting down`으로 진행 중인 연결이 끝날 때까지 남습니다(4-3). 새 zone의 셈은 0에서 시작합니다. `reload REFUSED`이거나 emerg가 0이 아니거나 수가 다르면, 그 emerg 줄(`sudo tail -n +<N + 1> "$M" | grep emerg`, 파일 경로와 zone 이름뿐)을 보고에 붙이고, 두 백업을 함께 되돌린 뒤 이 블록의 `W0=`를 다시 적고 `sudo nginx -t && sudo systemctl reload nginx`, 같은 `ps` 줄로 새 worker를 확인하고 멈춥니다(`W0`를 다시 적지 않으면 첫 reload가 된 경우 되돌리는 reload가 거절돼도 OK로 보임). 4번 이하는 하지 않습니다. 이어서 5절의 첫 블록과 7-8의 3번으로 계정 경로를 봅니다.
+  4. **hjv-api**: 6절 "B 경로 업데이트"의 4번 블록(hjv-api만)을 합니다. 이 묶음의 소켓 유닛은 바뀌지 않았으므로 `diff` 줄은 아무것도 찍지 않아야 합니다.
+  5. **hbbs와 hbbr**: 6절 "B 경로 업데이트"의 2번 블록을 합니다(실행 파일 둘, 확인 스크립트, 유닛 둘, `web/*`, 고지 파일, `daemon-reload`, hbbs와 hbbr을 한 번에 다시 시작). 그 3번처럼 12초 뒤 hbbs의 `min-controller` 줄과, 9-7의 "hbbs를 다시 시작한 뒤" 블록으로 `access` 줄을 봅니다.
+- **넣은 뒤 확인**
+  ```bash
+  sleep 3; systemctl is-active hjviewer-hbbs hjviewer-hbbr hjviewer-api                                     # active ×3
+  sudo journalctl -q -u hjviewer-hbbs --since -5min -o cat | grep -oE 'Private key comes from id_ed25519|MAX_MESSAGE_KB=[0-9]+|relay-servers=\[[^]]*\]'
+  sudo journalctl -q -u hjviewer-hbbr --since -5min -o cat | grep -c 'Private key comes from id_ed25519'   # 1
+  echo "pub  $(sudo cat /var/lib/hjviewer/id_ed25519.pub)"
+  for s in hbbs hbbr; do echo "$s $(sudo journalctl -q -u hjviewer-$s -o cat | grep -o 'Key: [A-Za-z0-9+/=]*' | tail -1 | cut -d' ' -f2)"; done
+  sudo journalctl -q -u hjviewer-hbbs -u hjviewer-hbbr --since -5min -o cat | grep -E 'ERROR|panicked|denied' | cut -c1-160 | tail -5
+  systemctl show -p OnFailure --value hjviewer-hbbs hjviewer-hbbr
+  for u in hjviewer-hbbs hjviewer-hbbr; do sudo grep 'Max core file size' "/proc/$(systemctl show -p MainPID --value $u)/limits"; done
+  systemctl show -p Wants -p After hjviewer-hbbs | grep -c network-online.target                            # 2
+  A="sudo /opt/hjviewer/bin/hjv-api admin"
+  $A selfcheck 2>&1 | grep -cF '[FAIL]'                                                                     # 0
+  $A selfcheck 2>&1 | grep 'hbbs console'                                                                   # [ OK ] hbbs console: answers hjv-pk (patch 0004)
+  D=$(sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env)
+  curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/source"; echo                      # commit이 이 묶음의 커밋
+  sudo journalctl --namespace=hjviewer -u hjviewer-api --since -1h -o cat --no-pager | grep -E '^hjv-api .* ready' | tail -1
+  sudo journalctl --namespace=hjviewer -u hjviewer-api --since -1h -o cat --no-pager | grep -c '^update: door 2'   # 1(그 줄에는 코드의 꼬리표가 있으므로 셈만)
+  $A report | grep -E '^(operator file |PCs holding their binding: )'
+  $A health | python3 -I -c 'import json, sys; h = json.load(sys.stdin); print([(f["name"], f["state"]) for f in h["files"]], h.get("pcs_unseen"))'
+  systemctl show -p ActiveEnterTimestamp --value hjviewer-api                                               # hjv-api를 다시 시작한 시각(보고에 적음)
+  ```
+  - 셋 모두 `active`이고, hbbs의 줄이 `Private key comes from id_ed25519`, `relay-servers=["<도메인>"]`, `MAX_MESSAGE_KB=64`, hbbr이 1, 세 키 값이 같아야 합니다. `activating`이나 `failed`면 키 파일 문제입니다. `sudo journalctl -q -u hjviewer-hbbs -u hjviewer-hbbr --since -5min -o cat | grep -E '^Error|Caused|does not match' | head -5`(`Error: Failed to open private key`, `Failed to read private key`, `Malformed private key`, `Failed to set private key permissions to 0600`, `Failed to read public key file`, ERROR `Public key in … does not match private key in id_ed25519`. 경로와 까닭만 있음)를 보고하고 아래 '되돌리기'로 hbbs·hbbr을 되돌립니다. 그동안 실패마다 경보가 갑니다(7-14).
+  - ERROR 줄은 7-6의 `config.rs` 두 줄 말고 없어야 합니다. `Invalid relay-servers <도메인>: …`이면 새 hbbs가 시작할 때 도메인을 풀지 못한 것입니다(0010은 그래도 그 이름으로 동작). "넣기 전" 2번의 `getent` 줄을 다시 돌려 보고합니다. 다른 ERROR 줄은 그 줄만(160자까지) 보고합니다. 0013부터 클라이언트가 보낸 ID와 uuid는 저널에 이스케이프된 한 줄로만 들어가므로 이 grep이 클라이언트가 만든 줄을 보이지 않습니다.
+  - `OnFailure`는 `hjviewer-api-alert@hjviewer-hbbs.service.service`와 `…@hjviewer-hbbr.service.service` 두 줄, `Max core file size`는 두 줄 모두 `0`입니다. 경보 경로를 시험하려고 hbbs를 죽이거나 그 경보 유닛을 손으로 시작하지 않습니다(텔레그램에 가짜 경보가 감). 경보 경로의 시험은 지금처럼 `hjviewer-api-alert@test.service`입니다(7-14).
+  - selfcheck의 `[FAIL]`이 0이고 `hbbs console` 줄이 `[ OK ]`, `/api/hjv/source`의 commit이 새 묶음의 커밋, `hjv-api <판> ready: …` 줄이 있어야 합니다. `report`의 `PCs holding their binding:` 줄은 "넣기 전" 4번과 같은 수(10분 안에 동기화한 수는 몇 분 뒤 돌아옴)이고, `operator file` 세 줄은 그 파일이 있으면 `active until <그 파일의 UNTIL>, <n> days left`, 설정 줄이 없으면 `not set`입니다(이 세 줄은 ID, 코드, 주소를 싣지 않으므로 그대로 보고에 옮겨도 됨). `health` 줄은 운영 서버에서 `[('review', 'active'), ('guest', 'active'), ('door2', 'active')] None`입니다. 문 2 줄은 파일이 있으면 `update: door 2's file (HJV_API_DOOR2_FILE) read: open until <UTC> (code=<8자리>)`, 없거나 끝났으면 `update: door 2 is closed (…)`입니다.
+  - 5분 점검을 한 번 돌립니다: `sudo systemctl start hjviewer-api-check.service && echo passed`. `passed`여야 합니다. 운영 파일이 7일 안에 끝나면(문 2는 2026-11-22T15:00:00Z부터) `file_ending`으로 실패하는 것이 맞습니다. 그때는 `sudo journalctl --namespace=hjviewer -u hjviewer-api-check --since -2min -o cat | grep -oE '^check: [a-z_]+'`의 코드만 보고하고, 7-14의 "운영 파일의 끝"대로 합니다.
+  - 5절의 첫 블록(`/ws/id`, `/ws/relay`가 101)을 다시 돌립니다. 사용자는 앱에서 묶인 PC가 1분 안에 온라인으로 보이는지, 원격 세션 하나가 열리는지 보고, 바깥에서 `hjv-probe`로도 확인합니다. 운영 에이전트는 그 뒤 개수만 셉니다: `sudo journalctl -q -u hjviewer-hbbr --since -10min -o cat | grep -c 'got paired'`(중계로 이어졌으면 1 이상, WebRTC로 직접 이어졌으면 0일 수 있음. 그 줄에는 주소가 있으므로 줄은 찍지 않음).
+  - 10분 뒤: `sudo journalctl -q -u hjviewer-hbbs -u hjviewer-hbbr --since -10min -o cat | grep -cE 'Invalid relay UUID|is not configured|queued for it unread'`가 0이어야 합니다(진짜 앱은 이 줄을 만들지 않음). 0이 아니면 개수만 보고합니다.
+- **저널의 새 줄**(주소가 든 줄은 개수만, 7-0)
+  - hbbs: INFO `MAX_MESSAGE_KB=64`(시작마다), ERROR `Invalid relay-servers <이름>: …`(시작할 때 `-r`의 이름을 풀지 못함), WARN `Close the connection from <주소>: over 256 KiB queued for it unread`(0012, 읽지 않는 연결을 닫음), WARN `Drop RequestRelay from <주소>: Invalid relay UUID (length N)`와 `Drop RelayResponse from …`(규칙에 맞지 않는 중계 uuid, hbbr의 같은 `RequestRelay` 줄은 0013), WARN `Drop <메시지> from <주소>: relay server "<이름>" is not configured`(0010, `-r`에 이름이 둘 이상일 때만이라 운영에서는 나오지 않음), WARN `Failed to send the console reply: <오류>`(hbbs·hbbr 콘솔). ICE 후보를 버린 줄과 253바이트를 넘는 ID의 중계 요청을 닫은 줄은 debug라 저널에 없습니다.
+  - 바뀐 꼴(0013): `update_pk`, `store_pk`, `IP change of`, `Peer … mismatch`, `Authentication failed … for peer`의 ID는 공백 없는 인쇄 가능 ASCII 64자 이하면 전과 같고(진짜 ID는 모두 그럼. `grep update_pk`는 그대로 맞음), 아니면 `"…"` 안에 이스케이프되어 64자까지입니다. 그 밖의 문구(`Key: `, `Private key comes from`, `min-controller …`, `access …`)는 그대로입니다.
+  - hjv-api: `update: door 2 is closed (HJV_API_DOOR2_FILE is not there, not used, or past its UNTIL)`(시작할 때, 문 2가 닫혀 있으면), `check: unseen: …`, `check: file_ending: …`, `check: file_ended: …`, `check: file_refused: …`(5분 점검의 결과, 7-14), `<파일의 머리> is not used: <까닭>`(파일을 쓰지 못할 때 한 번, 까닭은 `it cannot be read`, `it is not a file`, `it is too large`, 형식의 까닭).
+- **하지 말 것**: hbbs 콘솔의 `aur`(always-use-relay)를 쓰지 않습니다. upstream의 버그로 그 인자(`Y`, `N`)를 중계기 목록으로 다시 읽어, 0010 뒤에는 hbbs가 전달하는 모든 중계기 이름이 `Y`가 되고 hbbs를 다시 시작할 때까지 모든 중계 세션이 실패합니다(10절의 기록). 썼으면 조용한 때를 기다리지 말고 사용자에게 알려 hbbs를 다시 시작합니다. hbbs를 trace 수준으로 돌리지 않는 것은 그대로입니다(9-0).
+- **되돌리기**(사용자 승인 뒤): 부분마다 따로 되돌릴 수 있습니다.
+  - **hbbs·hbbr**: `sudo install -m 755 /root/hjv-backup/hbbs-before-<VERSION> /opt/hjviewer/bin/hbbs`, 같은 꼴로 `hbbr-before-<VERSION>`을 넣고, 조용한 시간에 `sudo systemctl restart hjviewer-hbbs hjviewer-hbbr`. 키 파일이 시작을 막았으면 바로 합니다. 새 hbbs가 키 파일의 모드를 0600으로 줄였거나 `.pub`을 만들었어도 옛 실행 파일은 그대로 읽고, `db_v2.sqlite3`의 형식은 같습니다. 되돌리면 1.9.2 서버의 노출(64 MiB까지의 등록 등)도 돌아옵니다. 유닛은 새것 그대로 두어도 옛 실행 파일과 맞습니다.
+  - **유닛**: 두 백업을 `/etc/systemd/system/hjviewer-hbbs.service`, `hjviewer-hbbr.service`로 `sudo cp -p`하고 `sudo systemctl daemon-reload`. `OnFailure=`는 바로 빠지고 `LimitCORE=0`은 다음 시작까지 남습니다(되돌리려고 따로 다시 시작하지 않음).
+  - **nginx**: 두 백업을 **함께** `snippets/hjviewer-api.conf`, `conf.d/hjviewer-api-zones.conf`로 `sudo cp -p`하고, 넣기 3번 블록의 `W0=`를 다시 적은 뒤 `sudo nginx -t && sudo systemctl reload nginx`, 같은 `ps` 줄로 `reload OK`를 봅니다. 옛 이름으로 돌아가는 것도 이름이 다르므로 reload가 됩니다. 되돌리면 PC의 ID가 다시 오류 기록에 남을 수 있고 로그인 한도는 IPv6 주소마다로 돌아갑니다.
+  - **hjv-api**: 스키마가 같으므로 7-14의 "업그레이드"대로 옛 실행 파일과 설정 파일로 돌아갑니다(스냅숏은 넣지 않음: 넣으면 그 뒤의 삭제와 폐기가 되돌아감). 1.9.2의 점검은 1.9.3의 `health`를 읽고 그 반대도 읽습니다. 고지 파일은 `sudo cp -p /root/hjv-backup/share-before-<VERSION>/{LICENSE,NOTICE,SOURCE,THIRD_PARTY_NOTICES}.txt /opt/hjviewer/share/`(9-11의 '되돌리기'와 같음)로 되돌리고, `sed -n 4p /opt/hjviewer/share/SOURCE.txt`가 옛 커밋으로 끝나는지 봅니다.
