@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 02:47:01 +0900
+Subject: [PATCH 15/15] hbbs: the console's always-use-relay command changes
+ only that setting
+
+Upstream's "always-use-relay" ("aur") sets ALWAYS_USE_RELAY from its
+argument and then also sends that argument on as the relay server list,
+as "relay-servers" ("rs") does. Since patch 0010 names, in every message
+it forwards between clients, the relay as written in that list, "aur Y"
+made "Y" the relay every PC and controller was told to dial, until hbbs
+restarted, and left the rotation list empty ("Y" does not resolve).
+
+aur now changes the setting alone: "aur Y" turns it on, any other
+argument off, and "aur" without one answers "ALWAYS_USE_RELAY: <on>",
+as before.
+
+tests/untrusted_input.rs: with -r 192.0.2.10, after "aur Y", "aur N"
+and "aur y", "aur" answers the setting, "rs" still lists 192.0.2.10,
+the relay response, punch hole report and relay request forwarded still
+name it (before: "Y"), and a punch hole has the peer use the relay
+(nat_type SYMMETRIC) exactly while the setting is on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/rendezvous_server.rs |  4 +++-
+ tests/untrusted_input.rs | 49 ++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 50 insertions(+), 3 deletions(-)
+
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 2c3fa34..552bc3c 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -1395,13 +1395,15 @@ impl RendezvousServer {
+                 }
+             }
+             Some("always-use-relay" | "aur") => {
++                // HJViewer: the setting alone. Upstream also sent the argument on as the relay
++                // server list, as if it were rs's, so "aur Y" made "Y" the only relay that
++                // own_relay names until hbbs restarted.
+                 if let Some(rs) = fds.next() {
+                     if rs.to_uppercase() == "Y" {
+                         ALWAYS_USE_RELAY.store(true, Ordering::SeqCst);
+                     } else {
+                         ALWAYS_USE_RELAY.store(false, Ordering::SeqCst);
+                     }
+-                    self.tx.send(Data::RelayServers0(rs.to_owned())).ok();
+                 } else {
+                     let _ = writeln!(
+                         res,
+diff --git a/tests/untrusted_input.rs b/tests/untrusted_input.rs
+index f8e3868..d964957 100644
+--- a/tests/untrusted_input.rs
++++ b/tests/untrusted_input.rs
+@@ -4,8 +4,9 @@
+ //! WebSocket port and the TCP port alike; the address in X-Real-IP is the client's, in the IPv4
+ //! form when a dual-stack proxy writes an IPv4 client as ::ffff:a.b.c.d; a relay server one
+ //! client names to another is one hbbs is configured with, whether or not its name resolved
+-//! when hbbs started; ICE candidates for a peer go only from the connection whose punch hole
+-//! request reached it; what is forwarded to a connection that does not read stays within a
++//! when hbbs started, and whatever the console's always-use-relay command is given; ICE
++//! candidates for a peer go only from the connection whose punch hole request reached it; what
++//! is forwarded to a connection that does not read stays within a
+ //! bound, past which the connection is closed; every connection hbbs accepts has a small send
+ //! buffer of its own, so that one that stops reading holds little in the kernel and has hbbs's
+ //! write wait, which ends it with a reset at the write deadline, while one that reads gets every
+@@ -712,6 +713,50 @@ fn no_relay_configured_leaves_the_names_as_upstream() {
+     });
+ }
+ 
++#[test]
++fn the_always_use_relay_command_changes_that_setting_and_not_the_relay_names() {
++    let server = Hbbs::start("relay-aur", &["-r", "192.0.2.10"]);
++    runtime().block_on(async {
++        let mut pc = registered_pc(&server).await;
++        assert_eq!(server.console("aur").await, "ALWAYS_USE_RELAY: false\n");
++        for (arg, on) in [("Y", true), ("N", false), ("y", true)] {
++            assert_eq!(server.console(&format!("aur {arg}")).await, "");
++            assert_eq!(
++                server.console("aur").await,
++                format!("ALWAYS_USE_RELAY: {on}\n")
++            );
++            // upstream also took the argument for the relay server list
++            assert_eq!(
++                server.console("rs").await,
++                "192.0.2.10\n",
++                "after aur {arg}"
++            );
++            let named = forward_relay_names(&server, &mut pc, OTHER_RELAY).await;
++            let ours = Some("192.0.2.10".to_owned());
++            assert_eq!(named.relay_response, ours, "relay response after aur {arg}");
++            assert_eq!(
++                named.punch_hole_response, ours,
++                "punch hole report after aur {arg}"
++            );
++            assert_eq!(named.request_relay, ours, "relay request after aur {arg}");
++
++            // and the setting holds: with it, a punch hole has the peer go through the relay
++            let mut controller = Client::connect(&server, "198.51.100.25", Some(50005)).await;
++            let mut msg = punch_hole_request(&server);
++            msg.mut_punch_hole_request().force_relay = false;
++            controller.send(msg).await;
++            let rendezvous_message::Union::PunchHole(ph) = pc.recv().await else {
++                panic!("expected a punch hole");
++            };
++            assert_eq!(
++                ph.nat_type.enum_value() == Ok(NatType::SYMMETRIC),
++                on,
++                "the punch hole after aur {arg}"
++            );
++        }
++    });
++}
++
+ fn ice_candidate(id: &str, candidate: &str) -> RendezvousMessage {
+     let mut msg = RendezvousMessage::new();
+     msg.set_ice_candidate(IceCandidate {

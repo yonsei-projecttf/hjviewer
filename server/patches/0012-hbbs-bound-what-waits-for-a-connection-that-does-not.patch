@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 23:58:01 +0900
-Subject: [PATCH 12/13] hbbs: bound what waits for a connection that does not
+Subject: [PATCH 12/15] hbbs: bound what waits for a connection that does not
  read, and each write
 
 Each TCP/WebSocket connection's outbound queue was unbounded, and anyone

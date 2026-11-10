@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:35:55 +0900
-Subject: [PATCH 10/13] hbbs: name only its own relay in the messages it
+Subject: [PATCH 10/15] hbbs: name only its own relay in the messages it
  forwards between clients
 
 hbbs forwarded the relay_server a client wrote: from a controller's

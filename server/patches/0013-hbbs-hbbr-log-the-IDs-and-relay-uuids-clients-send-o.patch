@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Wed, 11 Nov 2026 00:00:32 +0900
-Subject: [PATCH 13/13] hbbs, hbbr: log the IDs and relay uuids clients send on
+Subject: [PATCH 13/15] hbbs, hbbr: log the IDs and relay uuids clients send on
  one line of a bounded length
 
 hbbs logged the ID a client sent as it was: a punch hole request with

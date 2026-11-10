@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:38:33 +0900
-Subject: [PATCH 11/13] hbbs: forward a controller's ICE candidates only after
+Subject: [PATCH 11/15] hbbs: forward a controller's ICE candidates only after
  its punch hole
 
 An IceCandidate with an id went to that peer from any connection, without
