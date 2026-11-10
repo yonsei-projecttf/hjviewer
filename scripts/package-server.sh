@@ -76,7 +76,10 @@ no_build_paths() { # <binary...>
 rm -rf "$work/upstream"
 UPSTREAM_DIR="$work/upstream" "$ROOT/scripts/fetch-upstream.sh" server
 bin=${HJV_SERVER_BIN_DIR:-}
+# the rustc of each of this script's own builds, for SOURCE.txt (empty: a binary passed in)
+server_rustc="" api_rustc=""
 if [ -z "$bin" ]; then
+  server_rustc=$(cd "$work/upstream/rustdesk-server" && rustc -V)
   flags=$(remap_flags "$work/upstream/rustdesk-server")
   (cd "$work/upstream/rustdesk-server" &&
     RUSTFLAGS=$flags CARGO_TARGET_DIR="$work/target" cargo build --release --locked --bin hbbs --bin hbbr)
@@ -88,6 +91,7 @@ if [ -d "$ROOT/server/api" ]; then
   api=${HJV_API_BIN:-}
   if [ -z "$api" ]; then
     api_commit=$(git -C "$ROOT" rev-parse HEAD)
+    api_rustc=$(cd "$ROOT/server/api" && rustc -V)
     flags=$(remap_flags "$ROOT/server/api")
     (cd "$ROOT/server/api" && HJV_API_COMMIT=$api_commit RUSTFLAGS=$flags \
       CARGO_TARGET_DIR="$work/target-api" cargo build --release --locked --bin hjv-api)
@@ -130,19 +134,33 @@ if [ -n "$api" ]; then
 fi
 NOTICES_COMPONENT=server NOTICES_TARGET=x86_64-unknown-linux-gnu NOTICES_EXTRA_WORKSPACES="${extra[*]}" \
   "$ROOT/scripts/package-notices.sh" "$stage" "$work/upstream/rustdesk-server"
-if [ -n "$api" ]; then
+# How the binaries were built, so that a rebuild can compare bytes: those this script built carry
+# remap_flags' RUSTFLAGS, and a build without them gives other bytes (the paths in them differ)
+remapped=("the RUSTFLAGS of scripts/package-server.sh's remap_flags (--remap-path-prefix of the"
+  "cargo home, the toolchain's library sources and the tree): a build without them gives other bytes")
+if [ -n "$server_rustc" ]; then
   {
-    echo "(server/api holds the whole source of hjv-api; it was built there with"
-    if [ "$api_commit" = "$(git -C "$ROOT" rev-parse HEAD)" ]; then
-      echo "cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to the commit above)"
-    elif git -C "$ROOT" diff --quiet "$api_commit" HEAD -- server/api 2> /dev/null; then
-      echo "cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to"
-      echo "$api_commit, whose server/api is that of the commit above)"
-    else
-      echo "cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to"
-      echo "$api_commit)"
-    fi
+    echo "(hbbs and hbbr were built in that tree with"
+    echo "cargo build --release --locked --bin hbbs --bin hbbr, $server_rustc and"
+    printf '%s\n' "${remapped[0]}" "${remapped[1]})"
   } >> "$stage/SOURCE.txt"
+fi
+if [ -n "$api" ]; then
+  how=("(server/api holds the whole source of hjv-api; it was built there with")
+  if [ "$api_commit" = "$(git -C "$ROOT" rev-parse HEAD)" ]; then
+    how+=("cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to the commit above")
+  elif git -C "$ROOT" diff --quiet "$api_commit" HEAD -- server/api 2> /dev/null; then
+    how+=("cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to"
+      "$api_commit, whose server/api is that of the commit above")
+  else
+    how+=("cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to" "$api_commit")
+  fi
+  if [ -n "$api_rustc" ]; then
+    how[-1]+=","
+    how+=("$api_rustc and" "${remapped[@]}")
+  fi
+  how[-1]+=")"
+  printf '%s\n' "${how[@]}" >> "$stage/SOURCE.txt"
 fi
 
 mkdir -p "$out"
