@@ -231,6 +231,7 @@ class StoreTextTest(unittest.TestCase):
                      "a staff account's PC list and a support code.",
                      "The screenshot of the My PCs list shows what the demo account cannot: a staff account's PC list."),)
         # the demo PC's HJViewer signed in to the demo account, as 1.9.2 went in by hand on 2026-10-29
+        # (store/README.md: only while that login has not ended when the notes go in)
         signed_in = (("On the demo PC, please leave HJViewer signed out: signing in and out there takes the PC offline.",
                       "On the demo PC, HJViewer is signed in to the demo account; do not sign out there, as that takes "
                       "the PC offline. If it says its login ended (as deleting the account does), click Close and "
@@ -262,8 +263,9 @@ class StoreTextTest(unittest.TestCase):
         self.assertLessEqual(self.worst_size(copy, hand(notes, no_video, tested_on=True)), cst.REVIEW_NOTES_BYTES)
         self.assertLessEqual(self.worst_size(copy, with_approval(hand(notes, no_video, tested_on=True))),
                              cst.REVIEW_NOTES_BYTES)
-        # 1.9.2 as it went in: the demo PC signed in, without the video, with Tested on (3964 bytes),
-        # without it (3884); once Apple has approved, Tested on goes (4044 with it, 3964 without)
+        # 1.9.2 as it went in on 2026-10-29: the demo PC signed in, without the video and without
+        # Tested on (3884 bytes; 3964 with it); once Apple has approved, Tested on goes (4044 with
+        # it, 3964 without)
         def filled(text):
             return cst.notes_bytes(cst.fill(text, {"DEMO_PC_ID": "x" * cst.PC_ID_MAX,
                                                     "DEMO_PC_PASSWORD": "x" * cst.PC_PASSWORD_MAX}))
