@@ -1021,6 +1021,17 @@ jobs:
           echo "PACKER_EXECUTABLE=$PACKER_EXECUTABLE" >> "$GITHUB_ENV"
           echo "app folder: $(wc -l < hjv-payload.sha256) files, as listed"
 
+      # Every build, check builds too: what a release build would refuse shows up early (a pin that
+      # no longer matches, an unsigned driver, a vendor signature Windows rejects or one valid only
+      # through a catalog, more files to sign than one batch takes). Kept vendor signatures that are
+      # not SHA-256 or carry no RFC 3161 timestamp become warnings.
+      - name: Preflight Windows signatures
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE/scripts/windows-signing.ps1" -Mode Preflight -Root ./rustdesk `
+            -PinFile "$env:GITHUB_WORKSPACE/scripts/windows-signing-pins.txt"
+          if ($LASTEXITCODE) { throw 'Windows signature preflight failed.' }
+
       - name: Prepare runtime signatures
         id: runtime-signing
         if: ${{ !inputs.check_only }}
@@ -1043,6 +1054,15 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # GitHub's OIDC assertion lives about five minutes, and the signing action first installs its
+      # module and NuGet packages (no dependency cache). The Azure CLI therefore takes its Artifact
+      # Signing token now, while the assertion is fresh, and keeps it for the action; the sign-out
+      # step wipes it. The token is never printed.
+      - name: Get the Artifact Signing token for the runtime signatures
+        if: ${{ !inputs.check_only && steps.runtime-signing.outputs.pending_count != '0' }}
+        shell: pwsh
+        run: az account get-access-token --resource https://codesigning.azure.net --output none
 
       # Signs in place, through the Azure CLI's login only. The action's dependency cache stays off
       # (its own main branch turned the default off: caches are no security boundary).
@@ -1133,6 +1153,11 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get the Artifact Signing token for the installer signature
+        if: ${{ !inputs.check_only && steps.installer-signing.outputs.pending_count != '0' }}
+        shell: pwsh
+        run: az account get-access-token --resource https://codesigning.azure.net --output none
 
       - name: Sign installer
         if: ${{ !inputs.check_only && steps.installer-signing.outputs.pending_count != '0' }}

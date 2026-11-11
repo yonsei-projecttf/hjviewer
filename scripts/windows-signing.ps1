@@ -11,9 +11,17 @@
 # publisher that identity validation approved (ExpectedPublisher), and every file of the batch was
 # signed by the same certificate.
 #
-# PinFile lists vendor files, by SHA-256 and relative path, that are shipped as they are without a
-# signature Windows accepts on its own: their own signature is not checked and they are never
-# signed, only compared byte for byte (scripts/windows-signing-pins.txt).
+# A vendor file is kept as it is only with a valid signature embedded in the file: a catalog's
+# signature lives on the machine that checked it, not in the package, so a catalog-only file stops
+# every mode. Kept signatures that are not SHA-256 or carry no RFC 3161 timestamp are warned about
+# (::warning::) in Preflight and Audit. PinFile lists vendor files, by SHA-256 and relative path,
+# that are shipped as they are without a signature Windows accepts on its own: their own signature
+# is not checked and they are never signed, only compared byte for byte
+# (scripts/windows-signing-pins.txt).
+#
+# Errors are a code, and after two underscores the public causes where there are any: the chain
+# status flags of X509Chain, the class of WinTrust's message, the timestamp check that failed. No
+# message, certificate or path of the machine is printed.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Prepare', 'Verify', 'Audit')][string]$Mode,
@@ -42,9 +50,17 @@ $script:Rfc3161TimestampOid = '1.3.6.1.4.1.311.3.3.1'
 $script:ManifestSchema = 2
 $script:ValidatedReportPath = $null
 $script:Pins = @{}
+# The pauses before the second and third online chain build (a revocation server can be slow)
+$script:ChainRetrySeconds = @(2, 5)
+$script:LastChainAttempts = 0
 
-function Stop-Signing([string]$Code) {
-    # Do not forward provider errors: they can contain credentials or machine paths.
+function Stop-Signing([string]$Code, [string[]]$Causes) {
+    # Do not forward provider errors: they can contain credentials or machine paths. A cause is a
+    # public name (a chain status flag, a class of WinTrust's message, a timestamp check), reduced
+    # to letters and digits and appended after two underscores.
+    $words = @($Causes | Where-Object { $_ } | ForEach-Object { ($_ -replace '[^A-Za-z0-9]', '').ToUpperInvariant() } |
+        Where-Object { $_ } | Sort-Object -Unique)
+    if ($words.Count -gt 0) { $Code = $Code + '__' + ($words -join '_') }
     throw [InvalidOperationException]::new("Windows signing check failed: $Code")
 }
 
@@ -187,6 +203,26 @@ function Get-CommonName($Certificate) {
     return $Certificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
 }
 
+function Get-StatusClass($Signature) {
+    # The class of WinTrust's message (English on the runners), never the message itself, which
+    # can name the file's path.
+    $message = [string]$Signature.StatusMessage
+    $classes = [ordered]@{
+        'UNTRUSTEDROOT' = 'root certificate which is not trusted'
+        'REVOKED' = 'revoked'
+        'REVOCATIONUNKNOWN' = 'revocation'
+        'EXPIRED' = 'validity period|expired'
+        'HASHMISMATCH' = 'hash'
+        'NOSIGNATURE' = 'no signature'
+        'UNTRUSTEDPUBLISHER' = 'publisher'
+        'WRONGUSAGE' = 'usage|purpose'
+    }
+    foreach ($class in $classes.Keys) {
+        if ($message -match $classes[$class]) { return $class }
+    }
+    return 'OTHER'
+}
+
 function Get-CheckedSignature([string]$Path, $Pe) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     $status = $signature.Status.ToString()
@@ -200,7 +236,7 @@ function Get-CheckedSignature([string]$Path, $Pe) {
     if ($status -eq 'NotSigned' -and $null -ne $Pe -and $Pe.CertificateSize -eq 0) { return $signature }
     # Never repair an invalid/revoked/unknown signature by replacing it. A vendor file that ships
     # with such a signature on purpose goes into the pin file instead.
-    Stop-Signing ('EXISTING_SIGNATURE_' + ($status -replace '[^A-Za-z0-9]', '').ToUpperInvariant())
+    Stop-Signing ('EXISTING_SIGNATURE_' + ($status -replace '[^A-Za-z0-9]', '').ToUpperInvariant()) @(Get-StatusClass $signature)
 }
 
 function Get-Disposition($File, [string]$Sha, $Pe) {
@@ -212,7 +248,13 @@ function Get-Disposition($File, [string]$Sha, $Pe) {
         return [pscustomobject]@{ Disposition = 'Data'; SignatureStatus = $null }
     }
     $status = (Get-CheckedSignature $File.FullName $Pe).Status.ToString()
-    if ($status -eq 'Valid') { return [pscustomobject]@{ Disposition = 'Preserve'; SignatureStatus = $status } }
+    if ($status -eq 'Valid') {
+        # Only a signature embedded in the file travels with it. WinTrust also calls a file valid
+        # whose hash is in one of this runner's catalogs, which the users' PCs need not have.
+        if ($null -eq $Pe) { Stop-Signing 'CATALOG_FILE_NOT_PINNED' }
+        if ($Pe.CertificateSize -le 0) { Stop-Signing 'CATALOG_ONLY_SIGNATURE' }
+        return [pscustomobject]@{ Disposition = 'Preserve'; SignatureStatus = $status }
+    }
     # A kernel driver needs Microsoft's signature, which a code signing certificate cannot give.
     if ($Pe.Kind -eq 'SYS') { Stop-Signing 'DRIVER_NOT_SIGNED' }
     return [pscustomobject]@{ Disposition = 'Sign'; SignatureStatus = $status }
@@ -319,10 +361,9 @@ function Get-FileDigestOid([byte[]]$Content) {
     return $algorithm.ReadObjectIdentifier($null)
 }
 
-function Get-SignatureStructure([string]$Path, $Pe, $TimeStamper) {
-    # What WinTrust's "Valid" does not say: one certificate table entry with one signer, SHA-256
-    # file and signer digests, no appended (nested) signature, and one RFC 3161 timestamp whose
-    # imprint is this signature. Returns the signer certificate and the timestamp.
+function Read-SignatureCms([string]$Path, $Pe) {
+    # The first WIN_CERTIFICATE entry of a signed PE, decoded as PKCS#7 SignedData, its file
+    # digest algorithm, and whether more entries follow it.
     if ($null -eq $Pe -or $Pe.CertificateSize -lt 16) { Stop-Signing 'PE_CERTIFICATE_INVALID' }
     $bytes = [IO.File]::ReadAllBytes($Path)
     $at = [int]$Pe.CertificateAt
@@ -333,7 +374,7 @@ function Get-SignatureStructure([string]$Path, $Pe, $TimeStamper) {
         Stop-Signing 'PE_CERTIFICATE_INVALID'
     }
     # Entries are padded to eight bytes; anything after the first one is a second signature.
-    if ([long]([Math]::Ceiling($length / 8.0) * 8) -ne $Pe.CertificateSize) { Stop-Signing 'SECOND_CERTIFICATE_ENTRY' }
+    $more = [long]([Math]::Ceiling($length / 8.0) * 8) -ne $Pe.CertificateSize
     $blob = [byte[]]::new([int]$length - 8)
     [Array]::Copy($bytes, $at + 8, $blob, 0, $blob.Length)
     $der = Get-DerValue $blob
@@ -345,10 +386,21 @@ function Get-SignatureStructure([string]$Path, $Pe, $TimeStamper) {
             $fileDigest = Get-FileDigestOid $cms.ContentInfo.Content
         }
     } catch { Stop-Signing 'SIGNATURE_UNREADABLE' }
+    return [pscustomobject]@{ Cms = $cms; FileDigest = $fileDigest; MoreEntries = $more }
+}
+
+function Get-SignatureStructure([string]$Path, $Pe, $TimeStamper) {
+    # What WinTrust's "Valid" does not say: one certificate table entry with one signer, SHA-256
+    # file and signer digests, no appended (nested) signature, and one RFC 3161 timestamp whose
+    # imprint is this signature. Returns the signer certificate, the timestamp and the
+    # signature's own certificates (candidates for the chain's intermediates).
+    $read = Read-SignatureCms $Path $Pe
+    if ($read.MoreEntries) { Stop-Signing 'SECOND_CERTIFICATE_ENTRY' }
+    $cms = $read.Cms
     if ($cms.ContentInfo.ContentType.Value -ne $script:SpcIndirectDataOid) { Stop-Signing 'NOT_AUTHENTICODE' }
     if ($cms.SignerInfos.Count -ne 1) { Stop-Signing 'ONE_SIGNER_REQUIRED' }
     $signer = $cms.SignerInfos[0]
-    if ($fileDigest -ne $script:Sha256Oid -or $signer.DigestAlgorithm.Value -ne $script:Sha256Oid) {
+    if ($read.FileDigest -ne $script:Sha256Oid -or $signer.DigestAlgorithm.Value -ne $script:Sha256Oid) {
         Stop-Signing 'FILE_DIGEST_NOT_SHA256'
     }
     if ($null -eq $signer.Certificate) { Stop-Signing 'SIGNER_CERTIFICATE_MISSING' }
@@ -361,65 +413,114 @@ function Get-SignatureStructure([string]$Path, $Pe, $TimeStamper) {
     }
     # A legacy Authenticode countersignature is not enough: Artifact Signing's timestamp
     # service answers RFC 3161 requests only.
-    if ($tokens.Count -ne 1) { Stop-Signing 'RFC3161_TIMESTAMP_REQUIRED' }
+    if ($tokens.Count -eq 0) { Stop-Signing 'RFC3161_TIMESTAMP_REQUIRED' }
+    if ($tokens.Count -gt 1) { Stop-Signing 'RFC3161_TIMESTAMP_INVALID' @('MORETHANONE') }
     $token = $null
-    $read = 0
+    $consumed = 0
     $decoded = [Security.Cryptography.Pkcs.Rfc3161TimestampToken]::TryDecode(
-        [ReadOnlyMemory[byte]]::new($tokens[0]), [ref]$token, [ref]$read)
-    if (-not $decoded -or $read -ne $tokens[0].Length) { Stop-Signing 'RFC3161_TIMESTAMP_INVALID' }
+        [ReadOnlyMemory[byte]]::new($tokens[0]), [ref]$token, [ref]$consumed)
+    if (-not $decoded) { Stop-Signing 'RFC3161_TIMESTAMP_INVALID' @('UNREADABLE') }
+    if ($consumed -ne $tokens[0].Length) { Stop-Signing 'RFC3161_TIMESTAMP_INVALID' @('TRAILINGDATA') }
     if ($token.TokenInfo.HashAlgorithmId.Value -ne $script:Sha256Oid) { Stop-Signing 'TIMESTAMP_DIGEST_NOT_SHA256' }
+    # The timestamp is over this signature's value, then signed by its authority.
+    $imprint = [Security.Cryptography.SHA256]::HashData($signer.GetSignature())
+    if ([Convert]::ToBase64String($imprint) -cne [Convert]::ToBase64String($token.TokenInfo.GetMessageHash().ToArray())) {
+        Stop-Signing 'RFC3161_TIMESTAMP_INVALID' @('IMPRINTMISMATCH')
+    }
     $extra = [Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
     if ($null -ne $TimeStamper) { $null = $extra.Add($TimeStamper) }
     $authority = $null
     if (-not $token.VerifySignatureForSignerInfo($signer, [ref]$authority, $extra)) {
-        Stop-Signing 'RFC3161_TIMESTAMP_INVALID'
+        Stop-Signing 'RFC3161_TIMESTAMP_INVALID' @('AUTHORITYSIGNATURE')
     }
     $time = $token.TokenInfo.Timestamp.UtcDateTime
-    if ($time -lt $signer.Certificate.NotBefore.ToUniversalTime() -or $time -gt $signer.Certificate.NotAfter.ToUniversalTime()) {
-        Stop-Signing 'TIMESTAMP_OUTSIDE_CERTIFICATE'
-    }
-    return [pscustomobject]@{ Certificate = $signer.Certificate; TimestampUtc = $time }
+    if ($time -lt $signer.Certificate.NotBefore.ToUniversalTime()) { Stop-Signing 'TIMESTAMP_OUTSIDE_CERTIFICATE' @('BEFORE') }
+    if ($time -gt $signer.Certificate.NotAfter.ToUniversalTime()) { Stop-Signing 'TIMESTAMP_OUTSIDE_CERTIFICATE' @('AFTER') }
+    return [pscustomobject]@{ Certificate = $signer.Certificate; TimestampUtc = $time; Certificates = $cms.Certificates }
 }
 
-function Assert-NewSignature([string]$Path, [string]$Publisher) {
+function Assert-SignerChain($Leaf, $Extra, [string]$ChainCA) {
+    # Get-AuthenticodeSignature validates the file and timestamp with WinTrust. Also require an
+    # online, currently valid code-signing chain in the clean Windows runner's normal trust store
+    # that runs through ChainCA, with the signature's own certificates as candidates for the
+    # intermediates. A revocation server can be slow or briefly unreachable, so the chain is built
+    # up to three times before the build fails with its status flags. Never install test roots on
+    # the runner.
+    $causes = @()
+    $script:LastChainAttempts = 0
+    for ($attempt = 0; $attempt -le $script:ChainRetrySeconds.Count; $attempt++) {
+        if ($attempt -gt 0) { Start-Sleep -Seconds $script:ChainRetrySeconds[$attempt - 1] }
+        $script:LastChainAttempts++
+        $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
+        try {
+            $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::Online
+            $chain.ChainPolicy.RevocationFlag = [Security.Cryptography.X509Certificates.X509RevocationFlag]::ExcludeRoot
+            $chain.ChainPolicy.VerificationFlags = [Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
+            $chain.ChainPolicy.UrlRetrievalTimeout = [TimeSpan]::FromSeconds(30)
+            $null = $chain.ChainPolicy.ApplicationPolicy.Add([Security.Cryptography.Oid]::new($script:CodeSigningOid))
+            if ($null -ne $Extra) { $chain.ChainPolicy.ExtraStore.AddRange($Extra) }
+            if ($chain.Build($Leaf)) {
+                if ($chain.ChainElements.Count -lt 2) { Stop-Signing 'SELF_SIGNED_SIGNER' }
+                for ($i = 1; $i -lt $chain.ChainElements.Count; $i++) {
+                    if ((Get-CommonName $chain.ChainElements[$i].Certificate) -ceq $ChainCA) { return }
+                }
+                Stop-Signing 'ARTIFACT_SIGNING_CHAIN_REQUIRED'
+            }
+            $causes = @($chain.ChainStatus | ForEach-Object { $_.Status.ToString() })
+        } finally { $chain.Dispose() }
+    }
+    Stop-Signing 'PUBLIC_SIGNER_CHAIN_INVALID' $causes
+}
+
+function Assert-NewSignature([string]$Path, [string]$Publisher, [string]$ChainCA = $ExpectedChainCA) {
     $pe = Get-PeInfo $Path
     $signature = Get-CheckedSignature $Path $pe
-    if ($signature.Status.ToString() -ne 'Valid' -or $signature.SignatureType.ToString() -ne 'Authenticode') {
-        Stop-Signing 'NEW_AUTHENTICODE_SIGNATURE_REQUIRED'
+    if ($signature.Status.ToString() -ne 'Valid' -or $signature.SignatureType.ToString() -ne 'Authenticode' -or
+        $null -eq $pe -or $pe.CertificateSize -le 0) {
+        Stop-Signing 'NEW_AUTHENTICODE_SIGNATURE_REQUIRED' @($signature.SignatureType.ToString())
     }
     $leaf = $signature.SignerCertificate
     if ($leaf.Subject -ceq $leaf.Issuer) { Stop-Signing 'SELF_SIGNED_SIGNER' }
     if ((Get-CommonName $leaf) -cne $Publisher) { Stop-Signing 'UNEXPECTED_PUBLISHER' }
+    if ($null -eq $signature.TimeStamperCertificate) { Stop-Signing 'TRUSTED_TIMESTAMP_REQUIRED' @('NOTIMESTAMPER') }
     if (-not (Test-CertificateEku $signature.TimeStamperCertificate $script:TimeStampingOid)) {
-        Stop-Signing 'TRUSTED_TIMESTAMP_REQUIRED'
+        Stop-Signing 'TRUSTED_TIMESTAMP_REQUIRED' @('NOTIMESTAMPINGUSAGE')
     }
     $structure = Get-SignatureStructure $Path $pe $signature.TimeStamperCertificate
     if ($structure.Certificate.Thumbprint -ine $leaf.Thumbprint) { Stop-Signing 'SIGNER_MISMATCH' }
-    # Get-AuthenticodeSignature validates the file and timestamp with WinTrust.
-    # Also require an online, currently valid code-signing chain in the clean
-    # Windows runner's normal trust store that runs through Artifact Signing's CA.
-    # Never install test roots on the runner.
-    $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
-    try {
-        $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::Online
-        $chain.ChainPolicy.RevocationFlag = [Security.Cryptography.X509Certificates.X509RevocationFlag]::ExcludeRoot
-        $chain.ChainPolicy.VerificationFlags = [Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
-        $chain.ChainPolicy.UrlRetrievalTimeout = [TimeSpan]::FromSeconds(30)
-        $null = $chain.ChainPolicy.ApplicationPolicy.Add([Security.Cryptography.Oid]::new($script:CodeSigningOid))
-        if (-not $chain.Build($leaf)) { Stop-Signing 'PUBLIC_SIGNER_CHAIN_INVALID' }
-        if ($chain.ChainElements.Count -lt 2) { Stop-Signing 'SELF_SIGNED_SIGNER' }
-        $throughCA = $false
-        for ($i = 1; $i -lt $chain.ChainElements.Count; $i++) {
-            if ((Get-CommonName $chain.ChainElements[$i].Certificate) -ceq $ExpectedChainCA) { $throughCA = $true }
-        }
-        if (-not $throughCA) { Stop-Signing 'ARTIFACT_SIGNING_CHAIN_REQUIRED' }
-    } finally { $chain.Dispose() }
+    Assert-SignerChain $leaf $structure.Certificates $ChainCA
     return [pscustomobject]@{
         Status = 'Valid'; SignerThumbprint = $leaf.Thumbprint.ToUpperInvariant()
         CertificateNotAfterUtc = $leaf.NotAfter.ToUniversalTime().ToString('o')
         TimestampUtc = $structure.TimestampUtc.ToString('o'); FileDigest = 'SHA256'
-        WindowsTrustValidated = $true
+        WindowsTrustValidated = $true; ChainAttempts = $script:LastChainAttempts
     }
+}
+
+function Get-KeptSignatureWarnings([string]$Directory, $Inventory) {
+    # Vendor signatures kept as they are that a later Windows may trust less: not SHA-256, or
+    # without an RFC 3161 timestamp (valid only while the vendor's certificate is). Warnings only.
+    $warnings = [Collections.Generic.List[string]]::new()
+    foreach ($record in @($Inventory | Where-Object { $_.Disposition -eq 'Preserve' -and $null -ne $_.Pe })) {
+        $path = Get-SafeChild $Directory $record.Relative
+        $notes = @()
+        try {
+            $read = Read-SignatureCms $path $record.Pe
+            $signers = @($read.Cms.SignerInfos)
+            $weak = @($signers | Where-Object { $_.DigestAlgorithm.Value -ne $script:Sha256Oid })
+            if ($read.FileDigest -ne $script:Sha256Oid -or $weak.Count -gt 0) { $notes += 'its signature is not SHA-256' }
+            $stamped = $false
+            foreach ($signer in $signers) {
+                foreach ($attribute in $signer.UnsignedAttributes) {
+                    if ($attribute.Oid.Value -eq $script:Rfc3161TimestampOid) { $stamped = $true }
+                }
+            }
+            if (-not $stamped) { $notes += 'its signature has no RFC 3161 timestamp' }
+        } catch { $notes += 'its signature could not be read' }
+        foreach ($note in $notes) { $warnings.Add("$($record.Relative): kept vendor signature, but $note") }
+    }
+    # unrolled: callers collect the lines with @()
+    return $warnings.ToArray()
 }
 
 function Assert-OneSigner($Checks) {
@@ -509,6 +610,12 @@ function Invoke-WindowsSigning {
         $toSign = @($inventory | Where-Object Disposition -EQ 'Sign')
         if ($toSign.Count -gt 100) { Stop-Signing 'SIGNING_BATCH_LIMIT' }
         if ($Mode -eq 'Audit' -and $toSign.Count -ne 0) { Stop-Signing 'UNSIGNED_RELEASE' }
+        $warnings = @()
+        if ($Mode -in @('Preflight', 'Audit')) {
+            $warnings = @(Get-KeptSignatureWarnings $rootPath $inventory)
+            # GitHub turns these lines into annotations; they name relative paths only
+            foreach ($warning in $warnings) { Write-Host ('::warning::' + $warning) }
+        }
         if ($Mode -eq 'Prepare') {
             if (-not $stagePath -or -not $manifestPath) { Stop-Signing 'PREPARE_PATHS_REQUIRED' }
             if ((Test-Path -LiteralPath $stagePath) -or (Test-Path -LiteralPath $manifestPath)) { Stop-Signing 'OUTPUT_ALREADY_EXISTS' }
@@ -530,7 +637,7 @@ function Invoke-WindowsSigning {
         $result = [pscustomobject]@{
             Schema = $script:ManifestSchema; Mode = $Mode; Success = $true; Files = $inventory
             SignCount = $toSign.Count; PreservedCount = @($inventory | Where-Object Disposition -EQ 'Preserve').Count
-            PinnedCount = @($inventory | Where-Object Disposition -EQ 'Pinned').Count
+            PinnedCount = @($inventory | Where-Object Disposition -EQ 'Pinned').Count; Warnings = $warnings
         }
     } else {
         if (-not $signedPath -or -not $manifestPath) { Stop-Signing 'VERIFY_PATHS_REQUIRED' }

@@ -45,7 +45,7 @@ function New-Case {
     return [pscustomobject]@{
         Base = $base; Root = $root; Stage = (Join-Path $base 'input')
         Manifest = (Join-Path $base 'state.json'); Report = (Join-Path $base 'report.json')
-        PinFile = $null; Publisher = $publisher
+        PinFile = $null; Publisher = $publisher; ChainCA = $null
     }
 }
 
@@ -61,7 +61,49 @@ function Run-Mode($Case, [string]$Phase) {
     $Report = $Case.Report
     $PinFile = $Case.PinFile
     $ExpectedPublisher = $Case.Publisher
+    $ExpectedChainCA = if ($Case.ChainCA) { $Case.ChainCA } else { $defaultChainCA }
     return (Invoke-WindowsSigning | ConvertFrom-Json)
+}
+
+function New-StrippedCopy([string]$Signed, [string]$Path) {
+    # The image as it was before its vendor signed it: the certificate table cut off and its
+    # directory entry cleared (the checksum may stay; Verify compares without it).
+    $pe = Get-PeInfo $Signed
+    $bytes = [IO.File]::ReadAllBytes($Signed)
+    $stripped = [byte[]]::new([int]$pe.CertificateAt)
+    [Array]::Copy($bytes, $stripped, $stripped.Length)
+    [Array]::Clear($stripped, $pe.SecurityAt, 8)
+    [IO.File]::WriteAllBytes($Path, $stripped)
+}
+
+function Find-TrustedSample {
+    # A file that Windows trusts and that is signed the way Verify demands of Artifact Signing's
+    # output, found on this runner: PowerShell's own files are Microsoft's, with one embedded
+    # SHA-256 signature and an RFC 3161 timestamp. The first that qualifies is used; none is a
+    # failure, since then the accept path would go untested.
+    $named = @('pwsh.exe', 'pwsh.dll', 'System.Management.Automation.dll', 'Microsoft.PowerShell.ConsoleHost.dll' |
+        ForEach-Object { Join-Path $PSHOME $_ })
+    $more = @(Get-ChildItem -LiteralPath $PSHOME -Filter *.dll -File | Sort-Object Name | Select-Object -First 40 |
+        ForEach-Object { $_.FullName })
+    $now = Get-Date
+    foreach ($path in @($named + $more + @(Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'))) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        try {
+            $pe = Get-PeInfo $path
+            if ($null -eq $pe -or $pe.CertificateSize -le 0 -or $pe.CertificateAt + $pe.CertificateSize -ne $pe.Length) { continue }
+            $signature = Get-AuthenticodeSignature -LiteralPath $path
+            if ($signature.Status.ToString() -ne 'Valid' -or $signature.SignatureType.ToString() -ne 'Authenticode' -or
+                $null -eq $signature.TimeStamperCertificate) { continue }
+            $leaf = $signature.SignerCertificate
+            if ($leaf.NotBefore -gt $now -or $leaf.NotAfter -lt $now) { continue }
+            $null = Get-SignatureStructure $path $pe $signature.TimeStamperCertificate
+            return [pscustomobject]@{
+                Path = $path; Kind = $pe.Kind; Publisher = (Get-CommonName $leaf)
+                ChainCA = $leaf.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $true)
+            }
+        } catch { continue }
+    }
+    throw 'No file under $PSHOME qualifies as a trusted sample (embedded, one SHA-256 signer, RFC 3161 timestamp, current certificate): the accept path is untested.'
 }
 
 function Write-Pins($Case, [string[]]$Lines) {
@@ -86,6 +128,10 @@ function New-SignedFixture([string]$Name, [string]$Hash) {
 
 try {
     . $tool -Mode Preflight -Root $work
+    $defaultChainCA = $ExpectedChainCA
+    Assert-Test ($defaultChainCA -ceq 'Microsoft ID Verified Code Signing PCA 2021') 'the chain CA defaults to Artifact Signing''s'
+    # The chain is built three times before it fails; no pauses here.
+    $script:ChainRetrySeconds = @(0, 0)
     $fixture = Join-Path $work 'fixture.dll'
     $type = 'HjvSigningFixture' + ([guid]::NewGuid().ToString('N'))
     Add-Type -TypeDefinition "public class $type { public static int Value() { return 7; } }" -OutputAssembly $fixture
@@ -98,14 +144,20 @@ try {
     $certificate = Get-Item -LiteralPath ('Cert:\CurrentUser\My\' + $created.Thumbprint)
     $selfSigned = New-SignedFixture 'self-signed.dll' 'SHA256'
     $sha1Signed = New-SignedFixture 'sha1-signed.dll' 'SHA1'
+    # Git for Windows (on every Actions runner) carries an embedded signature that Windows trusts:
+    # the kind of vendor signature that is kept.
+    $gitExe = (Get-Command git.exe -ErrorAction Stop).Source
+    $gitSignature = Get-AuthenticodeSignature -LiteralPath $gitExe
+    Assert-Test ($gitSignature.Status.ToString() -eq 'Valid' -and $gitSignature.SignatureType.ToString() -eq 'Authenticode') 'trusted vendor fixture'
+    Assert-Test ((Get-PeInfo $gitExe).CertificateSize -gt 0) 'the vendor fixture''s signature is embedded'
 
     # Header-based PE detection includes an extensionless image and an image
-    # whose extension incorrectly says EXE. Valid Windows binaries are preserved.
+    # whose extension incorrectly says EXE. Embedded valid signatures are preserved.
     $case = New-Case
     Copy-Item $fixture (Join-Path $case.Root 'extensionless')
     Copy-Item $fixture (Join-Path $case.Root 'misnamed.exe')
     $vendor = Join-Path $case.Root 'vendor.exe'
-    Copy-Item (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') $vendor
+    Copy-Item $gitExe $vendor
     $vendorHash = Get-FileSha $vendor
     $env:GITHUB_OUTPUT = Join-Path $case.Base 'github-output.txt'
     $prepared = Run-Mode $case Prepare
@@ -138,14 +190,10 @@ try {
     $noPublisher.Publisher = ' '
     Expect-Failure { Run-Mode $noPublisher Verify } 'EXPECTED_PUBLISHER_REQUIRED'
 
-    # Existing signed bytes that were tampered with must never enter signing.
+    # Existing signed bytes that were tampered with must never enter signing. Git's embedded
+    # signature makes the hash failure observable on the file itself.
     $badVendor = New-Case
     $bad = Join-Path $badVendor.Root 'vendor.exe'
-    # Windows system executables can be catalog-only: after a mutation they may
-    # simply become NotSigned. Git for Windows (also present on Actions runners)
-    # supplies an embedded signature whose hash failure is observable on the file.
-    $gitExe = (Get-Command git.exe -ErrorAction Stop).Source
-    Assert-Test ((Get-AuthenticodeSignature -LiteralPath $gitExe).SignatureType.ToString() -eq 'Authenticode') 'embedded vendor signature fixture'
     $renamedSigned = New-Case
     Remove-Item (Join-Path $renamedSigned.Root 'program.dll')
     Copy-Item $gitExe (Join-Path $renamedSigned.Root 'extensionless')
@@ -156,8 +204,28 @@ try {
     Copy-Item $gitExe $bad
     Mutate-Byte $bad 64
     Assert-Test ((Get-AuthenticodeSignature -LiteralPath $bad).Status.ToString() -eq 'HashMismatch') 'real tampered Authenticode fixture'
-    Expect-Failure { Run-Mode $badVendor Prepare } 'EXISTING_SIGNATURE_HASHMISMATCH'
+    # the code carries the class of WinTrust's message after two underscores
+    Expect-Failure { Run-Mode $badVendor Prepare } 'EXISTING_SIGNATURE_HASHMISMATCH__*'
     Assert-Test (-not (Test-Path $badVendor.Stage)) 'invalid vendor failure occurs before staging'
+
+    # A file that is valid only through one of this runner's catalogs is not kept: the users'
+    # PCs need not have that catalog. Windows' own files are catalog-only.
+    $catalogOnly = $null
+    foreach ($candidate in @('System32\WindowsPowerShell\v1.0\powershell.exe', 'System32\where.exe', 'System32\cmd.exe', 'System32\notepad.exe')) {
+        $path = Join-Path $env:WINDIR $candidate
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $found = Get-AuthenticodeSignature -LiteralPath $path
+        if ($found.Status.ToString() -eq 'Valid' -and $found.SignatureType.ToString() -eq 'Catalog' -and (Get-PeInfo $path).CertificateSize -eq 0) {
+            $catalogOnly = $path
+            break
+        }
+    }
+    Assert-Test ($null -ne $catalogOnly) 'a catalog-only Windows file for the negative fixture'
+    $catalogCase = New-Case
+    Copy-Item $catalogOnly (Join-Path $catalogCase.Root 'catalog.exe')
+    foreach ($phase in @('Preflight', 'Audit', 'Prepare')) {
+        Expect-Failure { Run-Mode $catalogCase $phase } 'CATALOG_ONLY_SIGNATURE'
+    }
 
     # A vendor file whose own signature Windows does not accept (the virtual display driver's
     # DLL carries a test signature) is shipped as it is only when the pin file names its bytes.
@@ -166,7 +234,7 @@ try {
     $null = New-Item -ItemType Directory -Path (Join-Path $untrusted.Root 'driver')
     Copy-Item $selfSigned (Join-Path $untrusted.Root 'driver/vendor.dll')
     $untrustedStatus = (Get-AuthenticodeSignature -LiteralPath $selfSigned).Status.ToString().ToUpperInvariant()
-    Expect-Failure { Run-Mode $untrusted Audit } ('EXISTING_SIGNATURE_' + $untrustedStatus)
+    Expect-Failure { Run-Mode $untrusted Audit } ('EXISTING_SIGNATURE_' + $untrustedStatus + '__*')
     Write-Pins $untrusted @('# a comment line', '', ((Get-FileSha $selfSigned) + '  driver/vendor.dll  # why'))
     $pinnedAudit = Run-Mode $untrusted Audit
     Assert-Test ($pinnedAudit.PinnedCount -eq 1 -and $pinnedAudit.SignCount -eq 0) 'pinned vendor file passes the audit'
@@ -216,7 +284,7 @@ try {
     # A copy signed by anything Windows does not trust never reaches the release root.
     $untrustedSigner = New-Case; $null = Run-Mode $untrustedSigner Prepare
     $null = Set-AuthenticodeSignature -LiteralPath (Join-Path $untrustedSigner.Stage '0000.dll') -Certificate $certificate -HashAlgorithm SHA256
-    Expect-Failure { Run-Mode $untrustedSigner Verify } ('EXISTING_SIGNATURE_' + $untrustedStatus)
+    Expect-Failure { Run-Mode $untrustedSigner Verify } ('EXISTING_SIGNATURE_' + $untrustedStatus + '__*')
     Assert-Test ((Get-FileSha (Join-Path $untrustedSigner.Root 'program.dll')) -ceq (Get-FileSha $fixture)) 'untrusted signature is not applied'
 
     $sourceChanged = New-Case; $null = Run-Mode $sourceChanged Prepare
@@ -257,7 +325,7 @@ try {
     # the self-signed fixture's trust.
     Assert-PeUnchanged $fixture $selfSigned
     $script:passed++
-    Expect-Failure { Assert-NewSignature $selfSigned $publisher } ('EXISTING_SIGNATURE_' + $untrustedStatus)
+    Expect-Failure { Assert-NewSignature $selfSigned $publisher } ('EXISTING_SIGNATURE_' + $untrustedStatus + '__*')
 
     # The structure checks that WinTrust's "Valid" does not make: SHA-256 digests, one
     # certificate table entry, and an RFC 3161 timestamp (the fixture has none).
@@ -280,6 +348,62 @@ try {
     Expect-Failure { Get-DerValue ([byte[]]@(0x31, 0x01, 0)) } 'SIGNATURE_UNREADABLE'
     Expect-Failure { Get-DerValue ([byte[]]@(0x30, 0x05, 1)) } 'SIGNATURE_UNREADABLE'
     Expect-Failure { Get-DerValue ([byte[]]@(0x30, 0x01, 1, 0, 0, 0, 0, 0, 0, 0, 0)) } 'SIGNATURE_UNREADABLE'
+
+    # The accept path, without Azure: a trusted Microsoft file of this runner signed as Verify
+    # demands, with its own publisher and CA as the expected ones. Everything after WinTrust's
+    # check runs for real: the type, the publisher, the timestamp authority's usage, the
+    # structure (the timestamp token, its imprint and signature, the time window), the online
+    # chain through the CA, one signer for the batch, and the apply.
+    $sample = Find-TrustedSample
+    $check = Assert-NewSignature $sample.Path $sample.Publisher $sample.ChainCA
+    Assert-Test ($check.Status -eq 'Valid' -and $check.FileDigest -eq 'SHA256' -and $check.TimestampUtc) 'trusted sample accepted'
+    Assert-Test ($check.ChainAttempts -ge 1 -and $check.ChainAttempts -le 3) 'chain built within three attempts'
+    $script:passed++
+    Expect-Failure { Assert-NewSignature $sample.Path 'HJViewer signing TEST ONLY other publisher' $sample.ChainCA } 'UNEXPECTED_PUBLISHER'
+    # the default CA is Artifact Signing's, which a Microsoft product signature does not chain to
+    Expect-Failure { Assert-NewSignature $sample.Path $sample.Publisher } 'ARTIFACT_SIGNING_CHAIN_REQUIRED'
+    # Verify and apply as in the workflow: the image without its signature is the file to sign,
+    # and the stage gets the signed original back, as if the signing service had signed it.
+    $accept = New-Case
+    Remove-Item (Join-Path $accept.Root 'program.dll')
+    $target = Join-Path $accept.Root ('sample' + $(if ($sample.Kind -eq 'DLL') { '.dll' } else { '.exe' }))
+    New-StrippedCopy $sample.Path $target
+    Assert-Test ((Get-AuthenticodeSignature -LiteralPath $target).Status.ToString() -eq 'NotSigned') 'stripped sample is unsigned'
+    $accept.Publisher = $sample.Publisher
+    $accept.ChainCA = $sample.ChainCA
+    $staged = Run-Mode $accept Prepare
+    Assert-Test ($staged.SignCount -eq 1) 'the stripped sample is staged'
+    $stagedFile = @(Get-ChildItem -LiteralPath $accept.Stage -File)
+    Assert-Test ($stagedFile.Count -eq 1) 'one staged file'
+    Copy-Item -LiteralPath $sample.Path -Destination $stagedFile[0].FullName -Force
+    $verified = Run-Mode $accept Verify
+    Assert-Test ($verified.SignedCount -eq 1 -and $verified.Files[0].Signature.FileDigest -eq 'SHA256') 'signed copy verified'
+    Assert-Test ((Get-FileSha $target) -ceq (Get-FileSha $sample.Path)) 'the signed bytes were applied'
+    $report = ConvertFrom-Json ([IO.File]::ReadAllText($accept.Report))
+    Assert-Test ($report.Success -and $report.Files[0].Signature.SignerThumbprint -match '^[0-9A-F]{40}$') 'report of the accepted signature'
+    $afterwards = Run-Mode $accept Audit
+    Assert-Test ($afterwards.SignCount -eq 0 -and $afterwards.PreservedCount -eq 1 -and @($afterwards.Warnings).Count -eq 0) 'applied signature passes the audit unwarned'
+    $script:passed++
+
+    # A chain that cannot be built is tried three times and fails with its status flags.
+    Expect-Failure { Assert-SignerChain $certificate $null $defaultChainCA } 'PUBLIC_SIGNER_CHAIN_INVALID__*UNTRUSTEDROOT*'
+    Assert-Test ($script:LastChainAttempts -eq 3) 'three chain builds before the failure'
+    $script:passed++
+
+    # Kept vendor signatures that are not SHA-256 or carry no RFC 3161 timestamp are warned
+    # about, not refused.
+    $warnRoot = Join-Path $work 'warnings'
+    $null = New-Item -ItemType Directory -Path $warnRoot
+    Copy-Item $sha1Signed (Join-Path $warnRoot 'old.dll')
+    Copy-Item $sample.Path (Join-Path $warnRoot 'good.dll')
+    $kept = @(
+        [pscustomobject]@{ Relative = 'old.dll'; Disposition = 'Preserve'; Pe = (Get-PeInfo (Join-Path $warnRoot 'old.dll')) },
+        [pscustomobject]@{ Relative = 'good.dll'; Disposition = 'Preserve'; Pe = (Get-PeInfo (Join-Path $warnRoot 'good.dll')) })
+    $warned = @(Get-KeptSignatureWarnings $warnRoot $kept)
+    Assert-Test ($warned.Count -eq 2) 'two warnings, for the old signature only'
+    Assert-Test (@($warned | Where-Object { $_ -like 'old.dll: *not SHA-256' }).Count -eq 1) 'not SHA-256'
+    Assert-Test (@($warned | Where-Object { $_ -like 'old.dll: *no RFC 3161 timestamp' }).Count -eq 1) 'no RFC 3161 timestamp'
+    $script:passed++
 
     # One batch, one certificate.
     Assert-OneSigner @([pscustomobject]@{ SignerThumbprint = 'A' * 40 }, [pscustomobject]@{ SignerThumbprint = 'A' * 40 })

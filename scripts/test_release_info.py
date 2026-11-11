@@ -1147,12 +1147,13 @@ class WorkflowTest(unittest.TestCase):
         job = "windows-sign"
         ordered = [
             "Test Windows signing checks", "Fetch upstream and apply hjviewer patches", "Download Windows payload",
-            "Check the Windows payload",
-            "Prepare runtime signatures", "Sign in to Azure for the runtime signatures", "Sign runtime PE files",
+            "Check the Windows payload", "Preflight Windows signatures",
+            "Prepare runtime signatures", "Sign in to Azure for the runtime signatures",
+            "Get the Artifact Signing token for the runtime signatures", "Sign runtime PE files",
             "Sign out of Azure after the runtime signatures", "Verify and apply runtime signatures",
             "Install Rust toolchain", "Build self-extracted executable", "Prepare installer signature",
-            "Sign in to Azure for the installer signature", "Sign installer",
-            "Sign out of Azure after the installer signature", "Verify and apply installer signature",
+            "Sign in to Azure for the installer signature", "Get the Artifact Signing token for the installer signature",
+            "Sign installer", "Sign out of Azure after the installer signature", "Verify and apply installer signature",
             "Copy installer alias", "Audit final Windows signatures",
             "Add license, source and third-party notices", self.RECORD, "Upload Windows build",
             "Upload Windows signature reports",
@@ -1160,10 +1161,9 @@ class WorkflowTest(unittest.TestCase):
         positions = [self.index(job, name) for name in ordered]
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(positions[-1], len(self.steps(job)) - 1)
-        # each round signs right after its login and logs out right after it
-        for login, sign, logout in ((5, 6, 7), (12, 13, 14)):
-            self.assertEqual(positions[sign], positions[login] + 1)
-            self.assertEqual(positions[logout], positions[sign] + 1)
+        # each round takes its token right after its login, signs, and logs out right after it
+        for login in (6, 14):
+            self.assertEqual(positions[login:login + 4], list(range(positions[login], positions[login] + 4)))
         for step in self.steps(job):
             self.assertFalse(step.get("continue-on-error", False), step.get("name"))
         # a check build signs nothing and calls no Azure, but still packs and uploads its exe; the
@@ -1173,7 +1173,8 @@ class WorkflowTest(unittest.TestCase):
                      "Audit final Windows signatures", "Upload Windows signature reports"):
             self.assertEqual(self.step(job, name)["if"], "${{ !inputs.check_only }}", name)
         for name in ("Test Windows signing checks", "Fetch upstream and apply hjviewer patches", "Download Windows payload",
-                     "Check the Windows payload", "Install Rust toolchain", "Build self-extracted executable",
+                     "Check the Windows payload", "Preflight Windows signatures", "Install Rust toolchain",
+                     "Build self-extracted executable",
                      "Copy installer alias", "Add license, source and third-party notices", self.RECORD,
                      "Upload Windows build"):
             self.assertNotIn("if", self.step(job, name), name)
@@ -1189,6 +1190,10 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(login["with"], {"client-id": "${{ secrets.AZURE_CLIENT_ID }}",
                                              "tenant-id": "${{ secrets.AZURE_TENANT_ID }}",
                                              "subscription-id": "${{ secrets.AZURE_SUBSCRIPTION_ID }}"})
+            # the codesigning token while GitHub's OIDC assertion is fresh, never printed
+            token = self.step(job, "Get the Artifact Signing token for " + what)
+            self.assertEqual(token["if"], when)
+            self.assertEqual(token["run"].strip(), "az account get-access-token --resource https://codesigning.azure.net --output none")
             sign = self.step(job, sign_name)
             self.assertEqual(sign["if"], when)
             self.assertRegex(sign["uses"], r"^Azure/artifact-signing-action@[0-9a-f]{40}$")
@@ -1215,8 +1220,10 @@ class WorkflowTest(unittest.TestCase):
         # Verify compares the signer with the approved publisher, and the runtime round and the
         # audit of the runtime folder read the repository's pins
         pins = '-PinFile "$env:GITHUB_WORKSPACE/scripts/windows-signing-pins.txt"'
-        for name in ("Prepare runtime signatures", "Verify and apply runtime signatures", "Audit final Windows signatures"):
+        for name in ("Preflight Windows signatures", "Prepare runtime signatures", "Verify and apply runtime signatures",
+                     "Audit final Windows signatures"):
             self.assertIn(pins, self.step(job, name)["run"], name)
+        self.assertIn("-Mode Preflight -Root ./rustdesk", self.step(job, "Preflight Windows signatures")["run"])
         for name in ("Prepare installer signature", "Verify and apply installer signature"):
             self.assertNotIn("-PinFile", self.step(job, name)["run"], name)
         for name in ("Verify and apply runtime signatures", "Verify and apply installer signature"):
