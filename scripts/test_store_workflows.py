@@ -285,8 +285,11 @@ class ClientBuildWorkflowTest(unittest.TestCase):
     def test_the_play_bundle_is_kept_30_days(self):
         (step,) = [s for s in steps(self.jobs["android"]) if name_of(s) == "Upload Play bundle"]
         self.assertIn("retention-days: ${{ inputs.check_only && 1 || 30 }}\n", step)
+        # the Windows job's app folder goes to the signing job of the same run only (docs/ci.md)
+        (payload,) = [s for s in steps(self.jobs["windows"]) if name_of(s) == "Upload Windows payload"]
+        self.assertIn("retention-days: 1\n", payload)
         others = [s for job in self.jobs.values() for s in steps(job)
-                  if "retention-days:" in s and name_of(s) != "Upload Play bundle"]
+                  if "retention-days:" in s and name_of(s) not in ("Upload Play bundle", "Upload Windows payload")]
         self.assertTrue(others)
         for s in others:
             self.assertIn("retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}\n", s, name_of(s))
@@ -322,7 +325,8 @@ class ClientBuildWorkflowTest(unittest.TestCase):
         # the store run looks for HJViewer-<version>-<7 digits>-android-aarch64-play; --short=7
         # gives more digits when 7 are ambiguous
         self.assertNotIn("--short", self.text)
-        self.assertEqual(self.text.count('name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"'), 3)
+        # Windows (its build job and its sign and pack job, which compares the two), Android, iOS
+        self.assertEqual(self.text.count('name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"'), 4)
 
     def test_the_upload_key_reaches_two_steps_of_the_upload_job_only(self):
         holders = [name_of(s) for s in steps(self.jobs["testflight"]) if "secrets.ASC_" in s]

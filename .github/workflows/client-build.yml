@@ -13,7 +13,10 @@
 # that builds nothing and uploads the signed IPA of that finished build run, after the owner has
 # checked its Windows build (docs/ci.md).
 # Every platform job pins the update keys of client/update-keys.env and puts release.json and
-# SHA256SUMS beside its package, for tools/hjv-release (minimum version design 6-4).
+# SHA256SUMS beside its package, for tools/hjv-release (minimum version design 6-4). Windows takes
+# three jobs: the Windows job builds the app folder, "Windows sign and pack" (the one job with
+# id-token: write) signs it with Azure Artifact Signing, packs it and writes the record, and
+# "Windows install test" tries the result.
 # Variables, signing secrets, run times and billing are documented in docs/ci.md.
 name: client
 
@@ -573,24 +576,24 @@ jobs:
     if: needs.preflight.outputs.windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 180
-    # actions: read for "Wait for the bridge files"; id-token: write for the GitHub OIDC token that
-    # the signing steps' azure/login exchanges for Azure Artifact Signing (docs/ci.md, "Windows 코드
-    # 서명"). The calling job of the build repository must grant both.
+    # actions: read for "Wait for the bridge files". No id-token: this job runs third-party build
+    # code, so it builds the app folder only; the Windows sign and pack job signs and packs it.
     permissions:
       contents: read
       actions: read
-      id-token: write
     defaults:
       run:
         working-directory: upstream/rustdesk
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
-    # for the run summary
+    # for the run summary; the build name and the executable's name for the next Windows jobs
     outputs:
       image: ${{ steps.image.outputs.image }}
       rust_cache: ${{ steps.rust-cache.outputs.cache-hit }}
       vcpkg_restored: ${{ steps.vcpkg-fp.outputs.restored }}
       vcpkg_packages: ${{ steps.vcpkg-fp.outputs.packages }}
+      build_name: ${{ steps.fetch.outputs.build_name }}
+      packer_executable: ${{ steps.exe-name.outputs.packer_executable }}
     steps:
       - name: Check out hjviewer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -610,14 +613,6 @@ jobs:
           git rm -q --cached -r .
           git reset -q --hard
 
-      # Not upstream. The release signing checks (scripts/windows-signing.ps1) against real Windows
-      # Authenticode, with an untrusted self-signed fixture and no Azure: seconds, in check builds
-      # too, so that no release build is the first to run them on Windows.
-      - name: Test Windows signing checks
-        shell: pwsh
-        working-directory: ${{ github.workspace }}
-        run: ./scripts/test_windows_signing.ps1
-
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
       # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
       # and from nowhere else: after the same check as in the Checks job, the file's
@@ -631,6 +626,7 @@ jobs:
         run: python3 -I scripts/check-build-keys.py --pin-update-keys --version-file client/version.env --update-keys client/update-keys.env
 
       - name: Fetch upstream and apply hjviewer patches
+        id: fetch
         working-directory: ${{ github.workspace }}
         shell: bash
         run: |
@@ -641,6 +637,7 @@ jobs:
           source client/version.env
           if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"; fi
           echo "BUILD_NAME=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_ENV"
+          echo "build_name=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_OUTPUT"
 
       # L159-162. v2.0.9 is the newest release and declares node20 (no Node 24 release yet, see the
       # top of this file)
@@ -873,8 +870,9 @@ jobs:
       # link, the Start menu and uninstall, but copies files under their own names, so the runner
       # must carry the app's name: HJViewer when HJV_SERVER is set (src/hjviewer.rs). A build
       # without it stays RustDesk, which matches rustdesk.exe on Windows' case-blind file system.
-      # Renamed before the signing steps list the folder.
+      # Renamed here, so that the signing job gets the app folder as the packer wraps it.
       - name: Set Windows runtime executable name
+        id: exe-name
         shell: bash
         run: |
           exe=rustdesk.exe
@@ -886,18 +884,143 @@ jobs:
             exe=HJViewer.exe
             mv ./rustdesk/rustdesk.exe "./rustdesk/$exe"
           fi
-          echo "PACKER_EXECUTABLE=$exe" >> "$GITHUB_ENV"
+          echo "packer_executable=$exe" >> "$GITHUB_OUTPUT"
 
-      # Not in upstream (upstream signs with its private service, SIGN_BASE_URL). A build that can be
-      # handed out is signed with Azure Artifact Signing twice (docs/ci.md, "Windows 코드 서명"):
-      # first every PE file of the app folder that has no valid signature, before the packer wraps
-      # them (a signed wrapper can still unpack unsigned DLLs), then the packer's exe. Each round:
-      # scripts/windows-signing.ps1 copies the files to sign to a flat folder (Prepare), the action
-      # signs that folder in place, the script checks each signed copy (SHA-256, an RFC 3161
-      # timestamp, the chain through Artifact Signing's CA, the approved publisher, one certificate
-      # for the batch) and only then puts them back (Verify). Vendor files with a valid signature
-      # stay as they are; scripts/windows-signing-pins.txt names the ones that ship with a signature
-      # Windows does not accept on its own. A check build skips all of it and is not signed.
+      # Not in upstream. The notices need what only this job has: the crates cargo fetched (their
+      # license files), the vcpkg ports' copyright files and RustDeskTempTopMostWindow's LICENSE.
+      # They are written here, next to the app folder, and the signing job puts them beside the exe
+      # ("Add license, source and third-party notices"). The crate list is the whole workspace's,
+      # so it already holds the packer's crates.
+      - name: Write license, source and third-party notices
+        shell: bash
+        env:
+          NOTICES_FEATURES: flutter,hwcodec,vram
+          NOTICES_TARGET: x86_64-pc-windows-msvc
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" hjv-notices . \
+            rustdesk/usbmmidd_v2/License.txt "Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2)" \
+            "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)" \
+            flutter/assets/fonts/Pretendard-LICENSE.txt "Pretendard typeface, in the app (assets/fonts)"
+
+      # Not in upstream. What the signing job gets: the app folder as the packer will wrap it, the
+      # notices, and the SHA-256 of every file of the folder (scripts/windows-payload.py), which
+      # that job compares with what it downloaded. An internal artifact, kept one day and never
+      # handed out; a signing job run again later than that needs the whole run again.
+      - name: List the Windows payload
+        shell: bash
+        run: python3 -I "$GITHUB_WORKSPACE/scripts/windows-payload.py" rustdesk > hjv-payload.sha256
+
+      - name: Upload Windows payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.BUILD_NAME }}-windows-payload
+          path: |
+            upstream/rustdesk/rustdesk
+            upstream/rustdesk/hjv-notices
+            upstream/rustdesk/hjv-payload.sha256
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # Not upstream (upstream signs inside its build job with its private service, SIGN_BASE_URL).
+  # Signs and packs what the Windows job built, and nothing else runs here: a job with id-token:
+  # write can ask GitHub for the OIDC token that Azure Artifact Signing trusts, and every step of
+  # such a job could ask, so the third-party build code of the Windows job (cargo's build scripts,
+  # Flutter, vcpkg, pip) stays in a job without it (docs/ci.md, "Windows 코드 서명"). This job runs
+  # this repository's scripts, git (the upstream checkout and the patches, for the packer's
+  # sources), the pinned checkout, artifact, azure/login and artifact-signing actions, the build
+  # job's Rust toolchain from rustup, `pip install` of the packer's requirements and the packer's
+  # `cargo build --locked`. It never runs the app (the install tests are the next job's).
+  #
+  # A build that can be handed out is signed twice: first every PE file of the app folder that has
+  # no valid signature, before the packer wraps them (a signed wrapper can still unpack unsigned
+  # DLLs), then the packer's exe. Each round: scripts/windows-signing.ps1 copies the files to sign
+  # to a flat folder (Prepare), the action signs that folder in place, the script checks each
+  # signed copy (SHA-256, an RFC 3161 timestamp, the chain through Artifact Signing's CA, the
+  # approved publisher, one certificate for the batch) and only then puts them back (Verify).
+  # Vendor files with a valid signature stay as they are; scripts/windows-signing-pins.txt names
+  # the ones that ship with a signature Windows does not accept on its own. A check build skips
+  # the signing steps and packs the unsigned folder.
+  windows-sign:
+    name: Windows sign and pack
+    needs: [preflight, windows]
+    runs-on: windows-2022
+    timeout-minutes: 45
+    # id-token: write for the GitHub OIDC token that azure/login exchanges; the calling job of the
+    # build repository must grant it. The artifacts of this run need no actions: read.
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: upstream/rustdesk
+    steps:
+      - name: Check out hjviewer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          persist-credentials: false
+
+      # As in the Windows job: the scripts and patches byte-exact for `git am --keep-cr`
+      - name: Re-check out hjviewer with LF line endings
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config core.autocrlf false
+          git config core.eol lf
+          git rm -q --cached -r .
+          git reset -q --hard
+
+      # The release signing checks (scripts/windows-signing.ps1) against real Windows Authenticode,
+      # with an untrusted self-signed fixture and no Azure: seconds, in check builds too, so that no
+      # release build is the first to run them on Windows.
+      - name: Test Windows signing checks
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/test_windows_signing.ps1
+
+      # The packer's sources (libs/portable, res/ and the workspace's Cargo.lock) with the
+      # Windows job's version: git and this repository's scripts only, nothing is built here.
+      - name: Fetch upstream and apply hjviewer patches
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          bash scripts/fetch-upstream.sh client
+          bash scripts/set-client-version.sh "$GITHUB_RUN_NUMBER"
+          source client/version.env
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"; fi
+          echo "BUILD_NAME=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_ENV"
+
+      - name: Download Windows payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.windows.outputs.build_name }}-windows-payload
+          path: upstream/rustdesk
+
+      # The folder is the one the Windows job listed, file for file and byte for byte, under the
+      # same build name, with its executable and the four notices.
+      - name: Check the Windows payload
+        shell: bash
+        env:
+          BUILT_AS: ${{ needs.windows.outputs.build_name }}
+          PACKER_EXECUTABLE: ${{ needs.windows.outputs.packer_executable }}
+        run: |
+          if [ "$BUILD_NAME" != "$BUILT_AS" ]; then
+            echo "::error::this job's build name $BUILD_NAME is not the Windows job's $BUILT_AS"
+            exit 1
+          fi
+          python3 -I "$GITHUB_WORKSPACE/scripts/windows-payload.py" rustdesk > "$RUNNER_TEMP/hjv-payload-here.sha256"
+          if ! cmp -s hjv-payload.sha256 "$RUNNER_TEMP/hjv-payload-here.sha256"; then
+            echo "::error::the downloaded app folder differs from the one the Windows job listed"
+            diff hjv-payload.sha256 "$RUNNER_TEMP/hjv-payload-here.sha256" | head -n 20 || true
+            exit 1
+          fi
+          case "$PACKER_EXECUTABLE" in rustdesk.exe | HJViewer.exe) ;; *) echo "::error::unexpected executable name"; exit 1 ;; esac
+          test -s "rustdesk/$PACKER_EXECUTABLE"
+          for f in LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt; do test -s "hjv-notices/$f"; done
+          echo "PACKER_EXECUTABLE=$PACKER_EXECUTABLE" >> "$GITHUB_ENV"
+          echo "app folder: $(wc -l < hjv-payload.sha256) files, as listed"
+
       - name: Prepare runtime signatures
         id: runtime-signing
         if: ${{ !inputs.check_only }}
@@ -911,8 +1034,8 @@ jobs:
 
       # The GitHub OIDC token that azure/login exchanges is short-lived, and so is the Azure CLI's
       # token after it, so each signing round logs in right before it and logs out right after it
-      # ("Sign out of Azure"), before the packer's build code runs. The federated credential trusts
-      # the build repository's main branch only (docs/ci.md).
+      # ("Sign out of Azure"), before pip and cargo run. The federated credential trusts the build
+      # repository's main branch only (docs/ci.md).
       - name: Sign in to Azure for the runtime signatures
         if: ${{ !inputs.check_only && steps.runtime-signing.outputs.pending_count != '0' }}
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -966,7 +1089,20 @@ jobs:
             -ExpectedPublisher $env:AZURE_SIGNING_PUBLISHER -Report "$env:RUNNER_TEMP/hjv-sign/runtime-report.json"
           if ($LASTEXITCODE) { throw 'Runtime signature verification failed.' }
 
-      # L363-373
+      # The Windows job's toolchain (RUST_VERSION, the same minimal rustup install that
+      # dtolnay/rust-toolchain makes there), from the image's rustup into a folder of this job.
+      - name: Install Rust toolchain
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-pc-windows-msvc --no-self-update
+          rustup default "$RUST_VERSION"
+          rustc -vV
+
+      # L363-373. generate.py compresses the folder into data.bin and runs the packer's
+      # `cargo build --locked --release`; the packer reads HJV_SERVER as the Windows job's build does.
       - name: Build self-extracted executable
         shell: bash
         run: |
@@ -1060,18 +1196,16 @@ jobs:
             throw 'The installer alias differs from the signed executable.'
           }
 
+      # The notices the Windows job wrote ("Write license, source and third-party notices"), beside
+      # the exe, as the other app jobs put theirs
       - name: Add license, source and third-party notices
         shell: bash
-        env:
-          NOTICES_FEATURES: flutter,hwcodec,vram
-          NOTICES_TARGET: x86_64-pc-windows-msvc
         run: |
           test -s SignOutput/HJViewer.exe
           test -s SignOutput/HJViewer-install.exe
-          bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" SignOutput . \
-            rustdesk/usbmmidd_v2/License.txt "Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2)" \
-            "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)" \
-            flutter/assets/fonts/Pretendard-LICENSE.txt "Pretendard typeface, in the app (assets/fonts)"
+          for f in LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt; do
+            cp "hjv-notices/$f" "SignOutput/$f"
+          done
 
       # Not in upstream. What this build says about its package (release.json: platform, version,
       # build, file, size, SHA-256, source commit, run, workflow) and the hashes of the files the
@@ -1090,7 +1224,8 @@ jobs:
           python3 -I "$GITHUB_WORKSPACE/scripts/release-info.py" --platform windows --dir SignOutput \
             --file HJViewer.exe --also HJViewer-install.exe --build "$build"
 
-      # Signed unless check_only (the check build's artifact ends in -check and is never handed out)
+      # The artifact every consumer reads, under its old name. Signed unless check_only (the check
+      # build's artifact ends in -check and is never handed out).
       - name: Upload Windows build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1116,6 +1251,38 @@ jobs:
             ${{ runner.temp }}/hjv-sign/installer-report.json
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # Not upstream. The install, update and packer guard tests of the final Windows artifact, in a job
+  # of their own: they run the app, which the signing job never does (docs/ci.md, "Windows 코드
+  # 서명"). No id-token. Advisory, as before: each test is continue-on-error and shows its own result.
+  windows-test:
+    name: Windows install test
+    needs: [preflight, windows, windows-sign]
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: upstream/rustdesk
+    steps:
+      # client/version.env only, for the update test's version
+      - name: Check out the version file
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          sparse-checkout: |
+            client/version.env
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The artifact that the signing job uploaded, where the tests have always found it
+      - name: Download Windows build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.windows.outputs.build_name }}-windows-x86_64
+          path: upstream/rustdesk/SignOutput
 
       # Not in upstream. Installs the build on the runner the way a user does and checks that it will
       # start with Windows: HJViewer.exe in Program Files, an automatic, running service and the
@@ -2744,7 +2911,7 @@ jobs:
   # runs only.
   summary:
     name: Run summary
-    needs: [preflight, generate-bridge, dart-tests, windows, android, ios, testflight, relay, relay-release]
+    needs: [preflight, generate-bridge, dart-tests, windows, windows-sign, windows-test, android, ios, testflight, relay, relay-release]
     if: ${{ !cancelled() }}
     continue-on-error: true
     runs-on: ubuntu-24.04

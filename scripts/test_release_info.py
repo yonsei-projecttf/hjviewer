@@ -862,7 +862,7 @@ class WorkflowTest(unittest.TestCase):
 
     # job: (the directory it uploads, its upload steps)
     UPLOADS = {
-        "windows": ("upstream/rustdesk/SignOutput", ["Upload Windows build"]),
+        "windows-sign": ("upstream/rustdesk/SignOutput", ["Upload Windows build"]),
         "android": ("upstream/rustdesk/signed-apk", ["Upload signed APK", "Upload debug-signed APK"]),
         "ios": ("upstream/rustdesk/ios-out", ["Upload IPA"]),
     }
@@ -939,7 +939,7 @@ class WorkflowTest(unittest.TestCase):
         # a relay-only run needs no bridge
         self.assertEqual(self.wf["jobs"]["relay"]["needs"], "preflight")
         self.assertNotIn("bridge-artifact", json.dumps(self.wf["jobs"]["relay"]))
-        for job in ("generate-bridge", "dart-tests", "windows", "android", "ios", "relay"):
+        for job in ("generate-bridge", "dart-tests", "windows", "windows-sign", "android", "ios", "relay"):
             self.assertEqual(self.step(job, "Check out hjviewer")["with"]["ref"],
                              "${{ needs.preflight.outputs.source_sha }}", job)
         self.assertNotIn("needs.generate-bridge.outputs", json.dumps(self.wf["jobs"]))
@@ -948,9 +948,7 @@ class WorkflowTest(unittest.TestCase):
         """GHA-11: they start beside the Bridge codegen job; iOS still waits for it (macOS minutes)."""
         for job in ("windows", "android"):
             self.assertEqual(self.wf["jobs"][job]["needs"], "preflight", job)
-            # Windows also gets the OIDC token of its Artifact Signing steps
-            extra = {"id-token": "write"} if job == "windows" else {}
-            self.assertEqual(self.wf["jobs"][job]["permissions"], {"contents": "read", "actions": "read", **extra}, job)
+            self.assertEqual(self.wf["jobs"][job]["permissions"], {"contents": "read", "actions": "read"}, job)
             steps = self.steps(job)
             wait, restore = self.index(job, "Wait for the bridge files"), self.index(job, "Restore bridge files")
             self.assertEqual(restore, wait + 1, job)
@@ -1028,50 +1026,170 @@ class WorkflowTest(unittest.TestCase):
     SIGNING_SECRETS = ("AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID", "AZURE_CLIENT_ID", "AZURE_SIGNING_ENDPOINT",
                        "AZURE_SIGNING_ACCOUNT", "AZURE_SIGNING_PROFILE", "AZURE_SIGNING_PUBLISHER")
 
+    # What the Windows sign and pack job may run: its own steps, this repository's scripts, the
+    # upstream checkout, the build job's Rust toolchain from rustup, pip for the packer's
+    # requirements and the packer's cargo build (docs/ci.md, "Windows 코드 서명")
+    SIGNING_ACTIONS = ("actions/checkout", "actions/upload-artifact", "actions/download-artifact",
+                       "azure/login", "Azure/artifact-signing-action")
+
+    def test_only_the_signing_job_can_ask_for_an_oidc_token(self):
+        """The Windows job runs third-party build code, so it holds no id-token; the job that has
+        one signs and packs, and the job that runs the app has none either."""
+        for job, spec in self.wf["jobs"].items():
+            permissions = spec.get("permissions", {})
+            self.assertEqual(permissions.get("id-token"), "write" if job == "windows-sign" else None, job)
+        self.assertNotIn("id-token", self.wf.get("permissions", {}))
+        self.assertEqual(self.wf["jobs"]["windows-sign"]["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertEqual(self.wf["jobs"]["windows-test"]["permissions"], {"contents": "read"})
+        self.assertEqual(self.wf["jobs"]["windows-sign"]["needs"], ["preflight", "windows"])
+        self.assertEqual(self.wf["jobs"]["windows-test"]["needs"], ["preflight", "windows", "windows-sign"])
+        for job in ("windows-sign", "windows-test"):
+            self.assertNotIn("if", self.wf["jobs"][job], job)  # they follow the Windows job's plan
+            self.assertEqual(self.wf["jobs"][job]["runs-on"], "windows-2022", job)
+        for step in self.steps("windows-sign"):
+            name = step.get("name", "")
+            if "uses" in step:
+                action, _, ref = step["uses"].partition("@")
+                self.assertIn(action, self.SIGNING_ACTIONS, name)
+                self.assertRegex(ref, r"^[0-9a-f]{40}$", name)
+            run = step.get("run", "")
+            # nothing of the app runs here, no smoke test, no app or vcpkg build
+            for never in ("--silent-install", "--update", "Start-Process", "smoke", "build.py", "flutter ",
+                          "vcpkg", "msbuild", "ScheduledTask", "dtolnay", "rust-cache"):
+                self.assertNotIn(never, run + json.dumps(step.get("with", {})), name)
+            if "cargo" in run or "pip" in run:
+                self.assertEqual(name, "Build self-extracted executable")
+        pack = self.step("windows-sign", "Build self-extracted executable")["run"]
+        self.assertIn("pip3 install -r requirements.txt", pack)
+        # generate.py builds the packer with `cargo build --locked --release`; nothing else builds
+        self.assertIn('python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/$PACKER_EXECUTABLE"', pack)
+        rust = self.step("windows-sign", "Install Rust toolchain")["run"]
+        self.assertIn('rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-pc-windows-msvc', rust)
+        self.assertEqual(self.step("windows", "Install Rust toolchain")["with"]["toolchain"], "${{ env.RUST_VERSION }}")
+        # the build and test jobs sign nothing and never see the Azure values
+        for job in ("windows", "windows-test"):
+            text = json.dumps(self.wf["jobs"][job])
+            for never in ("secrets.AZURE_", "azure/login", "artifact-signing-action", "windows-signing.ps1"):
+                self.assertNotIn(never, text, job)
+
+    def test_the_windows_jobs_hand_on_the_payload_and_the_package(self):
+        names = [s.get("name") for s in self.steps("windows")]
+        # the build job ends with the app folder, its notices and its list, uploaded for a day
+        tail = ["Build RustDeskTempTopMostWindow", "Set Windows runtime executable name",
+                "Write license, source and third-party notices", "List the Windows payload", "Upload Windows payload"]
+        self.assertEqual(names[-len(tail):], tail)
+        upload = self.step("windows", "Upload Windows payload")["with"]
+        self.assertEqual(upload["name"], "${{ env.BUILD_NAME }}-windows-payload")
+        self.assertEqual(upload["path"].split(), ["upstream/rustdesk/rustdesk", "upstream/rustdesk/hjv-notices",
+                                                  "upstream/rustdesk/hjv-payload.sha256"])
+        self.assertEqual((upload["retention-days"], upload["include-hidden-files"], upload["if-no-files-found"]),
+                         (1, True, "error"))
+        self.assertIn('scripts/package-notices.sh" hjv-notices . ',
+                      self.step("windows", "Write license, source and third-party notices")["run"])
+        self.assertIn('scripts/windows-payload.py" rustdesk > hjv-payload.sha256',
+                      self.step("windows", "List the Windows payload")["run"])
+        outputs = self.wf["jobs"]["windows"]["outputs"]
+        self.assertEqual(outputs["build_name"], "${{ steps.fetch.outputs.build_name }}")
+        self.assertEqual(outputs["packer_executable"], "${{ steps.exe-name.outputs.packer_executable }}")
+        fetch_build = self.step("windows", "Fetch upstream and apply hjviewer patches")
+        self.assertEqual(fetch_build["id"], "fetch")
+        self.assertIn('echo "build_name=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_OUTPUT"', fetch_build["run"])
+        self.assertIn('echo "packer_executable=$exe" >> "$GITHUB_OUTPUT"',
+                      self.step("windows", "Set Windows runtime executable name")["run"])
+        # the signing job gets that folder and checks it against the list and its own build name
+        self.assertEqual(self.step("windows-sign", "Download Windows payload")["with"],
+                         {"name": "${{ needs.windows.outputs.build_name }}-windows-payload", "path": "upstream/rustdesk"})
+        check = self.step("windows-sign", "Check the Windows payload")["run"]
+        self.assertIn('scripts/windows-payload.py" rustdesk > "$RUNNER_TEMP/hjv-payload-here.sha256"', check)
+        self.assertIn('cmp -s hjv-payload.sha256 "$RUNNER_TEMP/hjv-payload-here.sha256"', check)
+        self.assertIn('[ "$BUILD_NAME" != "$BUILT_AS" ]', check)
+        # the same source and version as the build job's, for the packer
+        self.assertEqual(self.step("windows-sign", "Check out hjviewer")["with"]["ref"],
+                         "${{ needs.preflight.outputs.source_sha }}")
+        for line in self.step("windows-sign", "Fetch upstream and apply hjviewer patches")["run"].splitlines():
+            self.assertIn(line, fetch_build["run"])
+        # the test job takes the final artifact, under the name every consumer reads
+        self.assertEqual(self.step("windows-sign", "Upload Windows build")["with"]["name"],
+                         "${{ env.BUILD_NAME }}-windows-x86_64")
+        self.assertEqual(self.step("windows-test", "Download Windows build")["with"],
+                         {"name": "${{ needs.windows.outputs.build_name }}-windows-x86_64",
+                          "path": "upstream/rustdesk/SignOutput"})
+        self.assertEqual([s.get("name") for s in self.steps("windows-test")][:2],
+                         ["Check out the version file", "Download Windows build"])
+        # the notices the build job wrote are the ones beside the exe
+        self.assertIn('cp "hjv-notices/$f" "SignOutput/$f"',
+                      self.step("windows-sign", "Add license, source and third-party notices")["run"])
+
+    def test_the_payload_list_is_exact_and_ordered(self):
+        """scripts/windows-payload.py, which the two jobs compare byte for byte."""
+        with tempfile.TemporaryDirectory() as root:
+            for relative, data in (("b/z.dll", b"z"), ("a.exe", b"a"), (".hidden", b"h"), ("b/a b.txt", b"s")):
+                os.makedirs(os.path.join(root, os.path.dirname(relative)), exist_ok=True)
+                with open(os.path.join(root, relative), "wb") as f:
+                    f.write(data)
+            script = os.path.join(ROOT, "scripts", "windows-payload.py")
+            first = subprocess.run([sys.executable, "-I", script, root], capture_output=True, check=True).stdout
+            want = "".join(f"{hashlib.sha256(d).hexdigest()}  {p}\n" for p, d in
+                           ((".hidden", b"h"), ("a.exe", b"a"), ("b/a b.txt", b"s"), ("b/z.dll", b"z")))
+            self.assertEqual(first.decode(), want)
+            with open(os.path.join(root, "b", "z.dll"), "wb") as f:
+                f.write(b"changed")
+            second = subprocess.run([sys.executable, "-I", script, root], capture_output=True, check=True).stdout
+            self.assertNotEqual(first, second)
+            os.symlink(os.path.join(root, "a.exe"), os.path.join(root, "link.exe"))
+            self.assertNotEqual(subprocess.run([sys.executable, "-I", script, root], capture_output=True).returncode, 0)
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertNotEqual(subprocess.run([sys.executable, "-I", script, empty], capture_output=True).returncode, 0)
+
     def test_windows_signs_the_payload_before_packing_and_hashes_only_after_signing(self):
         """docs/ci.md, "Windows 코드 서명": a signed wrapper can still unpack unsigned DLLs, so
         the two signing rounds surround the packer, and the release record hashes signed bytes."""
+        job = "windows-sign"
         ordered = [
-            "Test Windows signing checks", "Fetch upstream and apply hjviewer patches", "Build rustdesk",
-            "Build RustDeskTempTopMostWindow", "Set Windows runtime executable name",
+            "Test Windows signing checks", "Fetch upstream and apply hjviewer patches", "Download Windows payload",
+            "Check the Windows payload",
             "Prepare runtime signatures", "Sign in to Azure for the runtime signatures", "Sign runtime PE files",
             "Sign out of Azure after the runtime signatures", "Verify and apply runtime signatures",
-            "Build self-extracted executable", "Prepare installer signature",
+            "Install Rust toolchain", "Build self-extracted executable", "Prepare installer signature",
             "Sign in to Azure for the installer signature", "Sign installer",
             "Sign out of Azure after the installer signature", "Verify and apply installer signature",
             "Copy installer alias", "Audit final Windows signatures",
             "Add license, source and third-party notices", self.RECORD, "Upload Windows build",
-            "Upload Windows signature reports", "Install smoke test",
+            "Upload Windows signature reports",
         ]
-        positions = [self.index("windows", name) for name in ordered]
+        positions = [self.index(job, name) for name in ordered]
         self.assertEqual(positions, sorted(positions))
+        self.assertEqual(positions[-1], len(self.steps(job)) - 1)
         # each round signs right after its login and logs out right after it
-        for login, sign, logout in ((6, 7, 8), (12, 13, 14)):
+        for login, sign, logout in ((5, 6, 7), (12, 13, 14)):
             self.assertEqual(positions[sign], positions[login] + 1)
             self.assertEqual(positions[logout], positions[sign] + 1)
-        for name in ordered[:-1]:  # the install smoke test, which tries the signed exe, is advisory
-            self.assertFalse(self.step("windows", name).get("continue-on-error", False), name)
-        # a check build signs nothing and calls no Azure; the checks' own test runs in every build
+        for step in self.steps(job):
+            self.assertFalse(step.get("continue-on-error", False), step.get("name"))
+        # a check build signs nothing and calls no Azure, but still packs and uploads its exe; the
+        # checks' own test runs in every build
         for name in ("Prepare runtime signatures", "Verify and apply runtime signatures",
                      "Prepare installer signature", "Verify and apply installer signature",
                      "Audit final Windows signatures", "Upload Windows signature reports"):
-            self.assertEqual(self.step("windows", name)["if"], "${{ !inputs.check_only }}", name)
-        for name in ("Test Windows signing checks", "Set Windows runtime executable name",
-                     "Build self-extracted executable", "Copy installer alias"):
-            self.assertNotIn("if", self.step("windows", name), name)
+            self.assertEqual(self.step(job, name)["if"], "${{ !inputs.check_only }}", name)
+        for name in ("Test Windows signing checks", "Fetch upstream and apply hjviewer patches", "Download Windows payload",
+                     "Check the Windows payload", "Install Rust toolchain", "Build self-extracted executable",
+                     "Copy installer alias", "Add license, source and third-party notices", self.RECORD,
+                     "Upload Windows build"):
+            self.assertNotIn("if", self.step(job, name), name)
         rounds = (("Prepare runtime signatures", "runtime-signing", "runtime", "the runtime signatures", "Sign runtime PE files"),
                   ("Prepare installer signature", "installer-signing", "installer", "the installer signature", "Sign installer"))
         for prepare, signing_id, folder, what, sign_name in rounds:
-            self.assertEqual(self.step("windows", prepare)["id"], signing_id)
-            self.assertIn(f'-Stage "$env:RUNNER_TEMP/hjv-sign/{folder}"', self.step("windows", prepare)["run"])
+            self.assertEqual(self.step(job, prepare)["id"], signing_id)
+            self.assertIn(f'-Stage "$env:RUNNER_TEMP/hjv-sign/{folder}"', self.step(job, prepare)["run"])
             when = "${{ !inputs.check_only && steps." + signing_id + ".outputs.pending_count != '0' }}"
-            login = self.step("windows", "Sign in to Azure for " + what)
+            login = self.step(job, "Sign in to Azure for " + what)
             self.assertEqual(login["if"], when)
             self.assertRegex(login["uses"], r"^azure/login@[0-9a-f]{40}$")
             self.assertEqual(login["with"], {"client-id": "${{ secrets.AZURE_CLIENT_ID }}",
                                              "tenant-id": "${{ secrets.AZURE_TENANT_ID }}",
                                              "subscription-id": "${{ secrets.AZURE_SUBSCRIPTION_ID }}"})
-            sign = self.step("windows", sign_name)
+            sign = self.step(job, sign_name)
             self.assertEqual(sign["if"], when)
             self.assertRegex(sign["uses"], r"^Azure/artifact-signing-action@[0-9a-f]{40}$")
             given = sign["with"]
@@ -1090,7 +1208,7 @@ class WorkflowTest(unittest.TestCase):
             for key, secret in (("endpoint", "AZURE_SIGNING_ENDPOINT"), ("signing-account-name", "AZURE_SIGNING_ACCOUNT"),
                                 ("certificate-profile-name", "AZURE_SIGNING_PROFILE")):
                 self.assertEqual(given[key], "${{ secrets." + secret + " }}")
-            logout = self.step("windows", "Sign out of Azure after " + what)
+            logout = self.step(job, "Sign out of Azure after " + what)
             self.assertEqual(logout["if"], "${{ always() && !inputs.check_only && steps." + signing_id
                              + ".outputs.pending_count != '0' }}")
             self.assertEqual(logout["run"].strip(), "az account clear")
@@ -1098,23 +1216,22 @@ class WorkflowTest(unittest.TestCase):
         # audit of the runtime folder read the repository's pins
         pins = '-PinFile "$env:GITHUB_WORKSPACE/scripts/windows-signing-pins.txt"'
         for name in ("Prepare runtime signatures", "Verify and apply runtime signatures", "Audit final Windows signatures"):
-            self.assertIn(pins, self.step("windows", name)["run"], name)
+            self.assertIn(pins, self.step(job, name)["run"], name)
         for name in ("Prepare installer signature", "Verify and apply installer signature"):
-            self.assertNotIn("-PinFile", self.step("windows", name)["run"], name)
+            self.assertNotIn("-PinFile", self.step(job, name)["run"], name)
         for name in ("Verify and apply runtime signatures", "Verify and apply installer signature"):
-            step = self.step("windows", name)
+            step = self.step(job, name)
             self.assertEqual(step["env"], {"AZURE_SIGNING_PUBLISHER": "${{ secrets.AZURE_SIGNING_PUBLISHER }}"})
             self.assertIn("-ExpectedPublisher $env:AZURE_SIGNING_PUBLISHER", step["run"])
         # one signature for both download names: copied after signing, in check builds too
-        self.assertIn("cp ./SignOutput/HJViewer.exe ./SignOutput/HJViewer-install.exe", self.step("windows", "Copy installer alias")["run"])
-        self.assertNotIn("HJViewer-install.exe", self.step("windows", "Build self-extracted executable")["run"])
-        self.assertIn("$PACKER_EXECUTABLE", self.step("windows", "Build self-extracted executable")["run"])
+        self.assertIn("cp ./SignOutput/HJViewer.exe ./SignOutput/HJViewer-install.exe",
+                      self.step(job, "Copy installer alias")["run"])
+        self.assertNotIn("HJViewer-install.exe", self.step(job, "Build self-extracted executable")["run"])
         # the Azure values reach those steps only: no env of the workflow or the job holds them
-        for env in (self.wf.get("env", {}), self.wf["jobs"]["windows"].get("env", {})):
+        for env in (self.wf.get("env", {}), self.wf["jobs"][job].get("env", {})):
             self.assertFalse([k for k in env if k.startswith("AZURE_")])
-        for step in self.steps("windows"):
-            text = json.dumps(step)
-            if "secrets.AZURE_" in text:
+        for step in self.steps(job):
+            if "secrets.AZURE_" in json.dumps(step):
                 self.assertTrue(step["name"].startswith(("Sign in to Azure", "Sign runtime", "Sign installer", "Verify and apply")),
                                 step["name"])
 
@@ -1156,7 +1273,8 @@ class WorkflowTest(unittest.TestCase):
             self.assertNotIn("if", step, job)
             self.assertNotIn("continue-on-error", step, job)
             self.assertEqual(step["env"]["CHECK_ONLY"], "${{ inputs.check_only }}", job)
-            self.assertIn(f'scripts/release-info.py" --platform {job} --dir {os.path.basename(directory)} ', step["run"])
+            platform = job.split("-")[0]  # windows-sign writes the Windows record
+            self.assertIn(f'scripts/release-info.py" --platform {platform} --dir {os.path.basename(directory)} ', step["run"])
         # the Play bundle is the same Android build: one record of it, with the APK
         for name in ("Upload Play bundle",):
             self.assertNotIn("release.json", self.step("android", name)["with"]["path"])
@@ -1201,8 +1319,8 @@ class WorkflowTest(unittest.TestCase):
         """The acceptance of the work package; tools/hjv-release counts on the 7 days."""
         self.assertEqual(self.wf["env"]["ARTIFACT_RETENTION_DAYS"], "${{ inputs.check_only && 1 || 7 }}")
         names = {
-            ("windows", "Upload Windows build"): "${{ env.BUILD_NAME }}-windows-x86_64",
-            ("windows", "Upload Windows signature reports"): "${{ env.BUILD_NAME }}-windows-signatures",
+            ("windows-sign", "Upload Windows build"): "${{ env.BUILD_NAME }}-windows-x86_64",
+            ("windows-sign", "Upload Windows signature reports"): "${{ env.BUILD_NAME }}-windows-signatures",
             ("android", "Upload signed APK"): "${{ env.BUILD_NAME }}-android-aarch64",
             ("android", "Upload debug-signed APK"): "${{ env.BUILD_NAME }}-android-aarch64-debugsigned",
             ("ios", "Upload IPA"): "${{ env.BUILD_NAME }}-ios${{ env.IOS_SIGNING != 'true' && '-unsigned' || '' }}",
@@ -1248,7 +1366,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_the_windows_step(self):
         for ending in ("\n", "\r\n"):  # upstream is checked out with CRLF on the Windows runner
-            tree, cwd, out = self.workspace("windows")
+            tree, cwd, out = self.workspace("windows-sign")
             os.makedirs(os.path.join(cwd, "flutter"))
             pubspec = ["name: flutter_hbb", "description: HJViewer", "version: 1.6.0+41", "dependencies:",
                        "  some_package:", "    version: 2.0.0+3", ""]
@@ -1256,24 +1374,24 @@ class WorkflowTest(unittest.TestCase):
             packer = b"MZ" + os.urandom(500)
             tree.put("HJViewer.exe", packer, out)
             tree.put("HJViewer-install.exe", packer, out)
-            code, text = self.run_record_step("windows", tree, {}, cwd)
+            code, text = self.run_record_step("windows-sign", tree, {}, cwd)
             self.assertEqual(code, 0, text)
             with open(os.path.join(out, "release.json")) as f:
                 record = json.load(f)
             self.assertEqual((record["build"], record["file"], record["source_sha"]),
                              ("1.6.0.41", "HJViewer.exe", tree.commit))
             # the hashes cover what is uploaded, and nothing else
-            self.assertEqual(self.uploaded("windows", "Upload Windows build", out, {}),
+            self.assertEqual(self.uploaded("windows-sign", "Upload Windows build", out, {}),
                              sorted(self.listed(out) + ["SHA256SUMS"]))
         # a check build: the same step, no release.json
         os.remove(os.path.join(out, "release.json"))
-        code, text = self.run_record_step("windows", tree, {"CHECK_ONLY": "true"}, cwd)
+        code, text = self.run_record_step("windows-sign", tree, {"CHECK_ONLY": "true"}, cwd)
         self.assertEqual(code, 0, text)
         self.assertFalse(os.path.exists(os.path.join(out, "release.json")))
         self.assertNotIn("release.json", self.listed(out))
         # a pubspec without a build number fails the step, and so the job
         tree.put("pubspec.yaml", b"version: 1.6.0\n", os.path.join(cwd, "flutter"))
-        code, text = self.run_record_step("windows", tree, {}, cwd)
+        code, text = self.run_record_step("windows-sign", tree, {}, cwd)
         self.assertEqual(code, 1, text)
         self.assertIn("::error::", text)
 
@@ -1558,22 +1676,22 @@ fi
 
     def test_the_windows_smoke_tests(self):
         """Text only: what the steps do on a Windows runner is a device test (docs/ci.md)."""
-        names = [s.get("name") for s in self.steps("windows")]
+        names = [s.get("name") for s in self.steps("windows-test")]
         install, update, guard = (names.index(n) for n in ("Install smoke test", "Update smoke test",
                                                            "Packer guard smoke test"))
         self.assertEqual((update, guard), (install + 1, install + 2))
         self.assertEqual(guard, len(names) - 1)
-        self.assertGreater(install, names.index("Upload Windows build"))
-        self.assertEqual(self.steps("windows")[install]["id"], "install-smoke")
+        self.assertGreater(install, names.index("Download Windows build"))
+        self.assertEqual(self.steps("windows-test")[install]["id"], "install-smoke")
         for at in (install, update, guard):
-            step = self.steps("windows")[at]
+            step = self.steps("windows-test")[at]
             # advisory for now, never without the server values, never for long, and in pwsh
             self.assertIs(step["continue-on-error"], True)
             self.assertIn("env.HJV_SERVER != ''", step["if"])
             self.assertLessEqual(step["timeout-minutes"], 12)
             self.assertEqual(step["shell"], "pwsh")
             self.assertIn("exit 1", step["run"])
-        update, guard = self.steps("windows")[update], self.steps("windows")[guard]
+        update, guard = self.steps("windows-test")[update], self.steps("windows-test")[guard]
         # the update needs the install; the guard does not
         self.assertEqual(update["if"], "env.HJV_SERVER != '' && steps.install-smoke.outcome == 'success'")
         self.assertEqual(guard["if"], "env.HJV_SERVER != ''")
