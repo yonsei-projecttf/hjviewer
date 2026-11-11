@@ -19,7 +19,7 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 
 | 플랫폼 | 권장 경로 | 심사 | 필요한 것 |
 |---|---|---|---|
-| Windows | 결과물 exe를 직접 전달 | 없음 | (서명 없음: SmartScreen 경고가 뜰 수 있음). 1.6.0부터 새 버전은 앱이 서버에서 받음 |
+| Windows | 결과물 exe를 직접 전달 | 없음 | 1.9.3까지는 서명 없음(SmartScreen 경고가 뜰 수 있음). 그다음 출시부터 Azure Artifact Signing 계정과 비공개 빌드 저장소의 시크릿으로 서명함([ci.md](ci.md)의 "Windows 코드 서명"). 서명해도 평판이 쌓이기 전에는 SmartScreen 경고가 뜰 수 있고, Microsoft Store 제출에는 쓸 수 없음. 1.6.0부터 새 버전은 앱이 서버에서 받음 |
 | Android | 릴리스 서명 APK를 직접 설치(사이드로드) | 없음 | 업로드 키스토어 하나. 1.6.0부터 새 버전은 앱이 받아 설치 화면을 엶 |
 | iOS | TestFlight **내부** 테스트 | 없음 (App Store Connect 사용자 최대 100명, 빌드는 90일 뒤 만료) | Apple Developer Program, App Store Connect API 키, 앱 레코드, App Store 프로파일 ([ci.md](ci.md)의 "TestFlight 업로드"). 새 버전은 TestFlight 앱이 설치함 |
 | iOS(대안) | **Ad Hoc** 서명 IPA를 등록된 iPhone에 설치 | 없음 | Apple Developer Program, 사용자 iPhone UDID 등록. 앱 안에서 업데이트할 수 없어 새 버전마다 관리자가 새 IPA를 줌 |

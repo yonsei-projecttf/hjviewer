@@ -247,7 +247,7 @@ macOS와 Linux 앱은 빌드하지 않습니다.
   - 빌드 실행이 성공으로 끝나야 하므로(Dart 테스트 포함), 잡이 하나라도 실패한 실행의 빌드는 TestFlight에 가지 않습니다. IPA는 7일 뒤 지워지므로 그 안에 올립니다.
   - `testflight=true`는 `platforms=ios`와 `testflight_run`이 함께일 때만 받습니다. 비공개 저장소, App Store 프로파일로 서명한 빌드 실행, 아래의 App Store Connect 시크릿이 필요합니다. 업로드 키는 이 잡의 두 단계에만 갑니다.
 - **Google Play 업로드**: 빌드 실행은 Google Play에 올리지 않습니다(1.9.1부터). `play=true`는 Checks 잡이 바로 거부합니다. 비공개 서명 빌드의 Android 잡이 만든 AAB(`…-android-aarch64-play`, 30일 보관)를, 소유자가 같은 실행의 APK로 확인한 뒤 **스토어 실행**이 비공개 테스트 트랙 alpha에 올립니다([store-release.md](store-release.md)). 예: `gh workflow run store.yml -R yonsei-projecttf/hjviewer-private -f platform=android -f action=upload -f version=<버전> -f build=<versionCode> -f run_id=<빌드 실행 ID>`. Play의 심사 상태(앞 버전이 심사 중 등)가 빌드 실행을 실패시키지 않으므로, 그 실행의 APK와 Windows 패키지도 막히지 않습니다. 입력 `play`, `play_release`는 비공개 `build.yml`이 넘기므로 선언만 남아 있습니다.
-- **확인 빌드(`check_only`)**: 출시 전에 코드가 세 플랫폼에서 빌드되는지만 봅니다(설계 3판 6-4, 결정 O2: 마지막 push 바로 뒤). 1.6.0의 공개키 필수 검사를 건너뛰므로 키를 만들기 전에도 돌릴 수 있습니다. 산출물 이름에 `-check`가 붙고 하루만 남으며, `testflight`나 `play`를 함께 켜면 실행이 바로 실패합니다. hjv-relay는 서버 값 없는 시험 빌드가 되고 Release를 만들지 않습니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all -f check_only=true`. 확인 빌드의 산출물은 나눠 주지 않습니다.
+- **확인 빌드(`check_only`)**: 출시 전에 코드가 세 플랫폼에서 빌드되는지만 봅니다(설계 3판 6-4, 결정 O2: 마지막 push 바로 뒤). 1.6.0의 공개키 필수 검사를 건너뛰므로 키를 만들기 전에도 돌릴 수 있습니다. 산출물 이름에 `-check`가 붙고 하루만 남으며, `testflight`나 `play`를 함께 켜면 실행이 바로 실패합니다. Windows는 서명하지 않고 Azure를 부르지 않습니다(아래 "Windows 코드 서명"). hjv-relay는 서버 값 없는 시험 빌드가 되고 Release를 만들지 않습니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all -f check_only=true`. 확인 빌드의 산출물은 나눠 주지 않습니다.
 - **태그**: GitHub CI를 다시 켜면 `v`로 시작하는 태그를 푸시할 때 전체를 빌드합니다(지금은 꺼 둠). 예: `git tag v0.1.0 && git push origin v0.1.0`
 - **결과물**: 실행 페이지 아래의 Artifacts에서 받거나 `gh run download <run-id>`를 씁니다. 보관 기간은 7일(워크플로의 `ARTIFACT_RETENTION_DAYS`)이므로 필요한 파일은 바로 받아 두세요. Play 번들(`…-android-aarch64-play`)만 30일입니다. 스토어 실행이 Play 심사가 늦어져도 그 번들을 올릴 수 있게 하기 위해서입니다(확인 빌드는 하루). 이름의 `<이름>`은 태그 빌드면 태그(`v0.1.0`), 수동 실행이면 `<앱 버전>-<커밋 7자리>`(예: `1.5.1-d2fa660`)입니다.
 
@@ -258,7 +258,7 @@ macOS와 Linux 앱은 빌드하지 않습니다.
 | Checks | ubuntu-24.04 | 입력(`platforms`, `testflight`와 `testflight_run`, 늘 거부하는 `play`, `check_only`와의 조합)·서버 변수·고정 공개키를 확인하고 소스 커밋을 고정합니다. 실행이 무엇을 하는지(플랫폼마다 빌드하는지, TestFlight 업로드인지) 정하고, 다른 잡은 모두 이 값을 읽습니다. | 없음 |
 | Bridge codegen | ubuntu-22.04 | 앱을 빌드하는 실행에서만 돕니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 flutter_rust_bridge 코드를 생성합니다. 같은 소스 커밋과 생성 도구의 결과가 캐시에 있으면(아래 "캐시") 생성 단계를 건너뛰고 그 파일을 올립니다. | 앱 빌드의 내부용 `bridge-artifact` (다른 아티팩트처럼 7일, 확인 빌드는 1일 보관. 아래 "릴리스 기록") |
 | Dart tests | ubuntu-24.04 | 생성된 bridge로 `flutter/test`의 Dart 테스트를 모두 돌립니다. 앱 패치가 더하거나 고친 테스트(제스처, iPhone 한글 입력, 화질 표시)가 하나라도 없으면 실패합니다. 어느 플랫폼 잡도 이 잡을 기다리지 않습니다. 이 잡이 실패하면 실행이 실패하므로, 그 실행의 IPA는 TestFlight에 가지 않고 패키지는 정책에 들어가지 않습니다. | 없음 |
-| Windows x64 | windows-2022 | Checks 잡 다음에 Bridge codegen과 함께 시작하고, 크레이트를 미리 받은 뒤(`cargo fetch`) cargo가 빌드하기 바로 앞에서 그 실행의 `bridge-artifact`를 기다립니다("Wait for the bridge files", Bridge codegen이 실패하면 그 자리에서 실패). vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
+| Windows x64 | windows-2022 | Checks 잡 다음에 Bridge codegen과 함께 시작하고, 크레이트를 미리 받은 뒤(`cargo fetch`) cargo가 빌드하기 바로 앞에서 그 실행의 `bridge-artifact`를 기다립니다("Wait for the bridge files", Bridge codegen이 실패하면 그 자리에서 실패). vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) 확인 빌드가 아니면 압축하기 전에 앱 폴더의 서명 없는 PE 파일을, 압축한 뒤에 exe를 Azure Artifact Signing으로 서명합니다(아래 "Windows 코드 서명"). 서명 검사의 시험은 확인 빌드에서도 잡 앞부분에서 돕니다. | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`. 확인 빌드는 서명 없음). 확인 빌드가 아니면 `…-windows-signatures`(Verify가 받은 서명의 보고서)도 |
 | Android arm64 | ubuntu-24.04 | Windows처럼 Bridge codegen과 함께 시작하고 cargo가 빌드하기 바로 앞에서 bridge 파일을 기다립니다. 첫 단계(서드파티 빌드 코드보다 먼저): 이 저장소의 출시 기록 `store-releases.txt`에 이 버전의 Google Play 줄이 없는지(`scripts/store-record.py check-build`, 실행의 토큰으로 읽기만, 확인 빌드는 건너뜀) → vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 build-tools의 zipalign·apksigner로 릴리스 서명(아래 "서명 시크릿"의 Android). 비공개 저장소의 서명 빌드는 이어서 `flutter build appbundle`로 AAB를 만들어 업로드 키로 서명하고 검사합니다(아래 "Google Play 업로드"). | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned`. 비공개 서명 빌드는 `…-android-aarch64-play`(AAB)도 |
 | iOS | macos-26 (Xcode 26.6) | Bridge codegen이 끝난 뒤 시작합니다(기다리는 macOS 러너는 Linux 러너의 10배 값). 첫 단계: 출시 기록에 이 버전의 App Store 줄이 없는지 → vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA. TestFlight에는 올리지 않습니다(아래 TestFlight upload). | `…-ios` 또는 `…-ios-unsigned` |
 | TestFlight upload | macos-26 | `testflight`와 `testflight_run`을 준 실행에서만 돕니다. 그 실행은 아무것도 빌드하지 않습니다. 위 "실행"의 TestFlight 업로드: 출시 기록, 빌드 실행의 출처, App Store Connect의 같은 버전을 본 뒤 iOS 잡과 같은 Xcode를 고르고, 그 빌드 실행의 IPA를 받아 확인해 그 Xcode의 altool로 App Store Connect에 올립니다. 서명 키는 받지 않습니다. | 없음 (App Store Connect) |
@@ -270,7 +270,7 @@ macOS와 Linux 앱은 빌드하지 않습니다.
 
 호출 워크플로의 `platforms` 값도 `windows`, `android`, `ios`, `relay`, `all` 중 하나여야 합니다. `testflight=true`는 `platforms=ios`와 `testflight_run`(빌드 실행 ID)이 함께일 때만, `testflight_run`은 `testflight=true`와 함께일 때만 받고, `play=true`는 늘 거부합니다(스토어 실행의 upload를 씀). 맞지 않는 조합은 Checks 잡에서 실패합니다.
 
-Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하면 압축이 풀리고 앱이 뜹니다. 피제어 PC에서는 앱의 설치 버튼으로 서비스로 설치합니다. 서명이 없으므로 SmartScreen 경고나 백신 오탐이 나올 수 있습니다.
+Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하면 압축이 풀리고 앱이 뜹니다. 피제어 PC에서는 앱의 설치 버튼으로 서비스로 설치합니다. 1.9.3까지의 exe는 서명이 없어 SmartScreen 경고나 백신 오탐이 나올 수 있습니다. 서명한 exe도 서명자의 평판이 쌓이기 전에는 SmartScreen 경고가 나올 수 있습니다(아래 "Windows 코드 서명").
 
 ### upstream과 다른 점
 
@@ -278,7 +278,7 @@ Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하�
 - **Rust 캐시와 Flutter 캐시**: upstream의 `Swatinem/rust-cache`를 그대로 쓰되, Rust를 빌드하는 잡은 rustup에 잡만의 폴더를 줍니다. Android·iOS 잡은 Rust 캐시를 vcpkg 캐시보다 먼저 받고, Windows·Android 잡은 bridge 파일을 기다리기 전에 `cargo fetch --locked --target <타깃>`으로 크레이트를 받아 둡니다. Bridge codegen 잡의 Flutter 캐시(`cache: true`)는 뺐습니다(아래 "캐시").
 - **잡의 순서**: upstream은 모든 플랫폼 잡이 bridge 잡을 기다립니다. 여기서는 확인만 하는 Checks 잡이 먼저 돌고, Windows·Android 잡은 bridge 잡과 함께 시작해 cargo가 빌드하기 바로 앞에서 bridge 파일을 기다립니다(위 "잡 구성").
 - **flutter doctor**: Windows 잡의 엔진 교체 단계에서 upstream의 `flutter doctor -v`(아무도 보지 않는 진단)를 뺐습니다.
-- **서명**: upstream의 비공개 서명 서비스 대신 아래 시크릿으로 선택적으로 서명합니다. Android APK는 upstream이 쓰는 `r0adkll/sign-android-release` 대신, 그 액션이 부르던 zipalign·apksigner를 같은 build-tools와 같은 옵션으로 직접 부릅니다(아래 "서명 시크릿"의 Android). Windows는 서명하지 않습니다.
+- **서명**: upstream의 비공개 서명 서비스 대신 아래 시크릿으로 선택적으로 서명합니다. Android APK는 upstream이 쓰는 `r0adkll/sign-android-release` 대신, 그 액션이 부르던 zipalign·apksigner를 같은 build-tools와 같은 옵션으로 직접 부릅니다(아래 "서명 시크릿"의 Android). Windows는 확인 빌드가 아니면 Azure Artifact Signing으로 서명합니다(아래 "Windows 코드 서명"). upstream과 달리 패커가 묶는 앱 폴더의 DLL과 exe도 서명하고, MSI는 만들지 않습니다.
 - **Xcode 고정**: upstream은 `macos-latest`의 기본 Xcode를 씁니다. 이 워크플로는 `macos-26`에서 Xcode 26.6(`XCODE_VERSION`)을 고르고, 26.x가 아니면 실패합니다. App Store Connect는 Xcode 26 이상으로 만든 빌드만 받습니다. 반면 Xcode 27(iOS 27 SDK)로 만들면 UIScene 수명 주기가 없는 Flutter 3.24.5 앱이 실행되지 않습니다. TestFlight upload 잡도 altool을 부르기 전에 같은 Xcode를 고릅니다.
 - **액션 판**: JavaScript 액션은 모두 40자리 SHA로 고정하고, 하나를 빼면 node24를 선언한 커밋입니다(`actions/checkout` v7.0.1, `actions/cache` v6.1.0, `microsoft/setup-msbuild` v3.0.0 등. `server.yml`의 checkout도). 그 하나는 node24 판이 아직 없는 `KyleMayes/install-llvm-action`(v2.0.9, node20)입니다. GitHub는 2026-09-23에 러너에서 Node 20을 뺐고, 그보다 낮은 판을 선언한 액션은 Node 24로 돌립니다. 고정한 커밋은 릴리스 태그의 것이지만, `Swatinem/rust-cache`의 e18b497(주석 `# v2`)만은 v2.9.1 뒤의 CHANGELOG 커밋 하나라 코드가 v2.9.1과 같습니다. Windows 잡의 `subosito/flutter-action` v2.12.0 안에 있는 `actions/cache@v3`(node16)는 `cache: true`일 때만 도는데, 이 워크플로는 켜지 않습니다. composite 액션 `dtolnay/rust-toolchain`도 SHA로 고정합니다. 이 워크플로는 주석 `# v1`의 커밋에 `toolchain`을 주고, `server.yml`은 1.9.2부터 `stable` 브랜치의 커밋(b725eda, 주석 `# stable`. 그 브랜치의 `toolchain` 기본값이 stable)을 씁니다.
 - **제외한 것**:
@@ -319,9 +319,11 @@ jobs:
   client:
     # 불려 오는 워크플로에서 hjv-relay draft release 잡만 contents: write를 씁니다.
     # Windows·Android 잡, TestFlight 업로드, 실행 요약은 실행의 잡과 산출물을 읽습니다.
+    # Windows 잡은 Azure Artifact Signing에 쓸 GitHub OIDC 토큰을 받습니다(id-token).
     permissions:
       contents: write
       actions: read
+      id-token: write
     # 확인을 마친 공개 저장소 커밋의 40자리 전체 SHA(git rev-parse HEAD).
     # 빌드 방법(uses)과 코드(source_ref)를 같은 커밋으로 둡니다.
     uses: yonsei-projecttf/hjviewer/.github/workflows/client-build.yml@<커밋>
@@ -340,6 +342,7 @@ jobs:
 - `play`, `play_release`는 Google Play 업로드가 들어간 커밋부터 워크플로에 있는 입력입니다. 불려 오는 워크플로에 없는 입력을 넘기면 실행이 거절되므로, `build.yml`에 두 입력을 더하는 일과 `<커밋>`을 그 이후 커밋으로 바꾸는 일은 같은 커밋에서 합니다. 반대로 두 입력이 없는 옛 `build.yml`은 새 워크플로를 가리켜도 그대로 돕니다. 두 입력에 기본값이 있기 때문입니다. 1.9.1부터 `play=true`는 거부되지만, `hjv-release`의 출처 확인이 보는 `build.yml`의 모양을 바꾸지 않도록 두 입력은 그대로 둡니다.
 - `check_only`와 `platforms`의 `relay`, 그리고 `client` 잡의 `permissions: contents: write`는 1.6.0 커밋(hjv-relay 잡이 들어간 커밋)부터입니다. 그 워크플로의 hjv-relay draft release 잡이 `contents: write`를 요청하므로, 위처럼 허락하지 않은 `build.yml`이 그 커밋을 가리키면 GitHub가 실행을 시작하지 않고 거절합니다. 그래서 이 셋과 `<커밋>`도 같은 커밋에서 바꿉니다. 쓰기 권한은 그 잡 하나만 받고, 나머지 잡은 워크플로 맨 위의 `contents: read`를 그대로 씁니다.
 - `testflight_run`과 `client` 잡의 `actions: read`는 1.9.2의 커밋(TestFlight upload 잡과 bridge 파일을 기다리는 단계가 들어간 커밋)부터입니다. 그 워크플로의 Windows·Android 잡, TestFlight upload 잡, Run summary 잡이 `actions: read`를 요청하므로, 허락하지 않은 `build.yml`이 그 커밋을 가리키면 GitHub가 실행을 거절합니다. 거꾸로 그 전의 커밋을 가리키는 `build.yml`이 `testflight_run`을 넘기면 불려 오는 워크플로에 없는 입력이라 거절됩니다. 그래서 둘과 `<커밋>`을 같은 커밋에서 바꿉니다. `hjv-release`의 출처 확인과 스토어 실행의 `store-record.py check-run`은 이 입력과 권한이 든 `build.yml`을 받습니다(`testflight_run`을 준 실행은 아무것도 빌드하지 않아 정책이나 스토어에 낼 것이 없습니다).
+- `client` 잡의 `id-token: write`는 Windows 서명이 들어간 커밋(아래 "Windows 코드 서명")부터입니다. 그 워크플로의 Windows 잡이 `id-token: write`를 요청하므로, 허락하지 않은 `build.yml`이 그 커밋을 가리키면 GitHub가 실행을 거절합니다(확인 빌드도, Windows를 빌드하지 않는 실행도). 그래서 이 줄과 `<커밋>`을 같은 커밋에서 바꿉니다. 그 앞의 커밋을 가리키는 `build.yml`에 이 줄이 있어도 실행은 됩니다(요청하는 잡이 없음). `hjv-release`의 출처 확인과 `store-record.py check-run`은 `permissions` 아래의 값을 이름과 상관없이 받으므로 이 줄로 바뀌는 것이 없습니다.
 - 불려 온 워크플로는 빌드 저장소의 실행으로 돕니다. 그래서 시크릿, 로그, 결과물, 캐시, 실행 시간은 모두 빌드 저장소 쪽에 속합니다. iOS 서명도 실행하는 저장소가 비공개일 때만 합니다.
 - 각 잡은 Checks 잡이 받은 커밋을 체크아웃합니다. 빌드 중에 브랜치가 움직여도 모든 플랫폼이 같은 커밋으로 빌드됩니다.
 - 나눠 줄 빌드가 끝나면 그 커밋에 공개 저장소에서 `client-<앱 버전>` 태그를 붙입니다(예: `client-1.8.0`). 앱을 받은 사람이 자기 빌드의 소스 커밋을 찾을 수 있게 하기 위해서입니다. `v`로 시작하지 않으므로, 다시 켤 태그 빌드 트리거와도 겹치지 않습니다.
@@ -605,7 +608,7 @@ NAS의 hjv-relay는 비공개 빌드 저장소의 hjv-relay 잡에서 만듭니�
 
 ## 서명 시크릿 (선택)
 
-Settings → Secrets and variables → Actions의 **Secrets** 탭에 만듭니다. 시크릿이 없으면 서명 없이 빌드합니다. Android는 디버그 서명으로 빌드합니다.
+Settings → Secrets and variables → Actions의 **Secrets** 탭에 만듭니다. Android·iOS는 시크릿이 없으면 서명 없이 빌드합니다. Android는 디버그 서명으로 빌드합니다. Windows는 다릅니다. 확인 빌드가 아닌 Windows 빌드는 늘 서명하므로, 아래 "Windows 코드 서명"의 시크릿이 하나라도 없으면 Checks 잡에서 실패합니다.
 
 ### Android
 
@@ -685,6 +688,75 @@ gh secret set IOS_TEAM_ID -R yonsei-projecttf/hjviewer-private --body ABCDE12345
   - 2026-10-10 첫 업로드(실행 38044728062, 빌드 262831026)는 Apple 처리 후 VALID가 되었고, 내부 테스트 그룹에 자동으로 배포되었습니다. 업로드 경고는 90068 하나였습니다(2027년 4월부터 최소 iOS 15).
   - Info.plist는 upstream처럼 `ITSAppUsesNonExemptEncryption=false`입니다. 앱의 암호화(libsodium, TLS)는 표준 알고리즘이라, Apple 기준으로 문서가 필요한 경우는 프랑스 App Store 판매뿐입니다. App Store에 낼 때 프랑스를 판매 지역에서 빼지 않으려면 프랑스 암호화 신고를 하고 이 값을 바꿔야 합니다.
 - **서명 없는 IPA(`-ios-unsigned`)**: 그대로는 설치할 수 없습니다. Sideloadly나 AltStore 같은 도구로 재서명해야 합니다. 무료 Apple ID로 서명하면 7일 뒤 만료됩니다.
+
+### Windows 코드 서명 (Azure Artifact Signing)
+
+비공개 빌드 저장소의 Windows 빌드는 확인 빌드(`check_only`)가 아니면 Microsoft의 **Azure Artifact Signing**(옛 이름 Trusted Signing)으로 서명합니다. 소유자의 조직 신원 확인이 2026-11에 승인되었고, 서명한 첫 출시는 1.9.3 다음의 새 버전입니다. 1.9.3까지의 exe는 서명이 없습니다. 확인 빌드는 서명하지 않고 Azure를 부르지 않습니다.
+
+**서명하는 것**
+
+- **1회차, 앱 폴더**: 패커가 묶기 전의 앱 폴더(`upstream/rustdesk/rustdesk`)에서 유효한 서명이 없는 PE 파일 모두입니다(`HJViewer.exe`, `librustdesk.dll`, Flutter 엔진과 플러그인 DLL, `WindowInjection.dll` 등). 서명한 exe가 풀어 놓은 DLL이 서명 없으면 Smart App Control 같은 검사가 그 DLL을 막을 수 있습니다. 이미 유효한 서명이 있는 파일(Microsoft의 VC 런타임 등)은 그대로 둡니다. 남의 서명을 바꾸거나 서명을 덧붙이지 않습니다. 커널 드라이버(`.sys`)는 서명하지 않고, 서명 없는 것이 있으면 `DRIVER_NOT_SIGNED`로 멈춥니다.
+- **고정한 업체 파일**: 가상 디스플레이 드라이버(`usbmmidd_v2`)의 DLL에는 WDK 시험 서명만 있습니다. Windows는 Microsoft가 서명한 그 드라이버의 카탈로그(`usbmmidd.cat`)로 드라이버를 받습니다. 그래서 이 두 파일은 [`scripts/windows-signing-pins.txt`](../scripts/windows-signing-pins.txt)의 SHA-256과 같을 때만 그대로 싣고, 서명을 보지도 바꾸지도 않습니다. 받는 zip이 바뀌면 출시 빌드가 `PINNED_FILE_CHANGED`로 멈춥니다. 새 파일을 확인한 뒤 해시를 바꿉니다.
+- **2회차, exe**: 패커가 만든 `HJViewer.exe`입니다. 서명한 뒤 `HJViewer-install.exe`로 복사하므로 두 이름은 같은 파일이고 서명은 한 번입니다.
+
+**순서와 확인** (`scripts/windows-signing.ps1`, 회차마다)
+
+1. **Prepare**: 서명할 파일을 번호 이름(`0000.dll`, `0001.exe` …)으로 `$RUNNER_TEMP/hjv-sign/<회차>`에 복사하고, 폴더의 모든 파일과 처리(서명, 그대로, 고정, 데이터)를 적은 목록을 남깁니다.
+2. `azure/login`(GitHub OIDC) → `Azure/artifact-signing-action`이 그 폴더를 제자리에서 서명합니다(파일 다이제스트 SHA-256, RFC 3161 타임스탬프 `http://timestamp.acs.microsoft.com`, 다이제스트 SHA-256) → `az account clear`로 로그인을 지웁니다.
+3. **Verify**: 서명한 사본마다 원본과 체크섬·서명 자리 말고는 바이트가 같은지, Windows가 유효하다고 하는지, 파일·서명 다이제스트가 SHA-256인지, 서명이 하나뿐인지(덧붙인 서명이나 두 번째 항목 없음), 이 서명에 대한 RFC 3161 타임스탬프가 있는지, 체인이 "Microsoft ID Verified Code Signing PCA 2021"을 지나는지(온라인 폐기 확인 포함), 서명자의 이름(CN)이 `AZURE_SIGNING_PUBLISHER`와 같은지, 한 회차의 파일이 모두 같은 인증서로 서명되었는지 봅니다. 그 사이 원본 폴더가 바뀌지 않았는지도 봅니다. 모두 통과해야 원래 자리에 넣습니다.
+4. 두 회차 뒤 **Audit**가 앱 폴더와 exe 폴더에 서명 없는 PE가 남지 않았는지, 두 이름이 같은 파일인지 봅니다. 그다음에 고지 파일, `release.json`, `SHA256SUMS`를 만듭니다. 그래서 해시와 정책은 서명된 바이트의 것입니다.
+
+- **인증서를 고정하지 않는 까닭**: Artifact Signing은 인증서를 매일 새로 발급하고 72시간만 유효하게 합니다. 그래서 인증서 지문 대신 위의 이름과 체인을 봅니다. 서명이 인증서보다 오래 유효한 것은 타임스탬프 덕분이라 타임스탬프 없는 서명은 받지 않습니다. 하루 한 번 바뀌는 때에 한 회차가 걸치면 `MIXED_SIGNERS`로 멈추고, 그 실행을 다시 돌리면 됩니다.
+- **보고서**: Verify가 받은 것(파일 경로, SHA-256, 인증서 지문과 만료 시각, 타임스탬프 시각)은 아티팩트 `…-windows-signatures`에 남습니다. 이름, 인증서, 서비스의 응답은 넣지 않습니다.
+- **검사의 시험**: `scripts/test_windows_signing.ps1`이 모든 Windows 빌드(확인 빌드 포함)의 앞부분 "Test Windows signing checks"에서 실제 Windows Authenticode로 돕니다. 버리는 자체 서명 인증서로 거절할 것들(믿을 수 없는 서명, SHA-1, 타임스탬프 없음, 두 번째 항목, 고정 파일의 변경 등)을 봅니다. Azure가 서명한 파일을 받아들이는 길은 출시 빌드의 Verify에서만 돕니다. 개발 PC(Linux)의 `scripts/ci.sh`에서는 돌지 않습니다.
+
+**처음 한 번 할 일 (소유자, Azure 포털)**
+
+1. Artifact Signing 계정, 승인된 신원 확인, 공개 신뢰(Public Trust) 인증서 프로필을 둡니다. 엔드포인트는 계정 지역의 것입니다(`https://<지역>.codesigning.azure.net`, 한국 중부는 `krc`).
+2. 사용자 할당 관리 ID를 하나 만듭니다(Artifact Signing 계정과 같은 구독).
+3. 그 관리 ID → 페더레이션 자격 증명 → 추가에서 시나리오 **기타 발급자**(Other issuer)를 고르고 다음을 넣습니다. 포털의 "GitHub Actions" 시나리오는 저장소 이름으로 주체를 만들어 맞지 않습니다.
+   - 발급자: `https://token.actions.githubusercontent.com`
+   - 주체 식별자: `repo:yonsei-projecttf@340596521/hjviewer-private@1412959024:ref:refs/heads/main`
+   - 대상: `api://AzureADTokenExchange`(기본값)
+
+   빌드 저장소는 2026-07-15 뒤에 만들어져 GitHub가 바뀌지 않는 주체 형식(소유자와 저장소의 숫자 ID가 든 것)을 씁니다. 지금 형식은 `gh api repos/yonsei-projecttf/hjviewer-private/actions/oidc/customization/sub`의 `sub_claim_prefix`로 봅니다. 재사용 워크플로라도 주체는 부르는 쪽(빌드 저장소)의 것이므로, 빌드 저장소의 `main`에서 시작한 실행만 맞습니다. 다른 브랜치나 environment를 쓰면 그 주체로 자격 증명을 하나 더 만듭니다.
+4. 인증서 프로필(여럿이면 계정)의 **액세스 제어(IAM)** → 역할 할당 추가에서 **Artifact Signing Certificate Profile Signer** 역할을 고르고, 구성원에 관리 ID → 위의 관리 ID를 넣습니다.
+5. 빌드 저장소에 아래 시크릿 7개를 넣습니다(`gh secret set <이름> -R yonsei-projecttf/hjviewer-private`, 값은 프롬프트에).
+6. 빌드 저장소의 `build.yml`에서 `client` 잡의 `permissions`에 `id-token: write`를 더합니다(위 "비공개 빌드 저장소". `<커밋>`을 이 기능이 든 커밋으로 바꾸는 것과 같은 커밋에서).
+
+| 이름 | 내용 |
+|---|---|
+| `AZURE_TENANT_ID` | 관리 ID가 있는 Microsoft Entra 테넌트의 ID |
+| `AZURE_SUBSCRIPTION_ID` | Artifact Signing 계정이 있는 구독의 ID |
+| `AZURE_CLIENT_ID` | 관리 ID의 클라이언트 ID(관리 ID의 개요 화면) |
+| `AZURE_SIGNING_ENDPOINT` | 계정 지역의 엔드포인트, 예: `https://krc.codesigning.azure.net` |
+| `AZURE_SIGNING_ACCOUNT` | Artifact Signing 계정의 이름 |
+| `AZURE_SIGNING_PROFILE` | 인증서 프로필의 이름 |
+| `AZURE_SIGNING_PUBLISHER` | 인증서 주체의 CN, 신원 확인으로 승인된 조직 이름 그대로(포털의 인증서 프로필에서 봄). Verify가 서명자의 이름과 바이트까지 비교합니다 |
+
+이 값들은 비밀이 아니지만, 공개 저장소의 파일과 로그에 남지 않도록 빌드 저장소의 시크릿으로 둡니다(로그에서는 `***`). Checks 잡은 일곱 값이 있는지와 엔드포인트의 꼴만 보고 아무 값도 출력하지 않습니다.
+
+**기대할 것과 한계**
+
+- **SmartScreen**: 서명했다고 경고가 바로 사라지지 않습니다. 같은 서명자로 낸 파일이 내려받혀 쌓인 평판으로 줄어들고, 몇 주와 수백 번의 깨끗한 설치가 걸릴 수 있습니다(Microsoft 문서, 2026-11). 경고 창의 게시자는 "알 수 없음" 대신 승인된 조직 이름으로 나옵니다. 2026-11 현재 Artifact Signing의 발급 CA가 바뀔 때 경고가 다시 나온다는 보고와, Microsoft가 그 오류를 고치는 중이라는 말이 있습니다(`Azure/artifact-signing-action` 이슈 #128).
+- **Smart App Control**: Microsoft 문서끼리 다릅니다(Trusted Root Program의 CA를 요구한다는 개요와, Artifact Signing을 권하는 서명 안내). Smart App Control을 켠 PC에서 봅니다(아래 "아직 확인하지 못한 것").
+- **Microsoft Store**: Artifact Signing으로 서명한 Win32 EXE는 Store 제출 요건(Microsoft Trusted Root Program에 오른 CA)을 채우지 못합니다(Microsoft의 서명 방법 표 "Store eligible: No"). Store에 낸다면 Store가 서명하는 MSIX를 따로 정합니다.
+- **신뢰**: Microsoft는 Artifact Signing의 CA를 CCADB에서 빼기로 했지만(2026-10-01 공지), Windows Platform Trust List에는 남아 Windows는 계속 믿습니다. Windows 밖의 도구는 이 서명을 모를 수 있습니다.
+- **비용**: Basic 요금제가 계정당 월 $9.99(서명 5,000번), 넘으면 서명마다 $0.005입니다. 한 빌드가 파일 20여 개를 서명합니다.
+
+**보안**
+
+- 서명할 수 있는 것은 빌드 저장소의 `main`에서 시작한 실행이 받는 GitHub OIDC 토큰뿐이고, 관리 ID가 가진 것은 인증서 프로필 하나의 서명 역할뿐입니다. 서명 키는 Azure 밖으로 나오지 않습니다. 서명한 기록은 Azure의 그 계정 쪽에 남습니다.
+- `id-token: write`는 잡 단위라, Windows 잡의 모든 단계(cargo, Flutter, vcpkg, pip의 서드파티 빌드 코드 포함)가 OIDC 토큰을 요청할 수 있습니다. 빌드 코드가 오염되면 어차피 그 빌드가 서명되므로, 같은 잡에서 서명하는 것을 받아들였습니다. Azure CLI의 로그인은 서명 단계 바로 앞에서 하고 바로 뒤에 지웁니다(실패해도). 더 줄이려면 신뢰한 단계만 도는 서명 잡으로 나눕니다(패커를 그 뒤에 다시 빌드해야 함).
+- 액션은 40자리 SHA로 고정합니다: `azure/login` v3.1.0(a641126), `Azure/artifact-signing-action` v2.0.0(c7ab2a8). 서명 액션은 실행마다 PSGallery의 `ArtifactSigning` 모듈 0.1.8과 nuget.org의 signtool·서명 클라이언트를 판을 정해 받습니다(해시 고정은 없음). 그 액션의 의존성 캐시는 끕니다(그 저장소의 main도 기본값을 껐음: 캐시는 보안 경계가 아님).
+
+**실패할 때**
+
+- `PINNED_FILE_CHANGED`, `PINNED_FILE_MISSING`: 가상 디스플레이 드라이버의 zip이 바뀌었습니다. 위 "고정한 업체 파일".
+- `EXISTING_SIGNATURE_<상태>`: 앱 폴더의 업체 파일에 Windows가 받지 않는 서명이 있습니다. 그 파일을 확인하고 핀 파일에 넣거나 받는 곳을 고칩니다. 서명을 덮어쓰지 않습니다.
+- 서명 단계의 403 등: 역할 할당, 페더레이션 자격 증명의 주체, 엔드포인트의 지역, 계정 상태를 봅니다(Microsoft의 Artifact Signing FAQ 오류 표). 타임스탬프 서버에 닿지 못한 실패는 다시 실행합니다.
+- `MIXED_SIGNERS`: 다시 실행합니다(위).
+- `UNEXPECTED_PUBLISHER`: `AZURE_SIGNING_PUBLISHER`가 인증서의 CN과 다릅니다(공백, 대소문자까지).
 
 ## 스토어 실행 (`store-release.yml`, 1.9.1부터)
 
@@ -919,6 +991,8 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 
 Google Play 경로는 Android 실행마다 Linux 약 4분(AAB 단계), 약 $0.03을 더하고, 업로드하는 스토어 실행이 3–5분을 더합니다. AAB 단계(약 3분 15초)는 1.6.0, 1.6.1 출시 실행에서 잰 값입니다. AAB 아티팩트(약 30MB)는 30일 동안 저장 공간을 씁니다.
 
+Windows 출시 빌드의 서명은 GitHub 밖의 Azure 요금입니다. Artifact Signing Basic이 월 $9.99(서명 5,000번 포함)이고 일할 계산하지 않습니다. 서명 단계가 Windows 잡에 더하는 시간은 아직 재지 않았습니다(아래 "아직 확인하지 못한 것").
+
 **저장소 공개도 고려하세요.**
 
 - RustDesk는 AGPL-3.0이라, 앱을 받는 사용자에게 수정한 소스를 제공할 의무가 이미 있습니다.
@@ -987,4 +1061,5 @@ Google Play 경로는 Android 실행마다 Linux 약 4분(AAB 단계), 약 $0.03
 - **의존성 변경**: 모든 빌드가 `--locked`이므로, 패치가 의존성을 바꾸면 `Cargo.lock`도 패치에 포함해야 합니다.
 - **Xcode 26.6 고정**: 러너 이미지에서 26.6이 빠지면 "Select Xcode" 단계가 실패합니다. 그때 `XCODE_VERSION`을 이미지에 있는 26.x로 바꿉니다. Apple은 2027년 4월부터 iOS 27 SDK를 요구할 예정입니다. 그 전에 Flutter를 3.38 이상으로 올리고 AppDelegate를 UIScene으로 옮겨야 합니다.
 - **Flutter 플러그인**: 패치 0006이 개인정보 매니페스트 때문에 sqflite, file_picker, package_info_plus, device_info_plus를 올렸습니다. 2026-10-10에 세 플랫폼 모두 빌드되는 것까지 확인했습니다(실행 38042826319의 Windows·Android, 38044728062의 iOS). 실제 기기에서의 동작은 아직 확인하지 않았습니다.
-- **외부 파일**: Windows 빌드는 빌드 중에 rustdesk 쪽 GitHub 릴리스에서 파일을 받습니다. 커스텀 Flutter 엔진(`main` 릴리스)과 가상 디스플레이 드라이버입니다. 이 파일이 바뀌거나 사라지면 결과가 달라질 수 있습니다.
+- **외부 파일**: Windows 빌드는 빌드 중에 rustdesk 쪽 GitHub 릴리스에서 파일을 받습니다. 커스텀 Flutter 엔진(`main` 릴리스)과 가상 디스플레이 드라이버입니다. 이 파일이 바뀌거나 사라지면 결과가 달라질 수 있습니다. 드라이버의 두 파일은 출시 빌드의 서명 단계가 SHA-256으로 고정해 보므로, 바뀌면 그 빌드가 멈춥니다(위 "Windows 코드 서명").
+- **Windows 코드 서명** (위 "Windows 코드 서명"): 한 번도 돌지 않았습니다. 개발 PC에는 PowerShell과 Windows가 없어 `scripts/windows-signing.ps1`과 그 시험은 Windows 러너에서 처음 돕니다. 첫 Windows 확인 빌드에서 "Test Windows signing checks"가 통과하는지, 첫 출시 빌드에서 다음을 봅니다: Checks 잡의 서명 설정 확인, `azure/login`의 OIDC 로그인(구독이 보이는지), 두 회차의 서명과 Verify(서명한 파일 수, 고정 파일 둘, 한 인증서), 보고서 아티팩트, 단계가 더하는 시간과 서명 횟수, 설치 시험과 업데이트 시험이 서명한 exe로 통과하는지. 그 뒤 소유자의 PC에서 exe의 속성 → 디지털 서명(게시자, 타임스탬프), SmartScreen 창의 게시자, Smart App Control을 켠 PC에서의 실행을 봅니다.
