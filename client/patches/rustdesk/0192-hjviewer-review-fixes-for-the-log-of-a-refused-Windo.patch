@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:20:42 +0900
+Subject: [PATCH 192/194] hjviewer: review fixes for the log of a refused
+ Windows pipe, which names its holder
+
+What the owner saw: when a pipe was refused (another account squatting the
+connection window's name, another copy of the app), the log said only
+"Rejected untrusted Windows IPC server ... not owned by the expected
+identity", so nobody could tell which process kept the name. The
+connection window's name exists only while a window is shown, so it is
+free most of the time and easy to take.
+
+What changes: src/ipc/windows.rs connect adds the holder to that
+(throttled, every 5 s) warning: its process ID and session
+(GetNamedPipeServerProcessId / GetNamedPipeServerSessionId) and the SID of
+the pipe's owner (GetSecurityInfo), each "?" when Windows does not tell.
+They are read only when the line is written.
+
+Left alone: the --server does not end the holder; the refusal itself and
+the error text are unchanged (the tests compare it).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/ipc/windows.rs | 49 ++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/src/ipc/windows.rs b/src/ipc/windows.rs
+index 0f90ac3..19f641f 100644
+--- a/src/ipc/windows.rs
++++ b/src/ipc/windows.rs
+@@ -108,18 +108,63 @@ pub(super) async fn connect(path: &str, postfix: &str) -> ResultType<ConnectionC
+     };
+     // The UI can own the main pipe while an installed service is unavailable.
+     if let Err(error) = ensure_server(&client, postfix) {
++        // Who holds the name, so that the PC's owner can find a process that keeps it (another
++        // account squatting the name, another copy of the app): its process ID, its session and
++        // the account (SID) that owns the pipe.
+         hbb_common::throttled_log!(
+             AUTH_LOG_INTERVAL,
+             warn,
+-            "Rejected untrusted Windows IPC server at '{}': {}",
++            "Rejected untrusted Windows IPC server at '{}': {} (held by {})",
+             path,
+-            error
++            error,
++            describe_server(&client)
+         );
+         return Err(error);
+     }
+     Ok(client)
+ }
+ 
++/// The process ID, session and owner SID of a pipe's server, as far as Windows tells them.
++fn describe_server(client: &ConnectionClient) -> String {
++    let pipe = HANDLE(client.as_raw_handle());
++    let mut server_pid = 0;
++    let pid = match unsafe { GetNamedPipeServerProcessId(pipe, &mut server_pid) } {
++        Ok(()) => server_pid.to_string(),
++        Err(_) => "?".to_owned(),
++    };
++    let mut server_session = 0;
++    let session = match unsafe { GetNamedPipeServerSessionId(pipe, &mut server_session) } {
++        Ok(()) => server_session.to_string(),
++        Err(_) => "?".to_owned(),
++    };
++    let owner = pipe_owner_string(pipe).unwrap_or_else(|_| "?".to_owned());
++    format!("process {pid}, session {session}, owner {owner}")
++}
++
++fn pipe_owner_string(pipe: HANDLE) -> ResultType<String> {
++    let mut owner = PSID::default();
++    let mut descriptor = PSECURITY_DESCRIPTOR::default();
++    unsafe {
++        GetSecurityInfo(
++            pipe,
++            SE_FILE_OBJECT,
++            OWNER_SECURITY_INFORMATION,
++            Some(&mut owner),
++            None,
++            None,
++            None,
++            Some(&mut descriptor),
++        )
++        .ok()
++        .context("Failed to read IPC server owner")?;
++    }
++    let _descriptor = LocalAllocation(descriptor.0);
++    if owner.0.is_null() {
++        bail!("IPC server has no owner");
++    }
++    sid_string(owner)
++}
++
+ fn ensure_server(client: &ConnectionClient, postfix: &str) -> ResultType<()> {
+     let pipe = HANDLE(client.as_raw_handle());
+     let mut pid = 0;

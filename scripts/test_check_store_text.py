@@ -412,18 +412,18 @@ class StoreTextTest(unittest.TestCase):
 
     def test_the_versions(self):
         copy = StoreCopy(self)
-        copy.value("play/version.txt", "1.9.4")
+        copy.value("play/version.txt", "1.9.5")
         self.check(copy, fails=r"differ \(--allow-version-split")
         self.check(copy, "--allow-version-split")
-        self.check(copy, "--allow-version-split", "--version", "1.9.4", fails=r"appstore/version.txt: is 1.9.3, not")
-        copy.value("appstore/version.txt", "1.9.4")
-        self.check(copy, "--version", "1.9.4")
+        self.check(copy, "--allow-version-split", "--version", "1.9.5", fails=r"appstore/version.txt: is 1.9.4, not")
+        copy.value("appstore/version.txt", "1.9.5")
+        self.check(copy, "--version", "1.9.5")
         copy.value("appstore/version.txt", "1.9")
         self.check(copy, fails=r"not a version X.Y.Z")
 
     def test_the_play_notes_with_the_source_lines(self):
         copy = StoreCopy(self)
-        room = cst.PLAY_NOTES_CHARS - cst.play_notes_chars("", "1.9.3")
+        room = cst.PLAY_NOTES_CHARS - cst.play_notes_chars("", "1.9.4")
         copy.value("play/ko-KR/release_notes.txt", "가" * room)
         self.assertIn("500 of 500 characters", self.check(copy))
         copy.value("play/ko-KR/release_notes.txt", "가" * (room + 1))

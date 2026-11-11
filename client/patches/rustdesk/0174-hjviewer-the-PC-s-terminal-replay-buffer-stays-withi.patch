@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:03:01 +0900
-Subject: [PATCH 174/182] hjviewer: the PC's terminal replay buffer stays
+Subject: [PATCH 174/194] hjviewer: the PC's terminal replay buffer stays
  within 1 MB for output without newlines
 
 The PC keeps each terminal's recent output for a reconnect, capped at

@@ -1,0 +1,499 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:03:55 +0900
+Subject: [PATCH 188/194] hjviewer: only SYSTEM and the session's user can use
+ the connection window's pipe, and the service checks who serves it
+
+The connection window (--cm) serves \\.\pipe\HJViewer\query_cm, the
+pipe over which the service's process (--server, SYSTEM when installed)
+hands it each incoming connection: the controller's name and ID, chat,
+file transfer jobs and blocks, clipboard files, privacy-mode state, and
+over which the window answers "click to accept" and ends a connection.
+1.9.3 protected the main and the service pipe but left this one as it
+was: the window made it with the default security descriptor
+(src/ui_cm_interface.rs start_ipc -> ipc::new_listener("_cm"), which
+used SecurityAttributes::empty()), and the --server connected with
+Endpoint::connect and took whatever answered (src/server/connection.rs
+start_ipc, src/server/clipboard_service.rs, src/privacy_mode.rs). On a
+PC used by several Windows accounts another, non-admin account could
+make that name while no window was open and be handed the next
+connection's data, answer for the PC's user, or accept a connection.
+
+The pipe now goes through the 1.9.3 helpers of src/ipc/windows.rs, as
+the main pipe does (src/ipc.rs is_windows_protected_ipc, used by
+new_listener and connect):
+- listener: owner = the window's user, protected DACL with everything
+  for SYSTEM and that owner and, unlike the main pipe, nothing for
+  Everyone: only the --server (SYSTEM, or the same user for an app that
+  is not installed) and the main window (theme, language) connect to
+  it. The first-instance flag of parity-tokio-ipc stays. A window whose
+  descriptor cannot be built does not start, as for the main pipe.
+- client: opens with the client access only and, before a byte of a
+  message goes out, requires a restricted DACL and an owner that is
+  SYSTEM or the expected user, then the server's session = the
+  client's session and the server's executable = the client's own. The
+  expected user is the client's own user, except for a SYSTEM client:
+  there it is the user of the token the service starts the window with
+  (platform::windows::session_user_sid_string -> get_user_token(session,
+  true), the token of run_as_user -> run_exe_in_session), and the
+  "not less elevated" rule is skipped, since that window runs
+  unelevated by design. Main and service pipes are checked as before;
+  the expected owner is only computed when the owner is not SYSTEM.
+
+Mixed versions (the window's pipe only; the 1.9.3 notes cover the
+others):
+- A 1.9.4 client takes no 1.9.3 window's pipe (the default DACL gives
+  Administrators and the logon session more than client access). A
+  1.9.3 client opens a 1.9.4 window's pipe: SYSTEM through the SY entry,
+  the same user through the owner entry.
+- Unattended update 1.9.3 -> 1.9.4: the new package's update_me stops
+  the service and ends every HJViewer.exe in every session
+  (src/platform/windows.rs update_me, taskkill /F /IM) before it copies
+  and starts the new service, so no 1.9.3 window is left; the next
+  incoming connection starts a 1.9.4 window. A connection that was open
+  drops and comes back as with 1.9.3. The installer does the same
+  (get_before_uninstall). A 1.9.3 service with a 1.9.4 window cannot
+  arise from that order, and would work.
+- An old app that is not installed next to the installed one does not
+  host (the installed service holds the main pipe), so it starts no
+  window. An app that is not installed hosting alone, and an installed
+  main window hosting while the service is stopped, start their window
+  as the same user, in the same session, from the same file: accepted;
+  the service's --server takes that window after "start service" too.
+- What changes: a window of another Windows session, of another copy
+  of the app or of an older version is refused where 1.9.3 used it (it
+  showed this session's connections to another user). The next commit
+  makes the --server wait for such a window to go.
+
+Left alone: the window does not check its clients beyond the DACL; a
+process of the same account can still add instances, and another
+account can still take the name while no window is open, which denies
+the window (the connection ends with "connection manager error") but
+gets no data; the other postfixes keep their rules.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/ipc.rs                  | 30 ++++++++++++----
+ src/ipc/windows.rs          | 57 +++++++++++++++++++++++------
+ src/ipc/windows_tests.rs    | 54 ++++++++++++++++++++++++----
+ src/platform/windows.rs     |  2 +-
+ src/platform/windows/acl.rs | 72 +++++++++++++++++++++++--------------
+ 5 files changed, 164 insertions(+), 51 deletions(-)
+
+diff --git a/src/ipc.rs b/src/ipc.rs
+index e238398..267a066 100644
+--- a/src/ipc.rs
++++ b/src/ipc.rs
+@@ -61,8 +61,7 @@ use ipc_auth::{active_uid, authorize_service_scoped_ipc_connection};
+ use ipc_auth::authorize_user_server_process;
+ #[cfg(windows)]
+ use ipc_auth::{
+-    authorize_windows_main_ipc_connection, is_windows_main_or_service_ipc,
+-    portable_service_listener_security_attributes,
++    authorize_windows_main_ipc_connection, portable_service_listener_security_attributes,
+ };
+ #[cfg(target_os = "linux")]
+ pub(crate) use ipc_auth::{
+@@ -697,6 +696,14 @@ pub(crate) async fn start_with_listener(postfix: &str, mut incoming: Incoming) {
+     }
+ }
+ 
++/// The Windows pipes whose listener and clients use `ipc/windows.rs`: the main, the service
++/// and the connection window's pipe.
++#[cfg(windows)]
++#[inline]
++fn is_windows_protected_ipc(postfix: &str) -> bool {
++    ipc_auth::is_windows_main_or_service_ipc(postfix) || postfix == ipc_windows::CM_POSTFIX
++}
++
+ pub async fn new_listener(postfix: &str) -> ResultType<Incoming> {
+     let path = Config::ipc_path(postfix);
+     #[cfg(any(target_os = "linux", target_os = "macos"))]
+@@ -716,8 +723,8 @@ pub async fn new_listener(postfix: &str) -> ResultType<Incoming> {
+         {
+             if postfix == "_portable_service" {
+                 portable_service_listener_security_attributes()
+-            } else if is_windows_main_or_service_ipc(postfix) {
+-                ipc_windows::listener_security_attributes()
++            } else if is_windows_protected_ipc(postfix) {
++                ipc_windows::listener_security_attributes(postfix)
+             } else {
+                 Ok(SecurityAttributes::empty())
+             }
+@@ -732,7 +739,7 @@ pub async fn new_listener(postfix: &str) -> ResultType<Incoming> {
+         Err(err) => {
+             log::error!("Failed to set ipc{} security: {}", postfix, err);
+             #[cfg(windows)]
+-            if postfix == "_portable_service" || is_windows_main_or_service_ipc(postfix) {
++            if postfix == "_portable_service" || is_windows_protected_ipc(postfix) {
+                 // Protected endpoints must not start with default ACLs.
+                 return Err(err.into());
+             }
+@@ -1469,7 +1476,7 @@ fn user_main_ipc_server_uid() -> ResultType<u32> {
+ 
+ pub async fn connect(ms_timeout: u64, postfix: &str) -> ResultType<ConnectionTmpl<ConnClient>> {
+     #[cfg(windows)]
+-    if is_windows_main_or_service_ipc(postfix) {
++    if is_windows_protected_ipc(postfix) {
+         return Ok(ConnectionTmpl::new(
+             timeout(
+                 ms_timeout,
+@@ -2298,6 +2305,17 @@ pub async fn set_install_option(k: String, v: String) -> ResultType<()> {
+ mod test {
+     use super::*;
+ 
++    #[cfg(windows)]
++    #[test]
++    fn test_windows_protected_ipc_includes_connection_window() {
++        assert!(is_windows_protected_ipc(""));
++        assert!(is_windows_protected_ipc(crate::POSTFIX_SERVICE));
++        assert!(is_windows_protected_ipc("_cm"));
++        assert!(!is_windows_protected_ipc("_portable_service"));
++        assert!(!is_windows_protected_ipc("_pa"));
++        assert!(!is_windows_protected_ipc("_whiteboard"));
++    }
++
+     #[test]
+     fn verify_ffi_enum_data_size() {
+         println!("{}", std::mem::size_of::<Data>());
+diff --git a/src/ipc/windows.rs b/src/ipc/windows.rs
+index b98729c..01b56da 100644
+--- a/src/ipc/windows.rs
++++ b/src/ipc/windows.rs
+@@ -33,6 +33,9 @@ const CLIENT_ACCESS: u32 = FILE_GENERIC_READ.0 | FILE_WRITE_DATA.0;
+ const PIPE_BUSY_RETRY: Duration = Duration::from_millis(50);
+ const AUTH_LOG_INTERVAL: Duration = Duration::from_secs(5);
+ const SYSTEM_SID: &str = "S-1-5-18";
++/// The connection window's pipe. The window (`--cm`) serves it as the user of its session;
++/// the `--server` that shows its connections there (SYSTEM when installed) is the client.
++pub(super) const CM_POSTFIX: &str = "_cm";
+ const ACCESS_ALLOWED_ACE_TYPE_U8: u8 = 0;
+ 
+ struct LocalAllocation(*mut c_void);
+@@ -43,7 +46,7 @@ impl Drop for LocalAllocation {
+     }
+ }
+ 
+-/// Restricts creation of main/service pipe instances to SYSTEM and the owner.
++/// Restricts creation of main/service/connection-window pipe instances to SYSTEM and the owner.
+ ///
+ /// Windows checks the existing pipe's DACL when CreateNamedPipe opens another
+ /// server instance of the same name. It requires FILE_CREATE_PIPE_INSTANCE,
+@@ -53,7 +56,11 @@ impl Drop for LocalAllocation {
+ /// create instances. It also cannot stop an attacker from creating the name first.
+ /// Clients must still authenticate the server in connect(); name squatting can
+ /// still deny service.
+-pub(super) fn listener_security_attributes() -> io::Result<SecurityAttributes> {
++///
++/// The connection window's pipe gives Everyone nothing: only SYSTEM (the installed
++/// `--server`) and the window's own user (the `--server` of an app that is not installed,
++/// the main window) connect to it.
++pub(super) fn listener_security_attributes(postfix: &str) -> io::Result<SecurityAttributes> {
+     let owner = platform::current_process_user_sid_string()
+         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+     // SDDL: each (A;;rights;;;sid) is an allow rule.
+@@ -65,7 +72,11 @@ pub(super) fn listener_security_attributes() -> io::Result<SecurityAttributes> {
+     // https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format
+     // https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-strings
+     // https://learn.microsoft.com/en-us/windows/win32/secauthz/sid-strings
+-    let sddl = format!("O:{owner}D:P(A;;GA;;;SY)(A;;GA;;;{owner})(A;;0x{CLIENT_ACCESS:x};;;WD)");
++    let sddl = if postfix == CM_POSTFIX {
++        format!("O:{owner}D:P(A;;GA;;;SY)(A;;GA;;;{owner})")
++    } else {
++        format!("O:{owner}D:P(A;;GA;;;SY)(A;;GA;;;{owner})(A;;0x{CLIENT_ACCESS:x};;;WD)")
++    };
+     SecurityAttributes::from_sddl(&sddl)
+ }
+ 
+@@ -80,10 +91,13 @@ fn open_pipe(path: &str) -> io::Result<ConnectionClient> {
+     unsafe { ConnectionClient::from_raw_handle(file.into_raw_handle()) }
+ }
+ 
+-/// Authenticates a main/service pipe before exposing it for application data.
++/// Authenticates a main/service/connection-window pipe before exposing it for application data.
+ /// All accepted pipes need a restricted DACL. Service pipes require SYSTEM
+ /// ownership; main IPC also accepts same-user servers with a matching session
+ /// and executable, and no lower elevation than the client.
++/// The connection-window pipe is checked as the main one, except that a SYSTEM client
++/// expects the user it starts the window as (the user of its own session) and no
++/// elevation: the window of the installed service runs as that user, unelevated.
+ /// The caller must enforce the timeout, including retries while all instances are busy.
+ pub(super) async fn connect(path: &str, postfix: &str) -> ResultType<ConnectionClient> {
+     let client = loop {
+@@ -96,7 +110,7 @@ pub(super) async fn connect(path: &str, postfix: &str) -> ResultType<ConnectionC
+         }
+     };
+     // The UI can own the main pipe while an installed service is unavailable.
+-    if let Err(error) = ensure_server(&client, config::is_service_ipc_postfix(postfix)) {
++    if let Err(error) = ensure_server(&client, postfix) {
+         hbb_common::throttled_log!(
+             AUTH_LOG_INTERVAL,
+             warn,
+@@ -109,7 +123,7 @@ pub(super) async fn connect(path: &str, postfix: &str) -> ResultType<ConnectionC
+     Ok(client)
+ }
+ 
+-fn ensure_server(client: &ConnectionClient, require_system: bool) -> ResultType<()> {
++fn ensure_server(client: &ConnectionClient, postfix: &str) -> ResultType<()> {
+     let pipe = HANDLE(client.as_raw_handle());
+     let mut pid = 0;
+     unsafe { GetNamedPipeServerProcessId(pipe, &mut pid) }
+@@ -117,7 +131,8 @@ fn ensure_server(client: &ConnectionClient, require_system: bool) -> ResultType<
+     if pid == 0 {
+         bail!("IPC server process is unavailable");
+     }
+-    if ensure_pipe_security(pipe, require_system)? {
++    let client_is_system = platform::is_root();
++    if ensure_pipe_security(pipe, || expected_server_user(postfix, client_is_system))? {
+         return Ok(());
+     }
+     let mut session = 0;
+@@ -126,14 +141,34 @@ fn ensure_server(client: &ConnectionClient, require_system: bool) -> ResultType<
+     if platform::get_current_process_session_id() != Some(session) {
+         bail!("IPC server belongs to a different session");
+     }
+-    super::ipc_auth::ensure_peer_executable_matches_current_by_pid_opt(Some(pid), "")?;
+-    if platform::is_elevated(None)? && !platform::is_elevated(Some(pid))? {
++    super::ipc_auth::ensure_peer_executable_matches_current_by_pid_opt(Some(pid), postfix)?;
++    // Only the connection window's pipe gets here with a SYSTEM client (any other pipe
++    // must be SYSTEM's own for it), and that window runs unelevated by design.
++    if !client_is_system && platform::is_elevated(None)? && !platform::is_elevated(Some(pid))? {
+         bail!("IPC server is less privileged than the client");
+     }
+     Ok(())
+ }
+ 
+-fn ensure_pipe_security(pipe: HANDLE, require_system: bool) -> ResultType<bool> {
++/// The user that may own the pipe besides SYSTEM, or `None` when only SYSTEM may.
++fn expected_server_user(postfix: &str, client_is_system: bool) -> ResultType<Option<String>> {
++    if config::is_service_ipc_postfix(postfix) {
++        return Ok(None);
++    }
++    if postfix == CM_POSTFIX && client_is_system {
++        // The installed `--server` starts the window in its own session with that session's
++        // user token (connection.rs start_ipc -> run_as_user -> run_exe_in_session).
++        let session = platform::get_current_process_session_id()
++            .context("Failed to resolve the current session")?;
++        return Ok(Some(platform::session_user_sid_string(session)?));
++    }
++    Ok(Some(platform::current_process_user_sid_string()?))
++}
++
++fn ensure_pipe_security(
++    pipe: HANDLE,
++    expected_owner: impl FnOnce() -> ResultType<Option<String>>,
++) -> ResultType<bool> {
+     let mut owner = PSID::default();
+     let mut dacl = std::ptr::null_mut();
+     let mut descriptor = PSECURITY_DESCRIPTOR::default();
+@@ -157,7 +192,7 @@ fn ensure_pipe_security(pipe: HANDLE, require_system: bool) -> ResultType<bool>
+     }
+     let owner_string = sid_string(owner)?;
+     let system = owner_string == SYSTEM_SID;
+-    if !system && (require_system || owner_string != platform::current_process_user_sid_string()?) {
++    if !system && expected_owner()?.as_deref() != Some(owner_string.as_str()) {
+         bail!("IPC server is not owned by the expected identity");
+     }
+     // SYSTEM ownership alone is insufficient: a legacy DACL allows rogue extra instances.
+diff --git a/src/ipc/windows_tests.rs b/src/ipc/windows_tests.rs
+index 293e490..826c1ad 100644
+--- a/src/ipc/windows_tests.rs
++++ b/src/ipc/windows_tests.rs
+@@ -67,11 +67,27 @@ fn as_untrusted_client<T>(operation: impl FnOnce() -> T) -> T {
+ 
+ #[tokio::test]
+ async fn windows_ipc_rejects_additional_untrusted_instances() {
+-    let (path, _incoming) = listener(super::listener_security_attributes().unwrap());
+-    let result = as_untrusted_client(|| ServerOptions::new().create(&path));
++    for postfix in ["", super::CM_POSTFIX] {
++        let (path, _incoming) = listener(super::listener_security_attributes(postfix).unwrap());
++        let result = as_untrusted_client(|| ServerOptions::new().create(&path));
++        assert_eq!(
++            result
++                .expect_err("untrusted clients must not create server instances")
++                .raw_os_error(),
++            Some(ERROR_ACCESS_DENIED.0 as i32),
++        );
++    }
++}
++
++#[tokio::test]
++async fn windows_cm_ipc_rejects_untrusted_clients() {
++    let (path, _incoming) =
++        listener(super::listener_security_attributes(super::CM_POSTFIX).unwrap());
++    let result = as_untrusted_client(|| super::open_pipe(&path));
+     assert_eq!(
+         result
+-            .expect_err("untrusted clients must not create server instances")
++            .err()
++            .expect("only SYSTEM and the owner may open the connection window's pipe")
+             .raw_os_error(),
+         Some(ERROR_ACCESS_DENIED.0 as i32),
+     );
+@@ -81,7 +97,8 @@ async fn windows_ipc_rejects_additional_untrusted_instances() {
+ async fn windows_ipc_rejects_untrusted_server_before_sending() {
+     timeout(TEST_TIMEOUT, async {
+         {
+-            let (path, _incoming) = listener(super::listener_security_attributes().unwrap());
++            let (path, _incoming) =
++                listener(super::listener_security_attributes(crate::POSTFIX_SERVICE).unwrap());
+             let result = super::connect(&path, crate::POSTFIX_SERVICE).await;
+             assert_eq!(
+                 result.is_ok(),
+@@ -89,7 +106,7 @@ async fn windows_ipc_rejects_untrusted_server_before_sending() {
+                 "restrictive permissions alone must not authenticate a non-SYSTEM owner"
+             );
+         }
+-        for postfix in [crate::POSTFIX_SERVICE, ""] {
++        for postfix in [crate::POSTFIX_SERVICE, "", super::CM_POSTFIX] {
+             let owner = crate::platform::windows::current_process_user_sid_string().unwrap();
+             let attributes =
+                 SecurityAttributes::from_sddl(&format!("O:{owner}D:P(A;;GA;;;WD)")).unwrap();
+@@ -97,7 +114,7 @@ async fn windows_ipc_rejects_untrusted_server_before_sending() {
+             let result = super::connect(&path, postfix).await;
+             let error =
+                 result.expect_err("a rogue server must not receive a usable client connection");
+-            if postfix.is_empty() {
++            if postfix != crate::POSTFIX_SERVICE {
+                 assert_eq!(
+                     error.to_string(),
+                     "IPC server grants untrusted users more than client access"
+@@ -120,7 +137,7 @@ async fn windows_ipc_rejects_untrusted_server_before_sending() {
+ #[tokio::test]
+ async fn windows_ipc_allows_client_communication() {
+     timeout(TEST_TIMEOUT, async {
+-        let (path, mut incoming) = listener(super::listener_security_attributes().unwrap());
++        let (path, mut incoming) = listener(super::listener_security_attributes("").unwrap());
+         let mut client = as_untrusted_client(|| super::open_pipe(&path)).unwrap();
+         let mut server = incoming.next().await.unwrap().unwrap();
+         client.write_all(MESSAGE).await.unwrap();
+@@ -135,3 +152,26 @@ async fn windows_ipc_allows_client_communication() {
+     .await
+     .expect("Windows IPC client communication test timed out");
+ }
++
++#[tokio::test]
++async fn windows_cm_ipc_accepts_own_window() {
++    timeout(TEST_TIMEOUT, async {
++        let (path, mut incoming) =
++            listener(super::listener_security_attributes(super::CM_POSTFIX).unwrap());
++        let connected = super::connect(&path, super::CM_POSTFIX).await;
++        if crate::platform::windows::is_root() {
++            // A SYSTEM client expects the session user's window, and this pipe is SYSTEM's own,
++            // which is trusted as such.
++            assert!(connected.is_ok());
++            return;
++        }
++        let mut client = connected.unwrap();
++        let mut server = incoming.next().await.unwrap().unwrap();
++        client.write_all(MESSAGE).await.unwrap();
++        let mut received = vec![0u8; MESSAGE.len()];
++        server.read_exact(&mut received).await.unwrap();
++        assert_eq!(received, MESSAGE);
++    })
++    .await
++    .expect("Windows connection-window IPC test timed out");
++}
+diff --git a/src/platform/windows.rs b/src/platform/windows.rs
+index 4d03c4e..d454b73 100644
+--- a/src/platform/windows.rs
++++ b/src/platform/windows.rs
+@@ -100,7 +100,7 @@ mod acl;
+ mod installer_handoff;
+ mod installer_shell;
+ mod msi_registry;
+-pub(crate) use acl::current_process_user_sid_string;
++pub(crate) use acl::{current_process_user_sid_string, session_user_sid_string};
+ pub use acl::{
+     set_path_permission, set_path_permission_for_portable_service_shmem_dir,
+     set_path_permission_for_portable_service_shmem_file,
+diff --git a/src/platform/windows/acl.rs b/src/platform/windows/acl.rs
+index 682e66f..9233df6 100644
+--- a/src/platform/windows/acl.rs
++++ b/src/platform/windows/acl.rs
+@@ -200,32 +200,7 @@ pub(crate) fn current_process_user_sid_string() -> ResultType<String> {
+             OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)
+                 .map_err(|e| anyhow!("Failed to open current process token: {}", e))?;
+         }
+-
+-        let buffer = unsafe { read_token_user_buffer(token, "current process")? };
+-        let token_user: TOKEN_USER =
+-            unsafe { std::ptr::read_unaligned(buffer.as_ptr() as *const TOKEN_USER) };
+-        if token_user.User.Sid.0.is_null() {
+-            bail!("Token SID is null");
+-        }
+-
+-        let mut sid_string_ptr = PWSTR::null();
+-        unsafe {
+-            ConvertSidToStringSidW(token_user.User.Sid, &mut sid_string_ptr).map_err(|e| {
+-                anyhow!(
+-                    "ConvertSidToStringSidW failed for current process token SID: {}",
+-                    e
+-                )
+-            })?;
+-        }
+-        if sid_string_ptr.is_null() {
+-            bail!("ConvertSidToStringSidW returned null SID string pointer");
+-        }
+-        let _sid_string_guard = LocalAllocGuard(sid_string_ptr.0 as *mut std::ffi::c_void);
+-        unsafe {
+-            sid_string_ptr
+-                .to_string()
+-                .map_err(|e| anyhow!("Failed to decode SID string as UTF-16: {}", e))
+-        }
++        token_user_sid_string(token, "current process")
+     })();
+ 
+     if !token.is_invalid() {
+@@ -236,6 +211,51 @@ pub(crate) fn current_process_user_sid_string() -> ResultType<String> {
+     result
+ }
+ 
++/// Returns the user SID of the token the service starts a session's user processes with:
++/// `get_user_token(session_id, true)`, the token `run_as_user` launches the connection
++/// window (`--cm`) with. Needs SYSTEM, as that launch does.
++pub(crate) fn session_user_sid_string(session_id: u32) -> ResultType<String> {
++    let token = super::get_user_token(session_id, true);
++    if token.is_null() {
++        bail!("No user token for session {}", session_id);
++    }
++    let token = HANDLE(token as *mut std::ffi::c_void);
++    let result = token_user_sid_string(token, "session user");
++    unsafe {
++        let _ = CloseHandle(token);
++    }
++    result
++}
++
++fn token_user_sid_string(token: HANDLE, subject: &str) -> ResultType<String> {
++    let buffer = unsafe { read_token_user_buffer(token, subject)? };
++    let token_user: TOKEN_USER =
++        unsafe { std::ptr::read_unaligned(buffer.as_ptr() as *const TOKEN_USER) };
++    if token_user.User.Sid.0.is_null() {
++        bail!("Token SID is null");
++    }
++
++    let mut sid_string_ptr = PWSTR::null();
++    unsafe {
++        ConvertSidToStringSidW(token_user.User.Sid, &mut sid_string_ptr).map_err(|e| {
++            anyhow!(
++                "ConvertSidToStringSidW failed for {} token SID: {}",
++                subject,
++                e
++            )
++        })?;
++    }
++    if sid_string_ptr.is_null() {
++        bail!("ConvertSidToStringSidW returned null SID string pointer");
++    }
++    let _sid_string_guard = LocalAllocGuard(sid_string_ptr.0 as *mut std::ffi::c_void);
++    unsafe {
++        sid_string_ptr
++            .to_string()
++            .map_err(|e| anyhow!("Failed to decode SID string as UTF-16: {}", e))
++    }
++}
++
+ /// Hardens ACLs for portable-service shared-memory path (directory or file).
+ ///
+ /// Why:

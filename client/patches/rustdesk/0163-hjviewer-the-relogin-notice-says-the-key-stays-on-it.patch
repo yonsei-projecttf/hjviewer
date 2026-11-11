@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Wed, 28 Oct 2026 08:55:45 +0900
-Subject: [PATCH 163/182] hjviewer: the relogin notice says the key stays on
+Subject: [PATCH 163/194] hjviewer: the relogin notice says the key stays on
  its device
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

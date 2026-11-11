@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:09:08 +0900
-Subject: [PATCH 175/182] hjviewer: a download checks the PC's file names,
+Subject: [PATCH 175/194] hjviewer: a download checks the PC's file names,
  folders and the overwrite answer on this device
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

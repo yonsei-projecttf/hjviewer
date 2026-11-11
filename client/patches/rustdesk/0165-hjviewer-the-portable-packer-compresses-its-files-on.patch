@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Wed, 28 Oct 2026 09:12:07 +0900
-Subject: [PATCH 165/182] hjviewer: the portable packer compresses its files on
+Subject: [PATCH 165/194] hjviewer: the portable packer compresses its files on
  every core
 
 generate.py compressed each file of the Windows app with Brotli at

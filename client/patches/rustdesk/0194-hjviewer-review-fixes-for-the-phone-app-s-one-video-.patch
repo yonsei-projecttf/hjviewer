@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:54:38 +0900
+Subject: [PATCH 194/194] hjviewer: review fixes for the phone app's one video
+ refresh
+
+The first-image callback now arms the refresh timer before anything else, so a throw from
+the recording status, the toast or the soft-keyboard call cannot leave a connection
+without its refresh. Arming only reads the request counter and starts a timer, and none of
+the other statements asks for a video refresh, so the order changes nothing else.
+
+The helper's comments now state the QoS rules as src/server/video_qos.rs has them: the
+bitrate is cut after two bad replies in a row (deeper after three), at most once per 3 s,
+the fps after three, and a cut made at start-up stays on a still screen, so the refresh
+then encodes at that lowered ratio rather than at a settled quality. They also say that,
+unlike a monitor switch, the refresh keeps the phone's decoder.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lib/common/hjviewer_video_refresh.dart    | 19 +++++++++++--------
+ flutter/lib/mobile/pages/remote_page.dart     |  3 ++-
+ 2 files changed, 13 insertions(+), 9 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_video_refresh.dart b/flutter/lib/common/hjviewer_video_refresh.dart
+index 80ccada..3d4b162 100644
+--- a/flutter/lib/common/hjviewer_video_refresh.dart
++++ b/flutter/lib/common/hjviewer_video_refresh.dart
+@@ -1,16 +1,19 @@
+ // The phone and tablet session's one automatic video refresh (1.9.4): a few seconds after a
+-// connection's first picture the app asks the PC for a new one, as the menu's 새로 고침 does, so a
+-// first picture taken before the session's quality settled (blurry, "low resolution") does not
+-// stay on a still screen. Plain Dart without the bridge, so that ci.sh tests it with the web
+-// stand-in; the mobile remote page wires it.
++// connection's first picture the app asks the PC for a new one, as the menu's 새로 고침 does, so
++// that a blurry first picture from the start-up need not stay on a still screen. The PC encodes
++// the new picture at the session's ratio of that moment; the phone keeps its decoder (unlike a
++// monitor switch, which also resets it). Plain Dart without the bridge, so that ci.sh tests it
++// with the web stand-in; the mobile remote page wires it.
+ 
+ import 'dart:async';
+ 
+ /// How long after a connection's first picture the refresh is asked for. The PC's video QoS
+-/// (src/server/video_qos.rs) starts each viewer at INIT_FPS for a second, doubles the fps after
+-/// every two clean delay replies (one a second), steps the bitrate ratio every 3 s and confirms
+-/// congestion only after three bad replies; 6 s after the first picture has passed two ratio
+-/// steps, the fps start-up and a start-up congestion episode on a good link.
++/// (src/server/video_qos.rs) starts each viewer at INIT_FPS for a second and doubles the fps
++/// after two clean delay replies (one a second); the bitrate is cut after two bad replies in a
++/// row (deeper after three), at most once per 3 s, the fps after three. 6 s after the first
++/// picture the fps start-up and a start-up congestion episode are over on a good link. A cut made
++/// at start-up stays on a still screen (the ratio rises only on a moving one), so the refresh
++/// then encodes at that lowered ratio.
+ const kHjvAutoRefreshDelay = Duration(seconds: 6);
+ 
+ typedef HjvStartTimer = Timer Function(
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 31ae421..53bfa17 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -156,6 +156,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+         .changeCurrentKey(MessageKey(widget.id, ChatModel.clientModeID));
+     _blockableOverlayState.applyFfi(gFFI);
+     gFFI.imageModel.addCallbackOnFirstImage((String peerId) {
++      // First, so that a throw below cannot leave the connection without its refresh.
++      _hjvAutoRefresh.onFirstImage();
+       gFFI.recordingModel
+           .updateStatus(bind.sessionGetIsRecording(sessionId: gFFI.sessionId));
+       if (gFFI.recordingModel.start) {
+@@ -164,7 +166,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+       _disableAndroidSoftKeyboard(
+           isKeyboardVisible: keyboardVisibilityController.isVisible);
+       Future.delayed(const Duration(seconds: 1), _hjvMaybeShowGuide);
+-      _hjvAutoRefresh.onFirstImage();
+     });
+     WidgetsBinding.instance.addObserver(this);
+ 

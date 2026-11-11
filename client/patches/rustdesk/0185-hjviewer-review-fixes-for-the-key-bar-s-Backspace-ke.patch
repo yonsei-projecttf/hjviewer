@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:02:05 +0900
+Subject: [PATCH 185/194] hjviewer: review fixes for the key bar's Backspace
+ key name
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+VoiceOver did not read the key bar's new Backspace key as '지우기': it found
+an unnamed button and, as a separate element, the text '지우기'.
+
+KeyHelpTools.wrap (flutter/lib/mobile/pages/remote_page.dart) wrapped the
+TextButton in Semantics(label: ...). That label stays on a container node of
+its own with no actions, and the button node under it has an empty label.
+
+The name is now the icon's semantic label (hjvNamedKeyIcon in
+flutter/lib/common/hjv_semantics.dart, Icon.semanticLabel), which Flutter
+merges into the button: one node that is a button, has the tap and is
+named '지우기' / 'Backspace'. Still no tooltip, which would take the long
+press. wrap() returns the TextButton directly again; its `label` only names
+an icon key.
+
+Test: test/hjviewer_semantics_test.dart, the key among its neighbours in a
+Wrap is one button node with the tap and the label.
+
+Left alone: the top toolbar's keyboard button uses the same
+Semantics-around-the-button shape (pre-existing, outside this change).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_semantics.dart     |  8 ++++++++
+ flutter/lib/mobile/pages/remote_page.dart | 10 +++++-----
+ flutter/test/hjviewer_semantics_test.dart | 20 +++++++++++++++++++-
+ 3 files changed, 32 insertions(+), 6 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_semantics.dart b/flutter/lib/common/hjv_semantics.dart
+index 4b6fd24..98305b0 100644
+--- a/flutter/lib/common/hjv_semantics.dart
++++ b/flutter/lib/common/hjv_semantics.dart
+@@ -21,6 +21,14 @@ Widget hjvHeaderSemantics(Widget child) =>
+ Widget hjvLiveRegion(Widget child) =>
+     Semantics(container: true, liveRegion: true, child: child);
+ 
++/// The icon of a key that shows only an icon (the phone's key bar), named for screen readers. The
++/// name is the icon's semantic label, so that it lands on the button around it: a Semantics label
++/// wrapped around the button stays a node of its own, and the button is read as an unnamed
++/// "button". No tooltip, which would take the long press.
++Icon hjvNamedKeyIcon(IconData icon,
++        {required String? label, double? size, Color? color}) =>
++    Icon(icon, size: size, color: color, semanticLabel: label);
++
+ /// The device group font's outlined twin of upstream's filled 'Accessible devices' icon
+ /// (common.dart IconFont.deviceGroupOutline / deviceGroupFill, kept here without the bridge).
+ const IconData _kDeviceGroupFill = IconData(0xe748, fontFamily: 'DeviceGroup');
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 361fdc4..d15a967 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -16,6 +16,7 @@ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_semantics.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjv_text_scale.dart';
+ import '../../common/hjviewer_labels.dart';
+@@ -1247,7 +1248,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+         : on
+             ? p.primaryStrong
+             : p.text;
+-    final button = TextButton(
++    return TextButton(
+         style: TextButton.styleFrom(
+           // HJViewer: keys of at least 40 x 40 (U57)
+           minimumSize: Size(40, 40),
+@@ -1266,12 +1267,11 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+           side: BorderSide(color: on ? Colors.transparent : p.border),
+         ),
+         child: icon != null
+-            ? Icon(icon, size: 14, color: fg)
++            // HJViewer: an icon key's name on the button itself (no tooltip,
++            // which would take the long press)
++            ? hjvNamedKeyIcon(icon, label: label, size: 14, color: fg)
+             : Text(translate(text), style: TextStyle(color: fg, fontSize: 11)),
+         onPressed: onPressed);
+-    // HJViewer: an icon key's name, without a tooltip, which would take the
+-    // long press
+-    return label == null ? button : Semantics(label: label, child: button);
+   }
+ 
+   _updateRect() {
+diff --git a/flutter/test/hjviewer_semantics_test.dart b/flutter/test/hjviewer_semantics_test.dart
+index 91a23ff..7b865c1 100644
+--- a/flutter/test/hjviewer_semantics_test.dart
++++ b/flutter/test/hjviewer_semantics_test.dart
+@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
+ 
+ // UX-K2 (U59), what a screen reader hears (common/hjv_semantics.dart): the selected tab and side
+ // bar row, a settings group's heading, the live notices (HjvCallout's liveRegion), and the PC
+-// list tabs' filled and outlined icons. Plain Flutter, no bridge.
++// list tabs' filled and outlined icons, the phone's key bar icon keys. Plain Flutter, no bridge.
+ 
+ Widget app(Widget child) =>
+     MaterialApp(home: Scaffold(body: Center(child: child)));
+@@ -178,6 +178,24 @@ void main() {
+     semantics.dispose();
+   });
+ 
++  testWidgets('an icon key on the phone\'s key bar is one button with its name',
++      (tester) async {
++    final semantics = tester.ensureSemantics();
++    // mobile/pages/remote_page.dart, KeyHelpTools.wrap: the bar's Backspace key among its
++    // neighbours, without a tooltip (it would take the long press)
++    await tester.pumpWidget(app(Wrap(children: [
++      TextButton(onPressed: () {}, child: const Text('Del')),
++      TextButton(
++          onPressed: () {},
++          child: hjvNamedKeyIcon(Icons.backspace_outlined,
++              label: '지우기', size: 14)),
++    ])));
++    expect(
++        tester.getSemantics(find.byType(TextButton).last),
++        containsSemantics(label: '지우기', isButton: true, hasTapAction: true));
++    semantics.dispose();
++  });
++
+   test('the PC list tabs: filled when selected, outlined otherwise', () {
+     const deviceGroupFill = IconData(0xe748, fontFamily: 'DeviceGroup');
+     const deviceGroupOutline = IconData(0xe623, fontFamily: 'DeviceGroup');

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:08:55 +0900
-Subject: [PATCH 171/182] hjviewer: the service's process tries the main pipe
+Subject: [PATCH 171/194] hjviewer: the service's process tries the main pipe
  once more before it ends the window that holds it
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

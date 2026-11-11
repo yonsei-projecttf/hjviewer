@@ -1,0 +1,183 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 22:54:42 +0900
+Subject: [PATCH 184/194] hjviewer: no stray 1 before Korean typed after
+ deleting the PC's text
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On an iPhone with the Korean keyboard, after deleting text that was already
+on the PC's line (a command recalled in PuTTY) with the keyboard's
+Backspace, the Korean typed next arrived with a "1" in front of it.
+
+The hidden field starts as 1024 filler characters ('1', initText in
+remote_page.dart). Text the PC already had is not in the field, so each
+Backspace on it deletes a filler character and the field becomes a shorter
+filler with no typed text. The Korean keyboard can put one filler character
+back before the next syllable (rustdesk PR #15201's "over-restored
+sentinel"). iosSoftKeyboardEdit (flutter/lib/models/soft_keyboard_input.dart)
+dropped that character only on a full filler (oldFiller ==
+initialFillerLength); on the shortened one the diff sent the restored '1'
+and then the syllable.
+
+The guard now applies whenever the old field is filler only, full or
+shortened: filler characters that appear right before Hangul, with nothing
+else after them, are not typed. A 1 the user types is still sent: alone or
+several (11), followed by other text (1a), after typed text (가1), and while
+the keyboard composes (the old condition). On an iPhone, typing a 1 and
+then Hangul takes a layout switch, so typed keys never bring them in one
+settled edit; once the 1 has been sent, a filler character put back before
+the next syllable is dropped as above and the 1 stays.
+
+Left alone: the keyboard's Backspace that removes a filler character and
+puts it back within one settled edit still sends nothing. Resetting the
+field on such an edit was considered, but no device log shows that
+sequence, and a reset between the keyboard's steps could send the
+restored character or drop a key; the key bar's Backspace (previous patch)
+covers it.
+
+Tests: the reported sequence (two Backspaces on the PC's text, then a
+syllable with one restored 1: no 1 sent, and the 1.9.3 guard sent it), a
+restored 1 or two on a shortened filler, typed 1s on a full and a shortened
+filler, alone and after Hangul, and the existing cases unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/models/soft_keyboard_input.dart | 12 +++-
+ flutter/test/soft_keyboard_input_test.dart  | 79 ++++++++++++++++++++-
+ 2 files changed, 86 insertions(+), 5 deletions(-)
+
+diff --git a/flutter/lib/models/soft_keyboard_input.dart b/flutter/lib/models/soft_keyboard_input.dart
+index 6ee559f..f211892 100644
+--- a/flutter/lib/models/soft_keyboard_input.dart
++++ b/flutter/lib/models/soft_keyboard_input.dart
+@@ -30,6 +30,9 @@ const kMaxSoftKeyboardFillerBackspaces = 8;
+ /// than what changed (pinyin, kana), so that only the converted text is sent.
+ /// Hangul is sent while it is composed, as the remote side has no way to show
+ /// an uncommitted syllable otherwise.
++///
++/// [initialFillerLength] (remote_page.dart passes the length of its filler)
++/// turns on dropping filler characters the keyboard put back before Hangul.
+ SoftKeyboardEdit? iosSoftKeyboardEdit(String oldValue, TextEditingValue value,
+     {int? initialFillerLength}) {
+   final newValue = value.text;
+@@ -42,11 +45,14 @@ SoftKeyboardEdit? iosSoftKeyboardEdit(String oldValue, TextEditingValue value,
+     return null;
+   }
+   // The keyboard can also put back one filler character too many before a
+-  // syllable (rustdesk PR #15201, "over-restored sentinel"). Only on a full,
+-  // otherwise empty filler, so that a 1 the user typed is never dropped.
++  // syllable (rustdesk PR #15201, "over-restored sentinel"). Also on a filler
++  // that Backspaces shortened: on a device (1.9.3) Korean typed after
++  // deleting text already on the PC's line arrived as "1" and the syllable.
++  // Only while the field holds no typed text and only right before Hangul:
++  // a 1 typed alone, or after typed text, is sent, and typing a 1 and then
++  // Hangul means switching layouts, never one settled edit.
+   if (initialFillerLength != null &&
+       !value.isComposingRangeValid &&
+-      oldFiller == initialFillerLength &&
+       oldFiller == oldValue.length) {
+     final newFiller = _fillerLength(newValue);
+     final tail = newValue.substring(newFiller);
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+index a21c8cf..2d5dfc0 100644
+--- a/flutter/test/soft_keyboard_input_test.dart
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -107,12 +107,75 @@ void main() {
+           iosSoftKeyboardEdit(filler, value('1한', composingFrom: 1),
+               initialFillerLength: filler.length),
+           (backspaces: 0, text: '1한'));
+-      // Not on a filler that Backspaces already shortened.
++      // Also on a filler that Backspaces shortened, also two put back.
+       final short = filler.substring(1);
+       expect(
+           iosSoftKeyboardEdit(short, TextEditingValue(text: '${short}11한'),
+               initialFillerLength: filler.length),
+-          (backspaces: 0, text: '11한'));
++          (backspaces: 0, text: '한'));
++    });
++
++    test('Korean after deleting text that was on the PC has no stray 1', () {
++      // The 1.9.3 device report: a command recalled in PuTTY, deleted with
++      // the keyboard's Backspace, then Korean typed: the keyboard put one
++      // filler character back before the syllable, and "1한" arrived.
++      final remote = _Remote(filler, shipped)..text = 'dir';
++      remote
++        ..apply(TextEditingValue(text: filler.substring(1)))
++        ..apply(TextEditingValue(text: filler.substring(2)));
++      expect(remote.text, 'd');
++      remote.apply(TextEditingValue(text: '${filler.substring(1)}한'));
++      expect(remote.text, 'd한');
++      expect(remote.deletedBeforeStart, 0);
++      // Typing on goes on from there.
++      remote
++        ..type('ㄱ')
++        ..apply(TextEditingValue(text: '${filler.substring(1)}한그'))
++        ..apply(TextEditingValue(text: '${filler.substring(1)}한글'));
++      expect(remote.text, 'd한글');
++
++      // 1.9.3 sent the 1: only a full filler was guarded.
++      final before = _Remote(filler, _guardBeforeFix)..text = 'dir';
++      before
++        ..apply(TextEditingValue(text: filler.substring(1)))
++        ..apply(TextEditingValue(text: filler.substring(2)))
++        ..apply(TextEditingValue(text: '${filler.substring(1)}한'));
++      expect(before.text, 'd1한');
++    });
++
++    test('a 1 the user typed is sent', () {
++      final short = filler.substring(3);
++      for (final start in [filler, short]) {
++        // On a field with no typed text, alone or as several.
++        expect(shipped(start, TextEditingValue(text: '${start}1')),
++            (backspaces: 0, text: '1'),
++            reason: 'F${start.length}');
++        expect(shipped(start, TextEditingValue(text: '${start}11')),
++            (backspaces: 0, text: '11'),
++            reason: 'F${start.length}');
++        // With other text after it.
++        expect(shipped(start, TextEditingValue(text: '${start}1a')),
++            (backspaces: 0, text: '1a'),
++            reason: 'F${start.length}');
++        // After Hangul, and Hangul after that 1.
++        expect(shipped('$start가', TextEditingValue(text: '$start가1')),
++            (backspaces: 0, text: '1'),
++            reason: 'F${start.length}');
++        expect(shipped('$start가1', TextEditingValue(text: '$start가1나')),
++            (backspaces: 0, text: '나'),
++            reason: 'F${start.length}');
++      }
++      // Typed 1, then Korean in an edit of its own: both arrive, also when
++      // the keyboard puts one more filler character back before it.
++      final remote = _Remote(short, shipped)
++        ..apply(TextEditingValue(text: '${short}1'));
++      expect(remote.text, '1');
++      remote.apply(TextEditingValue(text: '${short}1한'));
++      expect(remote.text, '1한');
++      final restored = _Remote(short, shipped)
++        ..apply(TextEditingValue(text: '${short}1'))
++        ..apply(TextEditingValue(text: '${short}11한'));
++      expect(restored.text, '1한');
+     });
+ 
+     test('the keyboard\'s own selection before the caret stays', () {
+@@ -365,6 +428,18 @@ class _Remote {
+   }
+ }
+ 
++/// iosSoftKeyboardEdit's over-restored-sentinel guard in 1.9.3: a full,
++/// otherwise empty filler only.
++SoftKeyboardEdit? _guardBeforeFix(String oldValue, TextEditingValue value) {
++  const n = 1024;
++  final shortened = oldValue.length < n && !oldValue.contains(RegExp('[^1]'));
++  if (shortened) {
++    // What 1.9.3 did here: the plain diff, without the guard.
++    return iosSoftKeyboardEdit(oldValue, value);
++  }
++  return iosSoftKeyboardEdit(oldValue, value, initialFillerLength: n);
++}
++
+ /// remote_page.dart `_handleIOSSoftKeyboardInput` before this change.
+ SoftKeyboardEdit? _diffBeforeFix(String oldValue, TextEditingValue value) {
+   final newValue = value.text;

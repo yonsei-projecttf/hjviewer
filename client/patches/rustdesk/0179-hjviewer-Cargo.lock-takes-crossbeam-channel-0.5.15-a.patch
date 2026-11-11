@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:19:58 +0900
-Subject: [PATCH 179/182] hjviewer: Cargo.lock takes crossbeam-channel 0.5.15
+Subject: [PATCH 179/194] hjviewer: Cargo.lock takes crossbeam-channel 0.5.15
  and upstream's rustls-webpki and webpki-roots
 
 crossbeam-channel 0.5.13 has a double free when a channel is dropped

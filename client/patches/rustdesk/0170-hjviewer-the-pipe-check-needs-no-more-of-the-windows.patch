@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:08:42 +0900
-Subject: [PATCH 170/182] hjviewer: the pipe check needs no more of the windows
+Subject: [PATCH 170/194] hjviewer: the pipe check needs no more of the windows
  crate, and its start test must reach its end
 
 The check of a pipe's DACL read one constant, the type of an "access

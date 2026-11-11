@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 22:53:51 +0900
+Subject: [PATCH 183/194] hjviewer: a Backspace key on the phone's key bar
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On an iPhone controlling a Windows PC with the Korean keyboard, Backspace
+sometimes did nothing in PuTTY on text that was already on the line (a
+command recalled from the shell's history), while Korean typed on the phone
+deleted fine.
+
+The soft keyboard's Backspace only reaches the PC as a change of the hidden
+text field: remote_page.dart diffs the settled field
+(iosSoftKeyboardEdit in flutter/lib/models/soft_keyboard_input.dart) and
+sends one VK_BACK per character it lost. On a field with no typed text left
+the keyboard deletes a filler '1'; the Korean keyboard, which composes by
+selecting the text before the caret and replacing it (patch 0049), can
+remove a filler character and put it back within one settled edit. The field
+then has not changed, and nothing reaches the PC.
+
+The key bar's row of special keys (Esc, Tab, Home, End, Ins, Del, ...) now
+has a Backspace key next to Del, an icon key (backspace_outlined) labelled
+'지우기' / 'Backspace' (hjvLabels.backspace) by a Semantics around the
+button, without a tooltip, which would take the long press. It
+sends VK_BACK with InputModel.inputKey like its neighbours: text the field
+still holds back goes out first, the key bar's Ctrl, Alt, Shift and Win
+apply, and a one-shot modifier is used up (Ctrl + this key is
+Ctrl+Backspace). On iOS the hidden field then starts over
+(_resetSoftKeyboardText), as after the Backspace sent for a key-bar
+shortcut on a composing syllable (patch 0027): otherwise a syllable the
+keyboard still composes in the field would be replaced on the next key,
+deleting one more character on the PC.
+
+Android shows the same key; its soft-keyboard path is left as it is (no
+reset). The soft keyboard's own Backspace is unchanged, and the bar gets no
+key repeat.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_labels.dart   |  3 +++
+ flutter/lib/mobile/pages/remote_page.dart | 26 +++++++++++++++++++----
+ 2 files changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_labels.dart b/flutter/lib/common/hjviewer_labels.dart
+index 500c5dd..2909284 100644
+--- a/flutter/lib/common/hjviewer_labels.dart
++++ b/flutter/lib/common/hjviewer_labels.dart
+@@ -25,6 +25,9 @@ class HjvLabels {
+   String get more => _t('더 보기', 'More');
+   String get hideToolbar => _t('도구 막대 숨기기', 'Hide toolbar');
+ 
++  // the phone's key bar
++  String get backspace => _t('지우기', 'Backspace');
++
+   // dialogs, pages and tabs
+   String get close => _t('닫기', 'Close');
+   String get back => _t('뒤로', 'Back');
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 753bb96..361fdc4 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -895,7 +895,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+             ),
+             KeyHelpTools(
+                 keyboardIsVisible: keyboardIsVisible,
+-                showGestureHelp: _showGestureHelp),
++                showGestureHelp: _showGestureHelp,
++                afterBackspace: isIOS ? _resetSoftKeyboardText : null),
+             SizedBox(
+               width: 0,
+               height: 0,
+@@ -1169,11 +1170,17 @@ class KeyHelpTools extends StatefulWidget {
+   final bool keyboardIsVisible;
+   final bool showGestureHelp;
+ 
++  /// Called after the bar's Backspace key was sent: the iOS page starts the
++  /// hidden field over, as after a Backspace sent for a key-bar shortcut.
++  final VoidCallback? afterBackspace;
++
+   /// need to show by external request, etc [keyboardIsVisible] or [changeTouchMode]
+   bool get requestShow => keyboardIsVisible || showGestureHelp;
+ 
+   KeyHelpTools(
+-      {required this.keyboardIsVisible, required this.showGestureHelp});
++      {required this.keyboardIsVisible,
++      required this.showGestureHelp,
++      this.afterBackspace});
+ 
+   @override
+   State<KeyHelpTools> createState() => _KeyHelpToolsState();
+@@ -1229,7 +1236,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+   }
+ 
+   Widget wrap(String text, void Function() onPressed,
+-      {bool? active, bool? locked, IconData? icon}) {
++      {bool? active, bool? locked, IconData? icon, String? label}) {
+     // HJViewer: keycaps on the bar: a card key with a hairline, primarySoft/primary for a key
+     // that is on, the primary colour for a modifier kept on (upstream: an outline)
+     final p = HjvPalette.of(context);
+@@ -1240,7 +1247,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+         : on
+             ? p.primaryStrong
+             : p.text;
+-    return TextButton(
++    final button = TextButton(
+         style: TextButton.styleFrom(
+           // HJViewer: keys of at least 40 x 40 (U57)
+           minimumSize: Size(40, 40),
+@@ -1262,6 +1269,9 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+             ? Icon(icon, size: 14, color: fg)
+             : Text(translate(text), style: TextStyle(color: fg, fontSize: 11)),
+         onPressed: onPressed);
++    // HJViewer: an icon key's name, without a tooltip, which would take the
++    // long press
++    return label == null ? button : Semantics(label: label, child: button);
+   }
+ 
+   _updateRect() {
+@@ -1384,6 +1394,14 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+       wrap('Del', () {
+         inputModel.inputKey('VK_DELETE');
+       }),
++      // HJViewer: Backspace on the PC whatever the soft keyboard holds. The
++      // iPhone Korean keyboard can take a Backspace back within one edit of
++      // the hidden field (it removes a filler character and puts it back),
++      // and then nothing reaches the PC.
++      wrap('', () {
++        inputModel.inputKey('VK_BACK');
++        widget.afterBackspace?.call();
++      }, icon: Icons.backspace_outlined, label: hjvLabels.backspace),
+       wrap('PgUp', () {
+         inputModel.inputKey('VK_PRIOR');
+       }),

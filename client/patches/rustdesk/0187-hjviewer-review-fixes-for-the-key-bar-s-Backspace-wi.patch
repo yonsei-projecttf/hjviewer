@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:02:54 +0900
+Subject: [PATCH 187/194] hjviewer: review fixes for the key bar's Backspace
+ with pinyin or kana
+
+With a Chinese or Japanese keyboard composing (pinyin or kana not yet
+converted), tapping the key bar's Backspace on iOS deleted a character on
+the PC and then silently wiped the unconverted text from the hidden field:
+what the user had typed was lost. Del and Enter next to it keep it.
+
+After the key, remote_page.dart started the field over
+(_resetSoftKeyboardText) in every case. iosSoftKeyboardEdit holds such text
+back until it is converted, so it had not reached the PC and only lived in
+the field.
+
+The reset is now skipped while the field holds an unconverted, non-Hangul
+composing range (softKeyboardHoldsUnsentPreedit in
+flutter/lib/models/soft_keyboard_input.dart, the same Hangul test that
+iosSoftKeyboardEdit uses to hold CJK back); the converted text is then
+sent as before. Korean is unchanged: Hangul is sent while it composes, and
+the field still starts over after the key.
+
+Left alone: the VK_BACK itself is still sent while pinyin or kana composes,
+like Del and Enter.
+
+Test: test/soft_keyboard_input_test.dart, pinyin and kana count, Hangul,
+no composing range and an empty one do not.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/remote_page.dart   | 11 ++++++++++-
+ flutter/lib/models/soft_keyboard_input.dart |  9 +++++++++
+ flutter/test/soft_keyboard_input_test.dart  | 15 +++++++++++++++
+ 3 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index d15a967..8fc83e8 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -466,6 +466,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+         selection: TextSelection.collapsed(offset: initText.length));
+   }
+ 
++  // The key bar's Backspace was sent: start the field over, so that a
++  // syllable the keyboard still composes is not replaced on the next key
++  // (one more Backspace on the PC). Not while a Chinese or Japanese IME holds
++  // unconverted text, which would be lost.
++  void _afterKeyBarBackspace() {
++    if (softKeyboardHoldsUnsentPreedit(_textController.value)) return;
++    _resetSoftKeyboardText();
++  }
++
+   void _handleNonIOSSoftKeyboardInput(String newValue) {
+     var oldValue = _value;
+     _value = newValue;
+@@ -897,7 +906,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+             KeyHelpTools(
+                 keyboardIsVisible: keyboardIsVisible,
+                 showGestureHelp: _showGestureHelp,
+-                afterBackspace: isIOS ? _resetSoftKeyboardText : null),
++                afterBackspace: isIOS ? _afterKeyBarBackspace : null),
+             SizedBox(
+               width: 0,
+               height: 0,
+diff --git a/flutter/lib/models/soft_keyboard_input.dart b/flutter/lib/models/soft_keyboard_input.dart
+index e3abeb2..7980f16 100644
+--- a/flutter/lib/models/soft_keyboard_input.dart
++++ b/flutter/lib/models/soft_keyboard_input.dart
+@@ -102,6 +102,15 @@ bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
+ bool softKeyboardFillerRunsLow(TextEditingValue value, {int minimum = 512}) =>
+     !value.isComposingRangeValid && _fillerLength(value.text) < minimum;
+ 
++/// Whether a Chinese or Japanese IME holds text it has not converted yet
++/// (pinyin, kana) in the hidden field. iosSoftKeyboardEdit holds it back, so
++/// starting the field over would lose what the user typed. Hangul is sent
++/// while it is composed and does not count.
++bool softKeyboardHoldsUnsentPreedit(TextEditingValue value) =>
++    value.isComposingRangeValid &&
++    !value.composing.isCollapsed &&
++    !isHangulText(value.composing.textInside(value.text));
++
+ /// Whether the caret of the hidden iOS field has to go back to the end: the
+ /// caret or the selection ends before the end (two keys pressed at once, the
+ /// space-bar trackpad), where typing would replay filler characters.
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+index 1a0419b..5d3d3eb 100644
+--- a/flutter/test/soft_keyboard_input_test.dart
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -192,6 +192,21 @@ void main() {
+       expect(restored.text, '1한');
+     });
+ 
++    test('the key bar\'s Backspace keeps unconverted pinyin or kana', () {
++      // remote_page.dart starts the field over after the bar's Backspace,
++      // but not while a Chinese or Japanese IME composes.
++      expect(softKeyboardHoldsUnsentPreedit(value('ni', composingFrom: 0)),
++          isTrue);
++      expect(softKeyboardHoldsUnsentPreedit(value('かな', composingFrom: 0)),
++          isTrue);
++      // Hangul is already on the PC; nothing composing; an empty range.
++      expect(softKeyboardHoldsUnsentPreedit(value('한', composingFrom: 0)),
++          isFalse);
++      expect(softKeyboardHoldsUnsentPreedit(value('ni')), isFalse);
++      expect(softKeyboardHoldsUnsentPreedit(value('ni', composingFrom: 2)),
++          isFalse);
++    });
++
+     test('the keyboard\'s own selection before the caret stays', () {
+       // A device log (2026-10-15): Backspace after 한글입력, which had lost
+       // its vowels, selected the last jamo, then deleted it, with no

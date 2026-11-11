@@ -1,0 +1,106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:02:30 +0900
+Subject: [PATCH 186/194] hjviewer: review fixes for the stray 1 before Korean
+ after deleting
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The previous patch dropped filler characters before Hangul on any field
+with no typed text. That also dropped 1s the user typed: on a field that
+holds a typed 1 (longer than the filler), "1월" arriving in one settled
+edit (the iPad keyboard's Paste, a three-finger paste, dictation, text
+replacement, or two quick keys on an iPad) reached the PC as "월", where
+1.9.3 sent "1월". Its commit message counted only typing, where a 1 and
+Hangul never come in one edit because the iPhone keyboard needs a layout
+switch between them.
+
+iosSoftKeyboardEdit (flutter/lib/models/soft_keyboard_input.dart) now
+drops them only in two shapes: a full filler (as in 1.9.3, any number put
+back) and a filler that Backspaces shortened with exactly one character
+put back (the device report). A field longer than the filler, and two or
+more characters put back on a shortened filler, keep the 1.9.3 behaviour:
+the 1s are sent.
+
+Left alone: on a shortened filler with no typed text, "1층" in one edit
+(paste or dictation right after deleting text that was on the PC's line)
+still arrives as "층"; the field cannot tell it from the keyboard's restored
+character. The same drop happened on a full filler in 1.9.3.
+
+Tests: one put back on a shortened filler is dropped, two are sent again
+('11한'); a typed 1, then "1월" in one edit, reaches the PC as "11월".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/models/soft_keyboard_input.dart | 18 +++++++++++-------
+ flutter/test/soft_keyboard_input_test.dart  | 18 ++++++++++++++++--
+ 2 files changed, 27 insertions(+), 9 deletions(-)
+
+diff --git a/flutter/lib/models/soft_keyboard_input.dart b/flutter/lib/models/soft_keyboard_input.dart
+index f211892..e3abeb2 100644
+--- a/flutter/lib/models/soft_keyboard_input.dart
++++ b/flutter/lib/models/soft_keyboard_input.dart
+@@ -45,18 +45,22 @@ SoftKeyboardEdit? iosSoftKeyboardEdit(String oldValue, TextEditingValue value,
+     return null;
+   }
+   // The keyboard can also put back one filler character too many before a
+-  // syllable (rustdesk PR #15201, "over-restored sentinel"). Also on a filler
+-  // that Backspaces shortened: on a device (1.9.3) Korean typed after
+-  // deleting text already on the PC's line arrived as "1" and the syllable.
+-  // Only while the field holds no typed text and only right before Hangul:
+-  // a 1 typed alone, or after typed text, is sent, and typing a 1 and then
+-  // Hangul means switching layouts, never one settled edit.
++  // syllable (rustdesk PR #15201, "over-restored sentinel"). Only while the
++  // field holds no typed text and only right before Hangul. On a full filler
++  // any number of them (as in 1.9.3). On a filler that Backspaces shortened
++  // exactly one: on a device (1.9.3) Korean typed after deleting text already
++  // on the PC's line arrived as "1" and the syllable. A field longer than the
++  // filler holds typed 1s, and there a 1 that comes with Hangul in one
++  // settled edit (paste, dictation) is sent.
+   if (initialFillerLength != null &&
+       !value.isComposingRangeValid &&
+       oldFiller == oldValue.length) {
+     final newFiller = _fillerLength(newValue);
+     final tail = newValue.substring(newFiller);
+-    if (newFiller > oldFiller && isHangulText(tail)) {
++    final restored = oldFiller == initialFillerLength
++        ? newFiller > oldFiller
++        : oldFiller < initialFillerLength && newFiller == oldFiller + 1;
++    if (restored && isHangulText(tail)) {
+       return (backspaces: 0, text: tail);
+     }
+   }
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+index 2d5dfc0..1a0419b 100644
+--- a/flutter/test/soft_keyboard_input_test.dart
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -107,12 +107,26 @@ void main() {
+           iosSoftKeyboardEdit(filler, value('1한', composingFrom: 1),
+               initialFillerLength: filler.length),
+           (backspaces: 0, text: '1한'));
+-      // Also on a filler that Backspaces shortened, also two put back.
++      // On a filler that Backspaces shortened one put back, not two.
+       final short = filler.substring(1);
+       expect(
+-          iosSoftKeyboardEdit(short, TextEditingValue(text: '${short}11한'),
++          iosSoftKeyboardEdit(short, TextEditingValue(text: '${short}1한'),
+               initialFillerLength: filler.length),
+           (backspaces: 0, text: '한'));
++      expect(
++          iosSoftKeyboardEdit(short, TextEditingValue(text: '${short}11한'),
++              initialFillerLength: filler.length),
++          (backspaces: 0, text: '11한'));
++    });
++
++    test('a typed 1 and Hangul in one edit keep the 1 after typed 1s', () {
++      // Paste, dictation or a quick iPad key: "1월" in one settled edit on a
++      // field that already holds a typed 1 (longer than the filler).
++      final remote = _Remote(filler, shipped)
++        ..apply(TextEditingValue(text: '${filler}1'));
++      expect(remote.text, '1');
++      remote.apply(TextEditingValue(text: '${filler}11월'));
++      expect(remote.text, '11월');
+     });
+ 
+     test('Korean after deleting text that was on the PC has no stray 1', () {

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:08:32 +0900
-Subject: [PATCH 169/182] hjviewer: only SYSTEM and its owner can serve the
+Subject: [PATCH 169/194] hjviewer: only SYSTEM and its owner can serve the
  Windows IPC pipes, and clients check who serves them
 
 The main pipe (\\.\pipe\HJViewer\query) and the service pipe

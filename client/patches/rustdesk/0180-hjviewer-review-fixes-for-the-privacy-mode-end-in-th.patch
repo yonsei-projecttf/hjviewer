@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 23:03:21 +0900
-Subject: [PATCH 180/182] hjviewer: review fixes for the privacy-mode end in
+Subject: [PATCH 180/194] hjviewer: review fixes for the privacy-mode end in
  the PC's incoming list
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

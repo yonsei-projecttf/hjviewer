@@ -1,0 +1,315 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:47:18 +0900
+Subject: [PATCH 193/194] hjviewer: the phone app asks the PC for a new picture
+ once, a few seconds after the first
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Right after connecting from the iPhone to a Windows PC with two monitors the picture
+sometimes stays faint and looks like a low, broken resolution until the user switches
+monitors and back. The menu's 새로 고침 restarts the PC's video service as a switch does (a
+new capturer and encoder, a new full picture at the session's ratio of that moment), though
+unlike a switch it keeps the phone's decoder; the mobile remote page now asks for it once by
+itself.
+
+The delay is 6 s after the connection's first picture. The PC's video QoS
+(src/server/video_qos.rs) holds each new viewer at INIT_FPS (15) for its first second,
+probes the delay once a second and doubles the fps after two clean replies; the bitrate
+is cut after two bad replies in a row (deeper after three), at most once per 3 s, the fps
+after three. 6 s after the first picture, which itself comes about a second after the
+connection opens, the fps start-up and a congestion episode from the start-up burst are
+over on a good link. A cut made at start-up stays on a still screen (the ratio rises only
+on a moving one), so the refresh then encodes at that lowered ratio; the refresh itself
+does not reset the QoS state, as the viewer stays.
+Later than that only keeps the bad picture up longer.
+
+HjvAutoRefresh (plain Dart, tested) arms on each first picture, keeps at most one timer
+and refreshes only if, at its time, the page is mounted, the session not closed, the
+connection has its picture (no reconnect waiting for a new one) and no refresh or user
+display switch was asked for since the first picture. PeerInfo counts those requests in
+sessionRefreshVideo and in openMonitorInTheSameTab when the user chose the display (not
+the automatic restore after a reconnect, which needs the refresh as much). The first-image
+callbacks stay registered across a reconnect, whose new peer info sets waitForFirstImage
+again, so a reconnect brings one more first picture: it re-arms the same timer (one per
+connection, never two). dispose cancels it.
+
+A refresh does not move the phone's zoom, pan or display: the PC sends the display info
+only when the display really changed (check_display_changed), the client's
+handleSwitchDisplay updates the view only when the display's rect changed, and the
+image model keeps its image, so the canvas is not initialised again.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                       |   2 +
+ .../lib/common/hjviewer_video_refresh.dart    |  58 +++++++++
+ flutter/lib/mobile/pages/remote_page.dart     |  12 ++
+ flutter/lib/models/model.dart                 |   2 +
+ flutter/test/hjviewer_video_refresh_test.dart | 115 ++++++++++++++++++
+ 5 files changed, 189 insertions(+)
+ create mode 100644 flutter/lib/common/hjviewer_video_refresh.dart
+ create mode 100644 flutter/test/hjviewer_video_refresh_test.dart
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index 708dca3..3b6b388 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -3312,6 +3312,7 @@ String getDesktopTabLabel(String peerId, String alias) {
+ }
+ 
+ sessionRefreshVideo(SessionID sessionId, PeerInfo pi) async {
++  pi.hjvVideoRequests++;
+   if (pi.currentDisplay == kAllDisplayValue) {
+     for (int i = 0; i < pi.displays.length; i++) {
+       await bind.sessionRefresh(sessionId: sessionId, display: i);
+@@ -3384,6 +3385,7 @@ Future<List<Rect>> getScreenRectList() async {
+ openMonitorInTheSameTab(int i, FFI ffi, PeerInfo pi,
+     {bool updateCursorPos = true, bool recordSelection = true}) {
+   if (recordSelection) {
++    pi.hjvVideoRequests++;
+     ffi.ffiModel.lastUserDisplay = i;
+     ffi.ffiModel.cancelPendingRestoreTimer();
+     ffi.ffiModel.pendingMonitorRestore = null;
+diff --git a/flutter/lib/common/hjviewer_video_refresh.dart b/flutter/lib/common/hjviewer_video_refresh.dart
+new file mode 100644
+index 0000000..80ccada
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_video_refresh.dart
+@@ -0,0 +1,58 @@
++// The phone and tablet session's one automatic video refresh (1.9.4): a few seconds after a
++// connection's first picture the app asks the PC for a new one, as the menu's 새로 고침 does, so a
++// first picture taken before the session's quality settled (blurry, "low resolution") does not
++// stay on a still screen. Plain Dart without the bridge, so that ci.sh tests it with the web
++// stand-in; the mobile remote page wires it.
++
++import 'dart:async';
++
++/// How long after a connection's first picture the refresh is asked for. The PC's video QoS
++/// (src/server/video_qos.rs) starts each viewer at INIT_FPS for a second, doubles the fps after
++/// every two clean delay replies (one a second), steps the bitrate ratio every 3 s and confirms
++/// congestion only after three bad replies; 6 s after the first picture has passed two ratio
++/// steps, the fps start-up and a start-up congestion episode on a good link.
++const kHjvAutoRefreshDelay = Duration(seconds: 6);
++
++typedef HjvStartTimer = Timer Function(
++    Duration delay, void Function() callback);
++
++/// One page's automatic refresh: armed by the first picture of each connection (a reconnect
++/// brings a new first picture and re-arms it), at most one timer pending, the refresh asked for
++/// at most once per connection, and not at all when, at its time, [ready] is false (page gone,
++/// session closed, a reconnect still waiting for its picture) or [videoRequests] moved since the
++/// first picture (the user switched display or used 새로 고침: the picture is already new).
++class HjvAutoRefresh {
++  HjvAutoRefresh(
++      {required this.ready,
++      required this.videoRequests,
++      required this.refresh,
++      this.delay = kHjvAutoRefreshDelay,
++      HjvStartTimer? startTimer})
++      : _startTimer = startTimer ?? Timer.new;
++
++  final bool Function() ready;
++  final int Function() videoRequests;
++  final void Function() refresh;
++  final Duration delay;
++  final HjvStartTimer _startTimer;
++  Timer? _timer;
++
++  /// A refresh is waiting for its time.
++  bool get pending => _timer != null;
++
++  /// The connection showed its first picture.
++  void onFirstImage() {
++    _timer?.cancel();
++    final armedAt = videoRequests();
++    _timer = _startTimer(delay, () {
++      _timer = null;
++      if (ready() && videoRequests() == armedAt) refresh();
++    });
++  }
++
++  /// The page goes away.
++  void cancel() {
++    _timer?.cancel();
++    _timer = null;
++  }
++}
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 8fc83e8..31ae421 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -24,6 +24,7 @@ import '../../common/hjviewer_android.dart';
+ import '../../common/hjviewer_end_lock_ui.dart';
+ import '../../common/hjviewer_session_rules.dart';
+ import '../../common/hjviewer_session_switch.dart';
++import '../../common/hjviewer_video_refresh.dart';
+ import '../../common/widgets/overlay.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../common/widgets/remote_input.dart';
+@@ -81,6 +82,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   bool _showGestureHelp = false;
+   // HJViewer (W7): the gesture guide's run in this session
+   final _hjvGuide = HjvGestureGuideRun();
++  // HJViewer: a new picture a few seconds after each connection's first, as 새로 고침 asks
++  late final _hjvAutoRefresh = HjvAutoRefresh(
++      ready: () =>
++          mounted &&
++          !gFFI.closed &&
++          !gFFI.ffiModel.waitForFirstImage.value &&
++          gFFI.ffiModel.pi.version.isNotEmpty,
++      videoRequests: () => gFFI.ffiModel.pi.hjvVideoRequests,
++      refresh: () => sessionRefreshVideo(sessionId, gFFI.ffiModel.pi));
+   String _value = '';
+   Orientation? _currentOrientation;
+   final _uniqueKey = UniqueKey();
+@@ -154,6 +164,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+       _disableAndroidSoftKeyboard(
+           isKeyboardVisible: keyboardVisibilityController.isVisible);
+       Future.delayed(const Duration(seconds: 1), _hjvMaybeShowGuide);
++      _hjvAutoRefresh.onFirstImage();
+     });
+     WidgetsBinding.instance.addObserver(this);
+ 
+@@ -175,6 +186,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   @override
+   Future<void> dispose() async {
+     WidgetsBinding.instance.removeObserver(this);
++    _hjvAutoRefresh.cancel();
+     if (inputModel.flushSoftKeyboardText == _flushIOSSoftKeyboardInput) {
+       inputModel.flushSoftKeyboardText = null;
+     }
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index 2722138..59ff0c0 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -4538,6 +4538,8 @@ class PeerInfo with ChangeNotifier {
+ 
+   RxInt displaysCount = 0.obs;
+   RxBool isSet = false.obs;
++  // HJViewer: refreshes and the user's display switches asked for, which give a new picture
++  int hjvVideoRequests = 0;
+ 
+   bool get isWayland => platformAdditions[kPlatformAdditionsIsWayland] == true;
+   bool get isInstalled =>
+diff --git a/flutter/test/hjviewer_video_refresh_test.dart b/flutter/test/hjviewer_video_refresh_test.dart
+new file mode 100644
+index 0000000..79e5db7
+--- /dev/null
++++ b/flutter/test/hjviewer_video_refresh_test.dart
+@@ -0,0 +1,115 @@
++import 'dart:async';
++
++import 'package:flutter_hbb/common/hjviewer_video_refresh.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The phone session's one automatic video refresh after a connection's first picture (1.9.4),
++// without the bridge: the timers are recorded and fired by hand.
++
++class _FakeTimer implements Timer {
++  _FakeTimer(this.delay, this.callback);
++  final Duration delay;
++  final void Function() callback;
++  bool active = true;
++
++  void fire() {
++    if (!active) return;
++    active = false;
++    callback();
++  }
++
++  @override
++  void cancel() => active = false;
++  @override
++  bool get isActive => active;
++  @override
++  int get tick => 0;
++}
++
++class _Session {
++  bool ready = true;
++  int videoRequests = 0;
++  int refreshes = 0;
++  final timers = <_FakeTimer>[];
++
++  late final auto = HjvAutoRefresh(
++      ready: () => ready,
++      videoRequests: () => videoRequests,
++      refresh: () {
++        refreshes++;
++        videoRequests++; // as sessionRefreshVideo counts its own request
++      },
++      startTimer: (delay, callback) {
++        final t = _FakeTimer(delay, callback);
++        timers.add(t);
++        return t;
++      });
++
++  int get activeTimers => timers.where((t) => t.active).length;
++}
++
++void main() {
++  test('the delay lets the quality settle and stays within 3 to 10 seconds',
++      () {
++    expect(
++        kHjvAutoRefreshDelay, greaterThanOrEqualTo(const Duration(seconds: 3)));
++    expect(
++        kHjvAutoRefreshDelay, lessThanOrEqualTo(const Duration(seconds: 10)));
++    final s = _Session();
++    s.auto.onFirstImage();
++    expect(s.timers.single.delay, kHjvAutoRefreshDelay);
++  });
++
++  test('asks for one refresh after the first picture', () {
++    final s = _Session();
++    s.auto.onFirstImage();
++    expect(s.refreshes, 0);
++    expect(s.auto.pending, isTrue);
++    s.timers.single.fire();
++    expect(s.refreshes, 1);
++    expect(s.auto.pending, isFalse);
++  });
++
++  test('not after a display switch or 새로 고침 since the first picture', () {
++    final s = _Session();
++    s.auto.onFirstImage();
++    s.videoRequests++;
++    s.timers.single.fire();
++    expect(s.refreshes, 0);
++  });
++
++  test('not when the page, the session or the connection is not ready', () {
++    final s = _Session();
++    s.auto.onFirstImage();
++    s.ready = false;
++    s.timers.single.fire();
++    expect(s.refreshes, 0);
++  });
++
++  test(
++      'a reconnect re-arms with one timer, and its connection gets its own refresh',
++      () {
++    final s = _Session();
++    s.auto.onFirstImage();
++    // the reconnect's first picture before the first timer's time
++    s.auto.onFirstImage();
++    expect(s.activeTimers, 1);
++    for (final t in List.of(s.timers)) {
++      t.fire();
++    }
++    expect(s.refreshes, 1);
++    s.auto.onFirstImage(); // a later reconnect
++    s.timers.last.fire();
++    expect(s.refreshes, 2);
++  });
++
++  test('cancel leaves no timer', () {
++    final s = _Session();
++    s.auto.onFirstImage();
++    s.auto.cancel();
++    expect(s.activeTimers, 0);
++    expect(s.auto.pending, isFalse);
++    s.timers.single.fire();
++    expect(s.refreshes, 0);
++  });
++}

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Tue, 10 Nov 2026 22:00:09 +0900
-Subject: [PATCH 168/182] hjviewer: the privacy window's helper is started by
+Subject: [PATCH 168/194] hjviewer: the privacy window's helper is started by
  its full path, not guessed from a command line
 
 HJViewer's "hide the screen when connecting" turns privacy mode on, and

@@ -1,0 +1,205 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:04:05 +0900
+Subject: [PATCH 189/194] hjviewer: the service waits for a refused connection
+ window to go and starts its own
+
+With the connection window's pipe checked, the service's process
+(--server) refuses a pipe that is there but not served by its own
+session's window: the window of another Windows session (fast user
+switching), of another copy of the app, of an older version, or
+someone else's. src/server/connection.rs start_ipc then started a window
+as before, but that window cannot take the name while the refused one
+holds it (parity-tokio-ipc makes the first instance), so it ends at
+once; after 20 tries of 0.3 s the --server gave up and the connection
+was closed with "connection manager error". A window whose connections
+are gone closes itself about 6 s later (flutter/lib/models/server_model.dart,
+12 ticks of 500 ms), which is about when the --server gave up, so an
+incoming connection right after a user switch or an update could fail
+where 1.9.3 showed it, in the other session's window.
+
+When the first connect fails for any reason but a missing pipe
+(ipc::is_endpoint_missing, a NotFound io error), start_ipc now tries 40
+times instead of 20 (12 s) and, the first time the pipe is missing,
+starts a window again, which then takes the name; the window comes up
+in this session. Starting the window moved unchanged into
+start_cm_process.
+
+Left alone: when the pipe is missing at the start, and on Linux and
+macOS, nothing changes (the longer wait is Windows only). A window that
+stays open in another session (it keeps an ended connection with an
+unanswered chat or a file transfer until its user closes it) still
+holds the name: connections in this session fail after 12 s until it is
+closed, where 1.9.3 showed them to that other user. The --server does
+not end other windows itself.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/ipc.rs               |  23 +++++++++
+ src/server/connection.rs | 101 +++++++++++++++++++++++----------------
+ 2 files changed, 84 insertions(+), 40 deletions(-)
+
+diff --git a/src/ipc.rs b/src/ipc.rs
+index 267a066..b6d3dcf 100644
+--- a/src/ipc.rs
++++ b/src/ipc.rs
+@@ -1392,6 +1392,14 @@ where
+     Ok(())
+ }
+ 
++/// Whether `connect` failed because nothing serves the endpoint (no pipe or socket of that
++/// name), as opposed to an endpoint that is there but busy, refused or not trusted.
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++pub(crate) fn is_endpoint_missing(err: &hbb_common::anyhow::Error) -> bool {
++    err.downcast_ref::<std::io::Error>()
++        .map_or(false, |err| err.kind() == std::io::ErrorKind::NotFound)
++}
++
+ #[inline]
+ async fn connect_with_path(ms_timeout: u64, path: &str) -> ResultType<ConnectionTmpl<ConnClient>> {
+     let client = timeout(ms_timeout, Endpoint::connect(path)).await??;
+@@ -2305,6 +2313,21 @@ pub async fn set_install_option(k: String, v: String) -> ResultType<()> {
+ mod test {
+     use super::*;
+ 
++    #[cfg(not(any(target_os = "android", target_os = "ios")))]
++    #[test]
++    fn test_ipc_endpoint_missing_is_only_not_found() {
++        let missing: ResultType<()> =
++            Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
++        assert!(is_endpoint_missing(&missing.unwrap_err()));
++        let denied: ResultType<()> =
++            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
++        assert!(!is_endpoint_missing(&denied.unwrap_err()));
++        let refused: ResultType<()> = Err(hbb_common::anyhow::anyhow!(
++            "IPC server is not owned by the expected identity"
++        ));
++        assert!(!is_endpoint_missing(&refused.unwrap_err()));
++    }
++
+     #[cfg(windows)]
+     #[test]
+     fn test_windows_protected_ipc_includes_connection_window() {
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index 150da35..8430e6b 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -6411,6 +6411,46 @@ pub fn claim_pending_switch_sides_uuid(id: &str, uuid: &uuid::Uuid) -> bool {
+     false
+ }
+ 
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++async fn start_cm_process() -> ResultType<()> {
++    let args = vec!["--cm"];
++    let run_done;
++    if crate::platform::is_root() {
++        let mut res = Ok(None);
++        for _ in 0..10 {
++            #[cfg(not(any(target_os = "linux")))]
++            {
++                log::debug!("Start cm");
++                res = crate::platform::run_as_user(args.clone());
++            }
++            #[cfg(target_os = "linux")]
++            {
++                log::debug!("Start cm");
++                res = crate::platform::run_as_user(args.clone(), None, None::<(&str, &str)>);
++            }
++            if res.is_ok() {
++                break;
++            }
++            log::error!("Failed to run cm: {res:?}");
++            sleep(1.).await;
++        }
++        if let Some(task) = res? {
++            super::CHILD_PROCESS.lock().unwrap().push(task);
++        }
++        run_done = true;
++    } else {
++        run_done = false;
++    }
++    if !run_done {
++        log::debug!("Start cm");
++        super::CHILD_PROCESS
++            .lock()
++            .unwrap()
++            .push(crate::run_me(args)?);
++    }
++    Ok(())
++}
++
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ // IPC bootstrap summary:
+ // - Start CM when missing, then bridge bidirectional messages between this task and CM IPC.
+@@ -6427,50 +6467,31 @@ async fn start_ipc(
+         sleep(1.).await;
+     }
+     let mut stream = None;
+-    if let Ok(s) = crate::ipc::connect(1000, "_cm").await {
+-        stream = Some(s);
++    // Windows: a `_cm` pipe that is there but refuses this process (src/ipc/windows.rs, e.g. the
++    // window of another Windows session or of another copy of the app) keeps the name, so the
++    // window started below cannot serve it and ends at once. Such a window closes itself about
++    // 6 s after its last connection; wait longer then, and start ours again once the name is free.
++    let mut name_taken = false;
++    match crate::ipc::connect(1000, "_cm").await {
++        Ok(s) => stream = Some(s),
++        Err(err) => name_taken = cfg!(windows) && !crate::ipc::is_endpoint_missing(&err),
+     }
+     if stream.is_none() {
+-        let args = vec!["--cm"];
+-        let run_done;
+-        if crate::platform::is_root() {
+-            let mut res = Ok(None);
+-            for _ in 0..10 {
+-                #[cfg(not(any(target_os = "linux")))]
+-                {
+-                    log::debug!("Start cm");
+-                    res = crate::platform::run_as_user(args.clone());
+-                }
+-                #[cfg(target_os = "linux")]
+-                {
+-                    log::debug!("Start cm");
+-                    res = crate::platform::run_as_user(args.clone(), None, None::<(&str, &str)>);
+-                }
+-                if res.is_ok() {
++        start_cm_process().await?;
++        let tries = if name_taken { 40 } else { 20 };
++        for _ in 0..tries {
++            sleep(0.3).await;
++            match crate::ipc::connect(1000, "_cm").await {
++                Ok(s) => {
++                    stream = Some(s);
+                     break;
+                 }
+-                log::error!("Failed to run cm: {res:?}");
+-                sleep(1.).await;
+-            }
+-            if let Some(task) = res? {
+-                super::CHILD_PROCESS.lock().unwrap().push(task);
+-            }
+-            run_done = true;
+-        } else {
+-            run_done = false;
+-        }
+-        if !run_done {
+-            log::debug!("Start cm");
+-            super::CHILD_PROCESS
+-                .lock()
+-                .unwrap()
+-                .push(crate::run_me(args)?);
+-        }
+-        for _ in 0..20 {
+-            sleep(0.3).await;
+-            if let Ok(s) = crate::ipc::connect(1000, "_cm").await {
+-                stream = Some(s);
+-                break;
++                Err(err) if name_taken && crate::ipc::is_endpoint_missing(&err) => {
++                    name_taken = false;
++                    log::info!("The connection window's pipe is free again, start cm");
++                    start_cm_process().await?;
++                }
++                Err(_) => {}
+             }
+         }
+     }

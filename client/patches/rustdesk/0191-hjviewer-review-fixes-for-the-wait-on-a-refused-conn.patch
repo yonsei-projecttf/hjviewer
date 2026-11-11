@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:20:36 +0900
+Subject: [PATCH 191/194] hjviewer: review fixes for the wait on a refused
+ connection window's pipe
+
+What could happen: when the --server found the connection window's pipe
+there but refused (src/server/connection.rs start_ipc, name_taken), it
+still started a window at once. That window cannot take the name
+(parity-tokio-ipc makes the first instance) and quits, so every incoming
+connection during the wait started a doomed GUI process in the user's
+session. And the 40 tries were not renewed when the name came free: if the
+refused window closed late, the window started then could get under a
+second to reach new_listener, and the connection failed anyway.
+
+What changes (Windows only, name_taken is never set elsewhere): with the
+name taken, no window is started until a try finds the pipe missing
+(ipc::is_endpoint_missing); then one is started and gets the usual 20 tries
+(6 s) from that moment. The first refusal is logged once per connection,
+and a wait that ends with the name still taken says so.
+
+Left alone: a missing pipe at the start, and Linux and macOS, behave as
+before (start the window, 20 tries).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/server/connection.rs | 33 +++++++++++++++++++++++++--------
+ 1 file changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index 8facdca..1a2aa90 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -6467,22 +6467,35 @@ async fn start_ipc(
+         sleep(1.).await;
+     }
+     let mut stream = None;
+-    // Windows: the name is this session's (ipc::cm_postfix), so a window left open in another
++    // The name is this session's on Windows (ipc::cm_postfix), so a window left open in another
+     // session does not hold it. A pipe of that name that is there but refuses this process
+     // (src/ipc/windows.rs: another copy of the app, or another account that took the name) keeps
+-    // it, so the window started below cannot serve it and ends at once. Such a window closes
+-    // itself about 6 s after its last connection; wait longer then, and start ours again once
+-    // the name is free.
++    // it, and a window started now could not serve it and would end at once. Such a window
++    // closes itself about 6 s after its last connection: wait longer then, without starting
++    // one, and start ours once the name is free, with the usual time to come up.
+     let cm_postfix = crate::ipc::cm_postfix();
+     let mut name_taken = false;
+     match crate::ipc::connect(1000, &cm_postfix).await {
+         Ok(s) => stream = Some(s),
+-        Err(err) => name_taken = cfg!(windows) && !crate::ipc::is_endpoint_missing(&err),
++        Err(err) => {
++            name_taken = cfg!(windows) && !crate::ipc::is_endpoint_missing(&err);
++            if name_taken {
++                log::warn!(
++                    "The connection window's pipe is held by an untrusted process, wait: {err}"
++                );
++            }
++        }
+     }
+     if stream.is_none() {
+-        start_cm_process().await?;
+-        let tries = if name_taken { 40 } else { 20 };
+-        for _ in 0..tries {
++        const CM_START_TRIES: u32 = 20;
++        let mut tries = if name_taken {
++            40
++        } else {
++            start_cm_process().await?;
++            CM_START_TRIES
++        };
++        while tries > 0 {
++            tries -= 1;
+             sleep(0.3).await;
+             match crate::ipc::connect(1000, &cm_postfix).await {
+                 Ok(s) => {
+@@ -6493,10 +6506,14 @@ async fn start_ipc(
+                     name_taken = false;
+                     log::info!("The connection window's pipe is free again, start cm");
+                     start_cm_process().await?;
++                    tries = CM_START_TRIES;
+                 }
+                 Err(_) => {}
+             }
+         }
++        if stream.is_none() && name_taken {
++            log::warn!("The connection window's pipe was not freed, give up");
++        }
+     }
+     if stream.is_none() {
+         bail!("Failed to connect to connection manager");

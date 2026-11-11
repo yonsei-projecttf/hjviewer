@@ -1,0 +1,326 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Wed, 11 Nov 2026 23:20:28 +0900
+Subject: [PATCH 190/194] hjviewer: review fixes for the connection window's
+ pipe, one name per Windows session
+
+What a user would see: with the two previous commits (the pipe's protection
+and the wait for a refused window), a connection window left open in
+another Windows session kept \\.\pipe\HJViewer\query_cm. The window stays
+open after a file transfer or an unanswered chat (connection.rs on_close
+sends Data::Disconnected, ui_cm_interface keeps the connection with
+close=false, flutter/lib/models/server_model.dart then never reaches its
+6 s auto-close). After fast user switching or a remote desktop disconnect
+to another account, every incoming connection to that account's session
+was refused by the --server and ended 12 s later with "connection manager
+error", and so were its clipboard and privacy-mode sends, until the first
+account came back and closed the window. 1.9.3 accepted these connections
+(in the wrong user's window).
+
+Why: Windows pipe names are one namespace for every session, so "_cm" was a
+single name for the whole PC, while the --server now trusts only its own
+session's window (src/ipc/windows.rs ensure_server).
+
+What changes: the pipe is named per session on Windows, "_cm_s<session id>"
+(src/ipc.rs cm_postfix). Every process that uses it builds the name from
+its own session: the window (ui_cm_interface start_ipc), the --server that
+starts the window in its own session (connection.rs start_ipc ->
+run_as_user -> run_exe_in_cur_session), its clipboard
+(clipboard_service.rs) and privacy mode (privacy_mode.rs), the main window
+(ui_interface send_to_cm) and the e2e stand-in. A window left open in
+another session now holds only that session's name; the --server of this
+session starts its own window as usual. is_cm_postfix (used by
+is_windows_protected_ipc, listener_security_attributes and
+expected_server_user) takes "_cm" and "_cm_s<digits>", so every session's
+pipe keeps the 1.9.4 protection. If the session id cannot be read the name
+falls back to "_cm", on both sides alike.
+
+Mixed versions: update_me and the installer end every HJViewer.exe in every
+session before the new service starts, so no 1.9.3 window (on "_cm") is
+left to meet a 1.9.4 --server; if one were, the --server finds its own name
+missing and starts a 1.9.4 window, which works.
+
+Left alone: Linux and macOS keep "_cm" (their socket is in a directory per
+user). Another account can still take this session's name while no window
+is open (a denial of service, no data); the wait for a refused pipe in
+start_ipc stays for that case and for another copy of the app.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_e2e.rs             |  2 +-
+ src/ipc.rs                      | 63 ++++++++++++++++++++++++++++++++-
+ src/ipc/windows.rs              |  7 ++--
+ src/ipc/windows_tests.rs        | 14 ++++----
+ src/privacy_mode.rs             |  2 +-
+ src/server/clipboard_service.rs |  3 +-
+ src/server/connection.rs        | 15 ++++----
+ src/ui_cm_interface.rs          |  2 +-
+ src/ui_interface.rs             |  2 +-
+ 9 files changed, 87 insertions(+), 23 deletions(-)
+
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index ec30519..5d43133 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -1055,7 +1055,7 @@ async fn connection_manager() -> i32 {
+         .ok()
+         .and_then(|secs| secs.parse().ok())
+         .map(Duration::from_secs);
+-    let mut incoming = match crate::ipc::new_listener("_cm").await {
++    let mut incoming = match crate::ipc::new_listener(&crate::ipc::cm_postfix()).await {
+         Ok(incoming) => incoming,
+         Err(err) => {
+             eprintln!("hjv-e2e: cm: {err}");
+diff --git a/src/ipc.rs b/src/ipc.rs
+index b6d3dcf..67f3c4f 100644
+--- a/src/ipc.rs
++++ b/src/ipc.rs
+@@ -701,7 +701,51 @@ pub(crate) async fn start_with_listener(postfix: &str, mut incoming: Incoming) {
+ #[cfg(windows)]
+ #[inline]
+ fn is_windows_protected_ipc(postfix: &str) -> bool {
+-    ipc_auth::is_windows_main_or_service_ipc(postfix) || postfix == ipc_windows::CM_POSTFIX
++    ipc_auth::is_windows_main_or_service_ipc(postfix) || is_cm_postfix(postfix)
++}
++
++/// The connection window's pipe: the window (`--cm`) serves it, the `--server` hands it each
++/// incoming connection, and the main window sends it theme and language changes.
++const CM_POSTFIX: &str = "_cm";
++
++/// The postfix of the connection window's pipe for this process.
++///
++/// Windows pipe names are one namespace for every session, so a window left open in another
++/// session (fast user switching, a disconnected remote desktop session) would hold a single name
++/// and the `--server` of this session, which refuses it, could show no connection until that
++/// window is closed. Every process of the window's session (the window, the `--server` that
++/// starts it there, its clipboard and privacy mode, the main window) therefore uses the name of
++/// its own session. Linux and macOS keep `_cm`: their socket lives in a directory per user.
++pub(crate) fn cm_postfix() -> String {
++    #[cfg(windows)]
++    {
++        cm_postfix_for_session(crate::platform::windows::get_current_process_session_id())
++    }
++    #[cfg(not(windows))]
++    {
++        CM_POSTFIX.to_owned()
++    }
++}
++
++/// `_cm_s<session>`, or `_cm` when the session is unknown (both sides fall back alike).
++#[cfg(any(windows, test))]
++fn cm_postfix_for_session(session: Option<u32>) -> String {
++    match session {
++        Some(session) => format!("{CM_POSTFIX}_s{session}"),
++        None => CM_POSTFIX.to_owned(),
++    }
++}
++
++/// Whether `postfix` names a connection window's pipe, of any session.
++#[cfg(any(windows, test))]
++fn is_cm_postfix(postfix: &str) -> bool {
++    match postfix.strip_prefix(CM_POSTFIX) {
++        Some("") => true,
++        Some(rest) => rest.strip_prefix("_s").map_or(false, |session| {
++            !session.is_empty() && session.bytes().all(|b| b.is_ascii_digit())
++        }),
++        None => false,
++    }
+ }
+ 
+ pub async fn new_listener(postfix: &str) -> ResultType<Incoming> {
+@@ -2328,12 +2372,29 @@ mod test {
+         assert!(!is_endpoint_missing(&refused.unwrap_err()));
+     }
+ 
++    #[test]
++    fn test_cm_postfix_names_the_session() {
++        assert_eq!(cm_postfix_for_session(Some(1)), "_cm_s1");
++        assert_eq!(cm_postfix_for_session(Some(0)), "_cm_s0");
++        assert_eq!(cm_postfix_for_session(None), "_cm");
++        assert!(is_cm_postfix(&cm_postfix_for_session(Some(4294967295))));
++        assert!(is_cm_postfix("_cm"));
++        assert!(is_cm_postfix(&cm_postfix()));
++        for other in ["", "_service", "_cm_s", "_cm_", "_cm_sx", "_cm_s1_", "_cmd", "_cm_1", "cm_s1"] {
++            assert!(!is_cm_postfix(other), "{other}");
++        }
++        #[cfg(not(windows))]
++        assert_eq!(cm_postfix(), "_cm");
++    }
++
+     #[cfg(windows)]
+     #[test]
+     fn test_windows_protected_ipc_includes_connection_window() {
+         assert!(is_windows_protected_ipc(""));
+         assert!(is_windows_protected_ipc(crate::POSTFIX_SERVICE));
+         assert!(is_windows_protected_ipc("_cm"));
++        assert!(is_windows_protected_ipc(&cm_postfix()));
++        assert!(is_windows_protected_ipc("_cm_s2"));
+         assert!(!is_windows_protected_ipc("_portable_service"));
+         assert!(!is_windows_protected_ipc("_pa"));
+         assert!(!is_windows_protected_ipc("_whiteboard"));
+diff --git a/src/ipc/windows.rs b/src/ipc/windows.rs
+index 01b56da..0f90ac3 100644
+--- a/src/ipc/windows.rs
++++ b/src/ipc/windows.rs
+@@ -33,9 +33,6 @@ const CLIENT_ACCESS: u32 = FILE_GENERIC_READ.0 | FILE_WRITE_DATA.0;
+ const PIPE_BUSY_RETRY: Duration = Duration::from_millis(50);
+ const AUTH_LOG_INTERVAL: Duration = Duration::from_secs(5);
+ const SYSTEM_SID: &str = "S-1-5-18";
+-/// The connection window's pipe. The window (`--cm`) serves it as the user of its session;
+-/// the `--server` that shows its connections there (SYSTEM when installed) is the client.
+-pub(super) const CM_POSTFIX: &str = "_cm";
+ const ACCESS_ALLOWED_ACE_TYPE_U8: u8 = 0;
+ 
+ struct LocalAllocation(*mut c_void);
+@@ -72,7 +69,7 @@ pub(super) fn listener_security_attributes(postfix: &str) -> io::Result<Security
+     // https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format
+     // https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-strings
+     // https://learn.microsoft.com/en-us/windows/win32/secauthz/sid-strings
+-    let sddl = if postfix == CM_POSTFIX {
++    let sddl = if super::is_cm_postfix(postfix) {
+         format!("O:{owner}D:P(A;;GA;;;SY)(A;;GA;;;{owner})")
+     } else {
+         format!("O:{owner}D:P(A;;GA;;;SY)(A;;GA;;;{owner})(A;;0x{CLIENT_ACCESS:x};;;WD)")
+@@ -155,7 +152,7 @@ fn expected_server_user(postfix: &str, client_is_system: bool) -> ResultType<Opt
+     if config::is_service_ipc_postfix(postfix) {
+         return Ok(None);
+     }
+-    if postfix == CM_POSTFIX && client_is_system {
++    if super::is_cm_postfix(postfix) && client_is_system {
+         // The installed `--server` starts the window in its own session with that session's
+         // user token (connection.rs start_ipc -> run_as_user -> run_exe_in_session).
+         let session = platform::get_current_process_session_id()
+diff --git a/src/ipc/windows_tests.rs b/src/ipc/windows_tests.rs
+index 826c1ad..e0c97c4 100644
+--- a/src/ipc/windows_tests.rs
++++ b/src/ipc/windows_tests.rs
+@@ -67,8 +67,8 @@ fn as_untrusted_client<T>(operation: impl FnOnce() -> T) -> T {
+ 
+ #[tokio::test]
+ async fn windows_ipc_rejects_additional_untrusted_instances() {
+-    for postfix in ["", super::CM_POSTFIX] {
+-        let (path, _incoming) = listener(super::listener_security_attributes(postfix).unwrap());
++    for postfix in [String::new(), crate::ipc::cm_postfix()] {
++        let (path, _incoming) = listener(super::listener_security_attributes(&postfix).unwrap());
+         let result = as_untrusted_client(|| ServerOptions::new().create(&path));
+         assert_eq!(
+             result
+@@ -82,7 +82,7 @@ async fn windows_ipc_rejects_additional_untrusted_instances() {
+ #[tokio::test]
+ async fn windows_cm_ipc_rejects_untrusted_clients() {
+     let (path, _incoming) =
+-        listener(super::listener_security_attributes(super::CM_POSTFIX).unwrap());
++        listener(super::listener_security_attributes(&crate::ipc::cm_postfix()).unwrap());
+     let result = as_untrusted_client(|| super::open_pipe(&path));
+     assert_eq!(
+         result
+@@ -106,7 +106,8 @@ async fn windows_ipc_rejects_untrusted_server_before_sending() {
+                 "restrictive permissions alone must not authenticate a non-SYSTEM owner"
+             );
+         }
+-        for postfix in [crate::POSTFIX_SERVICE, "", super::CM_POSTFIX] {
++        let cm_postfix = crate::ipc::cm_postfix();
++        for postfix in [crate::POSTFIX_SERVICE, "", cm_postfix.as_str()] {
+             let owner = crate::platform::windows::current_process_user_sid_string().unwrap();
+             let attributes =
+                 SecurityAttributes::from_sddl(&format!("O:{owner}D:P(A;;GA;;;WD)")).unwrap();
+@@ -156,9 +157,10 @@ async fn windows_ipc_allows_client_communication() {
+ #[tokio::test]
+ async fn windows_cm_ipc_accepts_own_window() {
+     timeout(TEST_TIMEOUT, async {
++        let cm_postfix = crate::ipc::cm_postfix();
+         let (path, mut incoming) =
+-            listener(super::listener_security_attributes(super::CM_POSTFIX).unwrap());
+-        let connected = super::connect(&path, super::CM_POSTFIX).await;
++            listener(super::listener_security_attributes(&cm_postfix).unwrap());
++        let connected = super::connect(&path, &cm_postfix).await;
+         if crate::platform::windows::is_root() {
+             // A SYSTEM client expects the session user's window, and this pipe is SYSTEM's own,
+             // which is trusted as such.
+diff --git a/src/privacy_mode.rs b/src/privacy_mode.rs
+index 5757dee..4a3829f 100644
+--- a/src/privacy_mode.rs
++++ b/src/privacy_mode.rs
+@@ -347,7 +347,7 @@ async fn set_privacy_mode_state(
+     impl_key: String,
+     ms_timeout: u64,
+ ) -> ResultType<()> {
+-    let mut c = connect(ms_timeout, "_cm").await?;
++    let mut c = connect(ms_timeout, &crate::ipc::cm_postfix()).await?;
+     c.send(&Data::PrivacyModeState((conn_id, state, impl_key)))
+         .await
+ }
+diff --git a/src/server/clipboard_service.rs b/src/server/clipboard_service.rs
+index 54ae9e6..bb822f1 100644
+--- a/src/server/clipboard_service.rs
++++ b/src/server/clipboard_service.rs
+@@ -274,7 +274,8 @@ impl Handler {
+             };
+         }
+         if !is_sent {
+-            let mut stream = rt.block_on(crate::ipc::connect(100, "_cm"))?;
++            let mut stream =
++                rt.block_on(crate::ipc::connect(100, &crate::ipc::cm_postfix()))?;
+             rt.block_on(stream.send(&Data::ClipboardNonFile(None)))?;
+             self.stream = Some(stream);
+         }
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index 8430e6b..8facdca 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -6467,12 +6467,15 @@ async fn start_ipc(
+         sleep(1.).await;
+     }
+     let mut stream = None;
+-    // Windows: a `_cm` pipe that is there but refuses this process (src/ipc/windows.rs, e.g. the
+-    // window of another Windows session or of another copy of the app) keeps the name, so the
+-    // window started below cannot serve it and ends at once. Such a window closes itself about
+-    // 6 s after its last connection; wait longer then, and start ours again once the name is free.
++    // Windows: the name is this session's (ipc::cm_postfix), so a window left open in another
++    // session does not hold it. A pipe of that name that is there but refuses this process
++    // (src/ipc/windows.rs: another copy of the app, or another account that took the name) keeps
++    // it, so the window started below cannot serve it and ends at once. Such a window closes
++    // itself about 6 s after its last connection; wait longer then, and start ours again once
++    // the name is free.
++    let cm_postfix = crate::ipc::cm_postfix();
+     let mut name_taken = false;
+-    match crate::ipc::connect(1000, "_cm").await {
++    match crate::ipc::connect(1000, &cm_postfix).await {
+         Ok(s) => stream = Some(s),
+         Err(err) => name_taken = cfg!(windows) && !crate::ipc::is_endpoint_missing(&err),
+     }
+@@ -6481,7 +6484,7 @@ async fn start_ipc(
+         let tries = if name_taken { 40 } else { 20 };
+         for _ in 0..tries {
+             sleep(0.3).await;
+-            match crate::ipc::connect(1000, "_cm").await {
++            match crate::ipc::connect(1000, &cm_postfix).await {
+                 Ok(s) => {
+                     stream = Some(s);
+                     break;
+diff --git a/src/ui_cm_interface.rs b/src/ui_cm_interface.rs
+index 632bfa5..61d559a 100644
+--- a/src/ui_cm_interface.rs
++++ b/src/ui_cm_interface.rs
+@@ -869,7 +869,7 @@ pub async fn start_ipc<T: InvokeUiCM>(cm: ConnectionManager<T>) {
+         ContextSend::enable(enabled);
+         *lock = Some(enabled);
+     }
+-    match ipc::new_listener("_cm").await {
++    match ipc::new_listener(&ipc::cm_postfix()).await {
+         Ok(mut incoming) => {
+             while let Some(result) = incoming.next().await {
+                 match result {
+diff --git a/src/ui_interface.rs b/src/ui_interface.rs
+index 05a09fb..a62f07b 100644
+--- a/src/ui_interface.rs
++++ b/src/ui_interface.rs
+@@ -1493,7 +1493,7 @@ pub fn option_synced() -> bool {
+ #[cfg(not(any(target_os = "ios")))]
+ #[tokio::main(flavor = "current_thread")]
+ pub(crate) async fn send_to_cm(data: &ipc::Data) {
+-    if let Ok(mut c) = ipc::connect(1000, "_cm").await {
++    if let Ok(mut c) = ipc::connect(1000, &ipc::cm_postfix()).await {
+         c.send(data).await.ok();
+     }
+ }
