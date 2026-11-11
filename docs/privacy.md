@@ -359,11 +359,11 @@ operator (as a tag), when, and how many users and PCs it showed.
   downloaded update in its own cache until it next starts, and checks the update's package name
   and signing certificate. Both happen on the phone only: none of this is sent to the server.
 - **A refused Windows pipe** (from version 1.9.4): HJViewer's parts on a Windows PC talk through
-  named pipes, and from version 1.9.3 on they check who serves each pipe. When one of them refuses
-  a pipe because another program holds its name, HJViewer's log on that PC names that program: its
-  process ID, its Windows session number and the security identifier (SID) of the Windows account
-  that owns the pipe, at most a line every 5 seconds. The log stays on that PC; nothing of it is
-  sent.
+  named pipes. From version 1.9.3 on they check who serves the main and the service pipe, and from
+  1.9.4 also the connection window's. When one of them refuses such a pipe because another program
+  holds its name, HJViewer's log on that PC names that program: its process ID, its Windows session
+  number and the security identifier (SID) of the Windows account that owns the pipe, at most a
+  line every 5 seconds. The log stays on that PC; nothing of it is sent.
 - **App lock** (phones and tablets, from version 1.9.0, off by default): the app keeps only
   whether the lock is on and how long it may stay in the background (immediately, 1 or 5
   minutes), as local settings. Face ID, Touch ID, fingerprints and the device passcode are
@@ -590,7 +590,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 - **녹화**: 세션을 녹화하면 녹화한 그 기기에 영상 파일로 남습니다(6절).
 - **출입증**(1.8.0부터): 로그인한 앱은 출입증을 설정에 두고 로그아웃할 때 지웁니다. 계정에 들어간 PC는 마지막 출입증을 서비스 폴더의 서명된 목록 옆 파일에 둡니다. 서버에 닿지 못하는 동안 다시 시작해도 등록하기 위해서이고, 제거하면 지워집니다. 이용 비밀번호와 지원 코드의 출입증은 메모리에만 있고 앱(설치한 PC는 서비스)이 끝나면 사라집니다. 1.9.0부터 지원 코드를 넣은 PC는 출입증과 함께 온 지원 확인을 출입증처럼 메모리에만 두고 출입증과 함께 버립니다. PC를 등록하는 프로세스는 서버가 마지막 등록을 받았는지를 설정에 적어 둡니다. 지원 코드는 파일이나 설정에 쓰지 않습니다. 만든 앱은 그 창에서만 보이고(복사하면 기기의 클립보드에 남음), 코드를 넣은 PC는 보낸 뒤 바로 버립니다. 코드를 만든 앱은 대기 번호와, 코드를 쓴 PC의 ID와 공개키를 그 PC의 출입증이 끝나거나 로그아웃할 때까지 메모리에만 둡니다.
 - **업데이트**(1.6.0부터): 모든 앱은 마지막으로 확인한 버전 정책, 마지막 확인 시각, 서버와의 시계 차이를 둡니다. 오래된 앱을 거절한 PC는 그 앱의 플랫폼과 버전을 로그에 남깁니다(1분에 한 줄까지). 설치된 Windows PC의 HJViewer 서비스는 업데이트 시도 기록(버전, 파일의 해시, 시각)을 두고, 설치하기 전까지는 내려받은 설치 파일을 Windows의 시스템 계정과 관리자만 열 수 있는 폴더에 둡니다. 설치하지 않고 쓰는 앱은 새 버전을 사용자의 '다운로드' 폴더에 둡니다. Android 앱은 어느 스토어에서 설치됐는지 읽습니다. 파일로 설치한 앱은 내려받은 업데이트를 다음에 시작할 때까지 자기 캐시에 두고, 그 패키지 이름과 서명 인증서를 확인합니다. 둘 다 휴대폰 안에서만 하고, 서버에 보내지 않습니다.
-- **거절한 Windows 파이프**(1.9.4부터): Windows PC의 HJViewer는 그 부분들끼리 이름 붙은 파이프로 통신하고, 1.9.3부터 파이프마다 누가 열어 두었는지 확인합니다. 다른 프로그램이 그 이름을 쥐고 있어 파이프를 거절하면, 그 PC의 HJViewer 로그에 그 프로그램의 프로세스 번호, Windows 세션 번호, 그 파이프를 가진 Windows 계정의 보안 식별자(SID)를 남깁니다(5초에 한 줄까지). 로그는 그 PC에 남고, 어디로도 보내지 않습니다.
+- **거절한 Windows 파이프**(1.9.4부터): Windows PC의 HJViewer는 그 부분들끼리 이름 붙은 파이프로 통신하고, 1.9.3부터 주 통신·서비스 통신의 파이프를, 1.9.4부터 연결 창의 파이프도 누가 열어 두었는지 확인합니다. 다른 프로그램이 그 이름을 쥐고 있어 그 파이프를 거절하면, 그 PC의 HJViewer 로그에 그 프로그램의 프로세스 번호, Windows 세션 번호, 그 파이프를 가진 Windows 계정의 보안 식별자(SID)를 남깁니다(5초에 한 줄까지). 로그는 그 PC에 남고, 어디로도 보내지 않습니다.
 - **앱 잠금**(휴대폰과 태블릿, 1.9.0부터, 기본은 꺼짐): 앱은 잠금을 켰는지와 백그라운드에 둘 수 있는 시간(바로, 1분, 5분)만 기기의 설정에 둡니다. Face ID·Touch ID·지문과 기기 암호는 휴대폰의 운영체제가 확인하고, 앱은 맞았는지만 받습니다. 생체 정보를 보거나 저장하거나 보내지 않으며, 잠금에 관한 것은 서버에 아무것도 보내지 않습니다.
 
 ### 5. 꺼진 PC 켜기 (Wake-on-LAN)
