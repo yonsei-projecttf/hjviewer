@@ -2858,7 +2858,8 @@ reuse_rules() {
       scripts/test_store_record.py scripts/test_store_workflows.py scripts/run-summary.py scripts/asc-store.mjs
       scripts/asc-store.test.mjs scripts/test_check_build_keys.py scripts/hjv-fontsize-check.sh
       scripts/hjv-fontsize-baseline.txt scripts/set-client-version.sh scripts/advisories.py scripts/test_advisories.py
-      scripts/advisories-known.txt"
+      scripts/advisories-known.txt scripts/windows-signing.ps1 scripts/test_windows_signing.ps1
+      scripts/windows-signing-pins.txt"
     # the E2E's client (client/, the pins, the keys of check-build-keys.py), hbbs and hjv-api's release
     # build (server/, which resolves hjv-relay's Cargo.toml, a dev-dependency, under --locked),
     # hjv-probe, hjv-release for the test policies, firewall-e2e.sh with the Caddyfile and guest-conf.py

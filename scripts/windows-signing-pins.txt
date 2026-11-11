@@ -1,0 +1,11 @@
+# Vendor files of the Windows runtime folder (upstream/rustdesk/rustdesk) that the release signing
+# steps leave exactly as they are, though Windows does not accept their own signature as a file:
+# scripts/windows-signing.ps1 neither checks nor replaces it, and stops when the bytes differ from
+# the SHA-256 here. "<sha256>  <path relative to the runtime folder>", as sha256sum writes it.
+#
+# The virtual display driver of usbmmidd_v2.zip (client-build.yml, "Build rustdesk"; rustdesk-org/rdev
+# release usbmmidd_v2, 2021). The driver DLL carries only a WDK test signature; Windows takes the
+# driver package through its catalog, which Microsoft's hardware compatibility publisher signed.
+# A new zip fails the release build here: compare its files, then put their hashes in.
+dc135d675127113915a7e5aa9fe57c84edad6be41d0890b265ef124ab26ea9e3  usbmmidd_v2/x64/usbmmIdd.dll
+470149c4cf9970ba59070aa7c9409c9f63a15727de99bab53e7e51f55310779f  usbmmidd_v2/usbmmidd.cat
