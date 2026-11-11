@@ -379,8 +379,8 @@ try {
     $verified = Run-Mode $accept Verify
     Assert-Test ($verified.SignedCount -eq 1 -and $verified.Files[0].Signature.FileDigest -eq 'SHA256') 'signed copy verified'
     Assert-Test ((Get-FileSha $target) -ceq (Get-FileSha $sample.Path)) 'the signed bytes were applied'
-    $report = ConvertFrom-Json ([IO.File]::ReadAllText($accept.Report))
-    Assert-Test ($report.Success -and $report.Files[0].Signature.SignerThumbprint -match '^[0-9A-F]{40}$') 'report of the accepted signature'
+    $acceptedReport = ConvertFrom-Json ([IO.File]::ReadAllText($accept.Report))
+    Assert-Test ($acceptedReport.Success -and $acceptedReport.Files[0].Signature.SignerThumbprint -match '^[0-9A-F]{40}$') 'report of the accepted signature'
     $afterwards = Run-Mode $accept Audit
     Assert-Test ($afterwards.SignCount -eq 0 -and $afterwards.PreservedCount -eq 1 -and @($afterwards.Warnings).Count -eq 0) 'applied signature passes the audit unwarned'
     $script:passed++
@@ -454,6 +454,11 @@ try {
     $script:Pins = @{}
     $script:passed++
     Write-Output "Windows signing tests passed: $script:passed"
+} catch {
+    # Where the failure happened: the script's own line and call chain (no values).
+    [Console]::Error.WriteLine('Test failure at: ' + $_.InvocationInfo.PositionMessage)
+    [Console]::Error.WriteLine($_.ScriptStackTrace)
+    throw
 } finally {
     $env:GITHUB_OUTPUT = $savedOutput
     # Remove junctions themselves before recursive fixture cleanup.
