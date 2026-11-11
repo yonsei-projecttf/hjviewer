@@ -967,6 +967,10 @@ CLIENT_DART_TESTS+=" test/hjviewer_settings_split_test.dart"
 # download (client patches 0175, 0181-0182). test/download_path_test.dart, which implements the
 # bridge and needs the generated one, runs in client-build.yml's Dart tests job (the whole folder)
 CLIENT_DART_TESTS+=" test/download_paths_test.dart"
+# 1.9.4: the phone and tablet session's one automatic video refresh after a connection's first
+# picture (client patches 0193-0194). The key bar's Backspace and the stray 1 (0183-0187) change
+# soft_keyboard_input_test.dart and hjviewer_semantics_test.dart, listed above
+CLIENT_DART_TESTS+=" test/hjviewer_video_refresh_test.dart"
 # Pure Dart tests that a work package not in client/patches yet adds: run when the patched tree
 # has them, else skipped with a note. Once the patch is in, move them to CLIENT_DART_TESTS, so that
 # a dropped patch fails (the account screens' tests, design v3 7-5, moved with client patch 0033).
